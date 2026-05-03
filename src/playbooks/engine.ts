@@ -109,7 +109,19 @@ export class PlaybookEngine {
   }
 
   private static evaluateCondition(condition: string, ctx: PlaybookContext): boolean {
-    const match = condition.match(/^(\w+)\s*(>|<|>=|<=|==)\s*(\d+)$/);
+    // Support OR conditions: "score > 70 OR repeatCount > 2"
+    if (condition.includes(' OR ')) {
+      return condition.split(' OR ').some(part => this.evaluateSingle(part.trim(), ctx));
+    }
+    // Support AND conditions: "score > 30 AND repeatCount > 0"
+    if (condition.includes(' AND ')) {
+      return condition.split(' AND ').every(part => this.evaluateSingle(part.trim(), ctx));
+    }
+    return this.evaluateSingle(condition, ctx);
+  }
+
+  private static evaluateSingle(condition: string, ctx: PlaybookContext): boolean {
+    const match = condition.match(/^(\w+)\s*(>|<|>=|<=|==|!=)\s*(\d+)$/);
     if (!match) return true;
 
     const [, key, op, valueStr] = match;
@@ -123,6 +135,7 @@ export class PlaybookEngine {
       case '>=': return actual >= value;
       case '<=': return actual <= value;
       case '==': return actual === value;
+      case '!=': return actual !== value;
       default: return false;
     }
   }

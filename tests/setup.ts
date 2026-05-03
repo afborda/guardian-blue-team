@@ -12,6 +12,7 @@ vi.mock('../src/config/environment.js', () => ({
     health: { uptimeKumaPushUrl: null },
     hostSecurity: { sshHost: '127.0.0.1', sshPort: 49222, sshUser: 'ubuntu', sshKeyPath: null },
     threatIntel: { abuseIpDbKey: null, virusTotalKey: null },
+    cveMonitor: { enabled: true, minCvss: 7.0, checkIntervalHours: 6 },
   },
 }));
 

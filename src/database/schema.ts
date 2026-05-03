@@ -9,6 +9,7 @@ export {
   threatIntelCache,
   vulnerabilities,
   blockedIps,
+  cveAlerts,
 } from './guardian-schema.js';
 
 export {

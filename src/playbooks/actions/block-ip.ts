@@ -1,6 +1,6 @@
 import { SSHCollector } from '../../collectors/ssh-collector.js';
 import { ServerService } from '../../services/server.service.js';
-import { db } from '../../database/connection.js';
+import { db, dbTrue, dbFalse, dbNow } from '../../database/connection.js';
 import { blockedIps } from '../../database/schema.js';
 import { and, eq } from 'drizzle-orm';
 import type { PlaybookContext } from '../engine.js';
@@ -57,7 +57,7 @@ export async function blockIP(ctx: PlaybookContext, params?: Record<string, unkn
     .where(and(
       eq(blockedIps.ip, ctx.sourceIp),
       eq(blockedIps.serverId, ctx.serverId),
-      eq(blockedIps.active, true),
+      eq(blockedIps.active, dbTrue),
     ))
     .then(rows => rows[0]);
 
@@ -116,11 +116,11 @@ export async function unblockIP(ctx: PlaybookContext, params?: Record<string, un
   }
 
   await db.update(blockedIps)
-    .set({ active: false, unblockedAt: new Date() })
+    .set({ active: dbFalse, unblockedAt: dbNow() })
     .where(and(
       eq(blockedIps.ip, ip),
       eq(blockedIps.serverId, ctx.serverId),
-      eq(blockedIps.active, true),
+      eq(blockedIps.active, dbTrue),
     ));
 
   return { success: true, message: `Unblocked ${ip} on ${ctx.serverName}` };

@@ -1,4 +1,4 @@
-import { db } from '../database/connection.js';
+import { db, dbDate } from '../database/connection.js';
 import { securityEvents } from '../database/schema.js';
 import type { NormalizedEvent } from './normalizer.js';
 import type { CorrelationResult } from './correlator.js';
@@ -10,7 +10,7 @@ export class EventIngestor {
 
     const values = results.map(r => ({
       serverId: r.event.serverId,
-      timestamp: r.event.timestamp,
+      timestamp: dbDate(r.event.timestamp),
       source: r.event.source,
       category: r.event.category,
       severity: r.event.severity,
@@ -40,7 +40,7 @@ export class EventIngestor {
   static async persistSingle(event: NormalizedEvent, incidentId?: number): Promise<void> {
     await db.insert(securityEvents).values({
       serverId: event.serverId,
-      timestamp: event.timestamp,
+      timestamp: dbDate(event.timestamp),
       source: event.source,
       category: event.category,
       severity: event.severity,

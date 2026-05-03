@@ -1,4 +1,4 @@
-import { db } from '../database/connection.js';
+import { db, dbNow } from '../database/connection.js';
 import { playbookExecutions } from '../database/schema.js';
 import { eq } from 'drizzle-orm';
 import { logger } from '../utils/logger.js';
@@ -89,7 +89,7 @@ export class PlaybookEngine {
         status: success ? 'completed' : 'failed',
         stepsCompleted,
         stepsFailed,
-        completedAt: new Date(),
+        completedAt: dbNow(),
       })
       .where(eq(playbookExecutions.id, execution.id));
 

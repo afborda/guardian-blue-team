@@ -1,5 +1,5 @@
 import type { NormalizedEvent } from './normalizer.js';
-import { db } from '../database/connection.js';
+import { db, dbNow, dbDate } from '../database/connection.js';
 import { socIncidents } from '../database/schema.js';
 import { eq, and, gte, or } from 'drizzle-orm';
 import { logger } from '../utils/logger.js';
@@ -74,7 +74,7 @@ export class EventCorrelator {
       .where(and(
         eq(socIncidents.category, 'brute_force'),
         eq(socIncidents.status, 'open'),
-        gte(socIncidents.lastSeenAt, cutoff),
+        gte(socIncidents.lastSeenAt, dbDate(cutoff)),
       ))
       .then(rows => rows.find(r => {
         const ips = (r.sourceIps ?? []) as string[];
@@ -84,7 +84,7 @@ export class EventCorrelator {
     if (existing) {
       await db.update(socIncidents)
         .set({
-          lastSeenAt: new Date(),
+          lastSeenAt: dbNow(),
           eventCount: existing.eventCount + 1,
         })
         .where(eq(socIncidents.id, existing.id));
@@ -98,8 +98,8 @@ export class EventCorrelator {
       sourceIps: [event.sourceIp],
       affectedServers: [event.serverId],
       eventCount: relatedCount,
-      firstSeenAt: cutoff,
-      lastSeenAt: new Date(),
+      firstSeenAt: dbDate(cutoff),
+      lastSeenAt: dbNow(),
     }).returning();
 
     logger.warn({ ip: event.sourceIp, count: relatedCount, incidentId: newIncident.id }, 'New brute force incident detected');
@@ -129,9 +129,9 @@ export class EventCorrelator {
         eq(socIncidents.category, 'port_scan'),
         or(
           eq(socIncidents.status, 'open'),
-          and(eq(socIncidents.status, 'resolved'), gte(socIncidents.lastSeenAt, cutoff)),
+          and(eq(socIncidents.status, 'resolved'), gte(socIncidents.lastSeenAt, dbDate(cutoff))),
         ),
-        gte(socIncidents.lastSeenAt, cutoff),
+        gte(socIncidents.lastSeenAt, dbDate(cutoff)),
       ))
       .then(rows => rows.find(r => {
         const ips = (r.sourceIps ?? []) as string[];
@@ -144,7 +144,7 @@ export class EventCorrelator {
       await db.update(socIncidents)
         .set({
           status: 'open',
-          lastSeenAt: new Date(),
+          lastSeenAt: dbNow(),
           eventCount: existing.eventCount + 1,
           resolvedAt: null,
         })
@@ -163,8 +163,8 @@ export class EventCorrelator {
       sourceIps: [event.sourceIp],
       affectedServers: [event.serverId],
       eventCount: relatedPorts.size,
-      firstSeenAt: cutoff,
-      lastSeenAt: new Date(),
+      firstSeenAt: dbDate(cutoff),
+      lastSeenAt: dbNow(),
     }).returning();
 
     logger.warn({ ip: event.sourceIp, ports: relatedPorts.size, incidentId: newIncident.id }, 'New port scan incident detected');
@@ -180,7 +180,7 @@ export class EventCorrelator {
       .where(and(
         eq(socIncidents.category, 'unauthorized_access'),
         eq(socIncidents.status, 'open'),
-        gte(socIncidents.lastSeenAt, cutoff),
+        gte(socIncidents.lastSeenAt, dbDate(cutoff)),
       ))
       .then(rows => rows.find(r => {
         const ips = (r.sourceIps ?? []) as string[];
@@ -190,7 +190,7 @@ export class EventCorrelator {
     if (existing) {
       await db.update(socIncidents)
         .set({
-          lastSeenAt: new Date(),
+          lastSeenAt: dbNow(),
           eventCount: existing.eventCount + 1,
         })
         .where(eq(socIncidents.id, existing.id));
@@ -210,8 +210,8 @@ export class EventCorrelator {
       sourceIps: [event.sourceIp],
       affectedServers: [event.serverId],
       eventCount: 1,
-      firstSeenAt: new Date(),
-      lastSeenAt: new Date(),
+      firstSeenAt: dbNow(),
+      lastSeenAt: dbNow(),
     }).returning();
 
     logger.warn({ ip: event.sourceIp, type: event.eventType, incidentId: newIncident.id }, 'Unauthorized access incident created');

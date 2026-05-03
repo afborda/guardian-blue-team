@@ -8,6 +8,9 @@ import {
   jsonb,
   index,
   boolean,
+  real,
+  bigint,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 
 // ─── Guardian SOC Tables (owned and managed by Guardian) ────────────────────
@@ -147,4 +150,48 @@ export const blockedIps = pgTable('blocked_ips', {
   activeIdx: index('blocked_ips_active_idx').on(table.active),
   expiresIdx: index('blocked_ips_expires_idx').on(table.expiresAt),
   ipServerIdx: index('blocked_ips_ip_server_idx').on(table.ip, table.serverId),
+}));
+
+// ─── Infrastructure Monitoring Tables ──────────────────────────────────────────
+
+export const serverMetrics = pgTable('server_metrics', {
+  id: serial('id').primaryKey(),
+  serverId: integer('server_id').notNull(),
+  collectedAt: timestamp('collected_at').notNull(),
+  load1: real('load_1'),
+  load5: real('load_5'),
+  load15: real('load_15'),
+  cpuCount: integer('cpu_count'),
+  memTotalBytes: bigint('mem_total_bytes', { mode: 'number' }),
+  memUsedBytes: bigint('mem_used_bytes', { mode: 'number' }),
+  memAvailableBytes: bigint('mem_available_bytes', { mode: 'number' }),
+  swapTotalBytes: bigint('swap_total_bytes', { mode: 'number' }),
+  swapUsedBytes: bigint('swap_used_bytes', { mode: 'number' }),
+  disks: jsonb('disks').$type<Array<{ mountpoint: string; usedPercent: number; availableBytes: number }>>().default([]),
+  uptimeSeconds: integer('uptime_seconds'),
+  diskIo: jsonb('disk_io').$type<Array<{ device: string; readBps: number; writeBps: number }>>(),
+  networkIo: jsonb('network_io').$type<Array<{ iface: string; rxBps: number; txBps: number }>>(),
+  failedUnits: jsonb('failed_units').$type<string[]>().default([]),
+  kernelErrors: integer('kernel_errors').default(0),
+  journalErrors: integer('journal_errors').default(0),
+}, (table) => ({
+  serverCollectedIdx: index('server_metrics_server_collected_idx').on(table.serverId, table.collectedAt),
+}));
+
+export const serverScores = pgTable('server_scores', {
+  id: serial('id').primaryKey(),
+  serverId: integer('server_id').notNull(),
+  periodStart: timestamp('period_start').notNull(),
+  periodEnd: timestamp('period_end').notNull(),
+  periodType: varchar('period_type', { length: 10 }).default('hourly').notNull(),
+  healthScore: integer('health_score').notNull(),
+  securityScore: integer('security_score').notNull(),
+  qualityScore: integer('quality_score').notNull(),
+  wasteScore: integer('waste_score').notNull(),
+  vulnerabilityScore: integer('vulnerability_score').notNull(),
+  availabilityScore: integer('availability_score').notNull(),
+  overallScore: integer('overall_score').notNull(),
+  scoreDetails: jsonb('score_details').$type<Record<string, unknown>>().default({}),
+}, (table) => ({
+  serverPeriodIdx: uniqueIndex('server_scores_server_period_idx').on(table.serverId, table.periodStart, table.periodType),
 }));

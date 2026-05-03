@@ -4,19 +4,19 @@ import { and, eq, lte } from 'drizzle-orm';
 import { SSHCollector } from '../collectors/ssh-collector.js';
 import { ServerService } from '../services/server.service.js';
 import { logger } from '../utils/logger.js';
+import { CONSTANTS } from '../config/constants.js';
 
 export class BlockCleanupWorker {
   private static intervalId: NodeJS.Timeout | null = null;
-  private static readonly INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
   static start(): void {
     if (this.intervalId) return;
 
     this.intervalId = setInterval(() => {
       this.cleanup().catch(err => logger.error({ err }, 'Block cleanup error'));
-    }, this.INTERVAL_MS);
+    }, CONSTANTS.blocking.cleanupIntervalMs);
 
-    logger.info('Block cleanup worker started (every 5min)');
+    logger.info('Block cleanup worker started');
   }
 
   static async cleanup(): Promise<void> {

@@ -13,6 +13,7 @@ import { ThreatIntelManager } from './threat-intel/manager.js';
 import { PlaybookRegistry } from './playbooks/registry.js';
 import { handleTelegramCommand } from './telegram/commands.js';
 import { handleTelegramCallback } from './telegram/callbacks.js';
+import { CONSTANTS } from './config/constants.js';
 
 const app = express();
 app.use(express.json());
@@ -26,16 +27,14 @@ app.get('/health', (_req, res) => {
 // ─── Telegram Webhook ───────────────────────────────────────────────────────
 
 const rateLimitMap = new Map<string, number[]>();
-const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX = 10;
 
 function isRateLimited(chatId: string): boolean {
   const now = Date.now();
   const timestamps = rateLimitMap.get(chatId) ?? [];
-  const recent = timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+  const recent = timestamps.filter(t => now - t < CONSTANTS.telegram.rateLimitWindowMs);
   recent.push(now);
   rateLimitMap.set(chatId, recent);
-  return recent.length > RATE_LIMIT_MAX;
+  return recent.length > CONSTANTS.telegram.rateLimitMax;
 }
 
 app.post('/webhook/telegram', async (req, res) => {

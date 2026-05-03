@@ -3,6 +3,7 @@ import { db } from '../database/connection.js';
 import { socIncidents } from '../database/schema.js';
 import { eq, and, gte, or } from 'drizzle-orm';
 import { logger } from '../utils/logger.js';
+import { CONSTANTS } from '../config/constants.js';
 
 export interface CorrelationResult {
   event: NormalizedEvent;
@@ -10,10 +11,10 @@ export interface CorrelationResult {
   isNewIncident: boolean;
 }
 
-const CORRELATION_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
-const PORT_SCAN_CORRELATION_WINDOW_MS = 30 * 60 * 1000; // 30 minutes (longer for port scans)
-const BRUTE_FORCE_THRESHOLD = 10;
-const PORT_SCAN_THRESHOLD = 10;
+const CORRELATION_WINDOW_MS = CONSTANTS.correlation.windowMs;
+const PORT_SCAN_CORRELATION_WINDOW_MS = CONSTANTS.correlation.portScanWindowMs;
+const BRUTE_FORCE_THRESHOLD = CONSTANTS.correlation.bruteForceThreshold;
+const PORT_SCAN_THRESHOLD = CONSTANTS.correlation.portScanThreshold;
 
 export class EventCorrelator {
   private static recentEvents: NormalizedEvent[] = [];

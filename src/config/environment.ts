@@ -6,6 +6,10 @@ const envSchema = z.object({
 
   // Database
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+  AUTOMABOTHUB_DATABASE_URL: z.string().optional(),
+
+  // AutomaBotHub integration
+  AUTOMABOTHUB_ENABLED: z.string().transform(v => v === 'true').default('true'),
 
   // Docker
   DOCKER_HOST: z.string().optional(),
@@ -54,6 +58,11 @@ export const config = {
 
   database: {
     url: env.DATABASE_URL,
+    automabothubUrl: env.AUTOMABOTHUB_DATABASE_URL || env.DATABASE_URL,
+  },
+
+  automabothub: {
+    enabled: env.AUTOMABOTHUB_ENABLED,
   },
 
   telegram: {

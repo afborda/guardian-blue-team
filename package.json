@@ -1,7 +1,14 @@
 {
-  "name": "guardian",
+  "name": "guardian-blue-team",
   "version": "1.0.0",
-  "description": "Independent server security monitoring system with AI-powered abuse detection",
+  "description": "Lightweight SOAR for the rest of us — server security monitoring with automated response",
+  "license": "AGPL-3.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/afborda/guardian-blue-team.git"
+  },
+  "homepage": "https://github.com/afborda/guardian-blue-team",
+  "keywords": ["siem", "soar", "security", "monitoring", "ssh", "threat-detection", "cve", "homelab"],
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -14,6 +21,7 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
+    "better-sqlite3": "^12.9.0",
     "dockerode": "^4.0.2",
     "drizzle-orm": "^0.45.2",
     "express": "^5.1.0",
@@ -24,6 +32,7 @@
     "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/dockerode": "^3.3.35",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.0",

@@ -76,10 +76,6 @@ export const CONSTANTS = {
     vulnScanHour: 9, // 09:00
     // Daily report: sends at this hour (BRT)
     dailyReportHour: 8, // 08:00
-    // Profile builder interval (AutomaBotHub)
-    profileBuilderIntervalMs: 6 * 60 * 60 * 1000, // 6 hours
-    // Abuse detection interval (AutomaBotHub)
-    abuseDetectionIntervalMs: 5 * 60 * 1000, // 5 minutes
   },
 
   // ─── Threat Intelligence ───────────────────────────────────────────────────
@@ -96,8 +92,8 @@ export const CONSTANTS = {
   trustedIps: [
     '177.37.108.216',   // Home IP
     '129.152.25.87',    // synthfin-direct
-    '51.77.73.242',     // ovh-automabothub (old IP)
-    '51.79.84.65',      // ovh-automabothub
+    '51.77.73.242',     // ovh-vps-1
+    '51.79.84.65',      // ovh-vps-2
     '162.19.232.3',     // ovh-spark
     '130.41.103.48',    // GCP Cloud Shell / deploy
   ] as string[],

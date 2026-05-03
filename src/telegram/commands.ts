@@ -1,5 +1,4 @@
 import { logger } from '../utils/logger.js';
-import { AbuseDetectionWorker } from '../workers/abuse-detection.worker.js';
 import { DailyReportWorker } from '../workers/daily-report.worker.js';
 import { ServerService } from '../services/server.service.js';
 import { SSHCollector } from '../collectors/ssh-collector.js';
@@ -38,10 +37,7 @@ export async function handleTelegramCommand(text: string): Promise<string> {
     case '/containers':
       return await getContainers(parts[1]);
     case '/scan':
-      AbuseDetectionWorker.triggerAnalysis().catch(err =>
-        logger.error({ err }, 'Manual scan trigger failed')
-      );
-      return '🔍 Análise iniciada. Resultados em breve.';
+      return '🔍 Use /vulns para verificar vulnerabilidades ou aguarde o CVE Monitor automático.';
     case '/report':
       if (parts[1] === 'full') return await getFullReport();
       DailyReportWorker.sendReport().catch(err =>

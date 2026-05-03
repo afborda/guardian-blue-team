@@ -1,10 +1,10 @@
 import { VulnScanner } from '../vuln-scanner/scanner.js';
-import { config } from '../config/environment.js';
+import { NotifierManager } from '../plugins/notifier-manager.js';
 import { logger } from '../utils/logger.js';
 
 export class VulnScannerWorker {
   private static intervalId: NodeJS.Timeout | null = null;
-  private static readonly CHECK_INTERVAL_MS = 60 * 60 * 1000; // check every hour
+  private static readonly CHECK_INTERVAL_MS = 60 * 60 * 1000;
   private static lastScanWeek: string | null = null;
 
   static start(): void {
@@ -20,7 +20,7 @@ export class VulnScannerWorker {
   private static async checkAndScan(): Promise<void> {
     const now = new Date();
     const brt = new Date(now.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
-    const day = brt.getDay(); // 6 = Saturday
+    const day = brt.getDay();
     const hour = brt.getHours();
     const weekKey = `${brt.getFullYear()}-W${Math.ceil((brt.getDate() + 6 - day) / 7)}`;
 
@@ -34,11 +34,9 @@ export class VulnScannerWorker {
     logger.info('Starting weekly vulnerability scan...');
 
     const results = await VulnScanner.scanAll();
-
     if (results.length === 0) return;
 
     const lines = [
-      `🔍 <b>WEEKLY VULNERABILITY REPORT</b>`,
       `📅 ${new Date().toLocaleDateString('pt-BR')}`,
       ``,
     ];
@@ -54,19 +52,12 @@ export class VulnScannerWorker {
       );
     }
 
-    try {
-      await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: config.telegram.chatId,
-          text: lines.join('\n'),
-          parse_mode: 'HTML',
-        }),
-      });
-    } catch (error) {
-      logger.error({ err: error }, 'Failed to send vuln report');
-    }
+    await NotifierManager.notify({
+      title: 'Weekly Vulnerability Report',
+      body: lines.join('\n'),
+      severity: results.some(r => r.totalFindings > 5) ? 'high' : 'medium',
+      metadata: { type: 'vuln-scan-weekly' },
+    });
   }
 
   static async stop(): Promise<void> {

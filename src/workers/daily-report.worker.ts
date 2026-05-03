@@ -3,7 +3,7 @@ import { ServerService } from '../services/server.service.js';
 import { db } from '../database/connection.js';
 import { securityEvents, socIncidents } from '../database/schema.js';
 import { gte, ne, desc, count, eq, and } from 'drizzle-orm';
-import { config } from '../config/environment.js';
+import { NotifierManager } from '../plugins/notifier-manager.js';
 import { logger } from '../utils/logger.js';
 
 export class DailyReportWorker {
@@ -90,20 +90,13 @@ export class DailyReportWorker {
 
     const message = lines.join('\n');
 
-    try {
-      await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: config.telegram.chatId,
-          text: message,
-          parse_mode: 'HTML',
-        }),
-      });
-      logger.info('Daily security report sent');
-    } catch (error) {
-      logger.error({ err: error }, 'Failed to send daily report');
-    }
+    await NotifierManager.notify({
+      title: 'Relatório Diário de Segurança',
+      body: message,
+      severity: 'low',
+      metadata: { type: 'daily-report' },
+    });
+    logger.info('Daily security report sent');
   }
 
   private static appendSnapshotLines(lines: string[], snapshot: ReturnType<typeof HostSecurityService.getSnapshot> extends Promise<infer T> ? T : never): void {

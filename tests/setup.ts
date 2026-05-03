@@ -3,8 +3,7 @@ import { vi } from 'vitest';
 vi.mock('../src/config/environment.js', () => ({
   config: {
     server: { port: 3334, nodeEnv: 'test' },
-    database: { url: 'postgres://test:test@localhost:5432/test', automabothubUrl: 'postgres://test:test@localhost:5432/test' },
-    automabothub: { enabled: false },
+    database: { url: 'postgres://test:test@localhost:5432/test' },
     telegram: { botToken: 'test-token', chatId: '12345', webhookSecret: undefined },
     ai: { geminiApiKey: null, geminiModel: 'test', ollamaUrl: 'http://localhost:11434', ollamaModel: 'test', ollamaChatModel: 'test' },
     resend: { apiKey: null, fromEmail: 'test@test.com' },
@@ -21,9 +20,6 @@ vi.mock('../src/database/connection.js', () => ({
     select: () => ({ from: () => ({ where: () => ({ then: (fn: Function) => fn([]) }) }) }),
     insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: 1 }]) }) }),
     update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
-  },
-  automabothubDb: {
-    select: () => ({ from: () => ({ where: () => ({ then: (fn: Function) => fn([]) }) }) }),
   },
 }));
 

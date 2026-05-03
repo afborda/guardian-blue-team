@@ -5,11 +5,10 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
 
   // Database
-  DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
-  AUTOMABOTHUB_DATABASE_URL: z.string().optional(),
+  DATABASE_URL: z.string().optional(),
 
-  // AutomaBotHub integration
-  AUTOMABOTHUB_ENABLED: z.string().transform(v => v === 'true').default('true'),
+  // Notifications
+  NOTIFIERS: z.string().default('telegram'),
 
   // Docker
   DOCKER_HOST: z.string().optional(),
@@ -62,13 +61,11 @@ export const config = {
   },
 
   database: {
-    url: env.DATABASE_URL,
-    automabothubUrl: env.AUTOMABOTHUB_DATABASE_URL || env.DATABASE_URL,
+    url: env.DATABASE_URL || null,
+    isSqlite: !env.DATABASE_URL || env.DATABASE_URL.startsWith('sqlite:'),
   },
 
-  automabothub: {
-    enabled: env.AUTOMABOTHUB_ENABLED,
-  },
+  notifiers: env.NOTIFIERS.split(',').map(s => s.trim()).filter(Boolean),
 
   telegram: {
     botToken: env.TELEGRAM_BOT_TOKEN,
@@ -86,7 +83,7 @@ export const config = {
 
   resend: {
     apiKey: env.RESEND_API_KEY || null,
-    fromEmail: 'AutomaBotHub <noreply@automabothub.com>',
+    fromEmail: 'Guardian <noreply@guardian.local>',
   },
 
   abuse: {

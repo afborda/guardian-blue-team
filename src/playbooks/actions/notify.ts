@@ -1,33 +1,25 @@
-import { config } from '../../config/environment.js';
+import { NotifierManager } from '../../plugins/notifier-manager.js';
 import type { PlaybookContext } from '../engine.js';
 
 export async function notify(ctx: PlaybookContext, params?: Record<string, unknown>): Promise<{ success: boolean; message: string }> {
   const severity = (params?.severity as string) ?? 'medium';
   const customMessage = params?.message as string | undefined;
 
-  const severityIcon: Record<string, string> = {
-    critical: '🔴', high: '🟠', medium: '🟡', low: '🔵',
-  };
-
-  const text = customMessage ?? [
-    `${severityIcon[severity] ?? '⚪'} <b>Playbook Alert</b>`,
+  const body = customMessage ?? [
     `Server: ${ctx.serverName}`,
     `IP: ${ctx.sourceIp ?? 'n/a'}`,
     `Severity: ${severity}`,
   ].join('\n');
 
   try {
-    await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: config.telegram.chatId,
-        text,
-        parse_mode: 'HTML',
-      }),
+    await NotifierManager.notify({
+      title: 'Playbook Alert',
+      body,
+      severity: severity as 'critical' | 'high' | 'medium' | 'low',
+      metadata: { server: ctx.serverName, triggeredBy: ctx.triggeredBy },
     });
     return { success: true, message: `Notified (${severity})` };
   } catch {
-    return { success: false, message: 'Telegram notification failed' };
+    return { success: false, message: 'Notification failed' };
   }
 }

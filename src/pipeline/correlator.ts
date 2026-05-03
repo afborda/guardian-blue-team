@@ -1,7 +1,7 @@
 import type { NormalizedEvent } from './normalizer.js';
 import { db } from '../database/connection.js';
 import { socIncidents } from '../database/schema.js';
-import { eq, and, gte } from 'drizzle-orm';
+import { eq, and, gte, or } from 'drizzle-orm';
 import { logger } from '../utils/logger.js';
 
 export interface CorrelationResult {
@@ -11,6 +11,7 @@ export interface CorrelationResult {
 }
 
 const CORRELATION_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+const PORT_SCAN_CORRELATION_WINDOW_MS = 30 * 60 * 1000; // 30 minutes (longer for port scans)
 const BRUTE_FORCE_THRESHOLD = 10;
 const PORT_SCAN_THRESHOLD = 10;
 
@@ -107,7 +108,7 @@ export class EventCorrelator {
   private static async correlatePortScan(event: NormalizedEvent): Promise<{ id: number; isNew: boolean } | null> {
     if (!event.sourceIp) return null;
 
-    const cutoff = new Date(Date.now() - CORRELATION_WINDOW_MS);
+    const cutoff = new Date(Date.now() - PORT_SCAN_CORRELATION_WINDOW_MS);
     const relatedPorts = new Set(
       this.recentEvents
         .filter(e =>
@@ -121,10 +122,14 @@ export class EventCorrelator {
 
     if (relatedPorts.size < PORT_SCAN_THRESHOLD) return null;
 
+    // Search for existing incidents (open OR recently resolved) for this IP
     const existing = await db.select().from(socIncidents)
       .where(and(
         eq(socIncidents.category, 'port_scan'),
-        eq(socIncidents.status, 'open'),
+        or(
+          eq(socIncidents.status, 'open'),
+          and(eq(socIncidents.status, 'resolved'), gte(socIncidents.lastSeenAt, cutoff)),
+        ),
         gte(socIncidents.lastSeenAt, cutoff),
       ))
       .then(rows => rows.find(r => {
@@ -133,13 +138,21 @@ export class EventCorrelator {
       }));
 
     if (existing) {
+      // Reopen if it was resolved — same attacker is back
+      const wasResolved = existing.status === 'resolved';
       await db.update(socIncidents)
         .set({
+          status: 'open',
           lastSeenAt: new Date(),
           eventCount: existing.eventCount + 1,
+          resolvedAt: null,
         })
         .where(eq(socIncidents.id, existing.id));
-      return { id: existing.id, isNew: false };
+
+      if (wasResolved) {
+        logger.info({ ip: event.sourceIp, incidentId: existing.id }, 'Reopened resolved port scan incident (repeat offender)');
+      }
+      return { id: existing.id, isNew: wasResolved };
     }
 
     const [newIncident] = await db.insert(socIncidents).values({

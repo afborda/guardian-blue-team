@@ -11,10 +11,6 @@ import { PlaybookRegistry } from '../playbooks/registry.js';
 import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
 import { requestPlaybookApproval } from '../telegram/callbacks.js';
 import { requestLoginVerification } from '../telegram/login-verification.js';
-import { ThreatIntelManager } from '../threat-intel/manager.js';
-import { db } from '../database/connection.js';
-import { socIncidents } from '../database/schema.js';
-import { eq } from 'drizzle-orm';
 import { config } from '../config/environment.js';
 import { logger } from '../utils/logger.js';
 
@@ -125,15 +121,14 @@ export class EventCollectorWorker {
           continue;
         }
 
-        PlaybookEngine.execute(playbook, ctx).catch(err =>
-          logger.error({ err, playbook: playbook.name }, 'Auto-triggered playbook failed')
-        );
+        // Await playbook execution to prevent race conditions with post-playbook logic
+        try {
+          await PlaybookEngine.execute(playbook, ctx);
+        } catch (err) {
+          logger.error({ err, playbook: playbook.name }, 'Auto-triggered playbook failed');
+        }
 
         logger.info({ playbook: playbook.name, ip: result.event.sourceIp, incident: result.incidentId }, 'Playbook auto-triggered');
-      }
-
-      if (result.event.eventType === 'port_scan' && result.incidentId && result.event.sourceIp) {
-        await this.autoCloseIfLowRisk(result.incidentId, result.event.sourceIp);
       }
 
       if (result.event.eventType === 'unauthorized_login' && result.incidentId && result.event.sourceIp) {
@@ -148,21 +143,6 @@ export class EventCollectorWorker {
         });
       }
     }
-  }
-
-  private static async autoCloseIfLowRisk(incidentId: number, ip: string): Promise<void> {
-    const report = await ThreatIntelManager.enrichIP(ip);
-
-    if (report && report.score >= 50) {
-      logger.info({ ip, score: report.score, incidentId }, 'Port scan from malicious IP — keeping open');
-      return;
-    }
-
-    await db.update(socIncidents)
-      .set({ status: 'resolved', resolvedAt: new Date() })
-      .where(eq(socIncidents.id, incidentId));
-
-    logger.info({ ip, score: report?.score ?? 0, incidentId }, 'Port scan auto-closed (low risk)');
   }
 
   private static async notifyNewIncidents(count: number): Promise<void> {

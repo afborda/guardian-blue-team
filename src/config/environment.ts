@@ -22,10 +22,21 @@ const envSchema = z.object({
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default('gemini-2.0-flash-001'),
 
+  // AI — OpenAI
+  OPENAI_API_KEY: z.string().optional(),
+  OPENAI_MODEL: z.string().default('gpt-4o-mini'),
+
+  // AI — Claude
+  ANTHROPIC_API_KEY: z.string().optional(),
+  ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-6-20250514'),
+
   // AI — Ollama
   OLLAMA_URL: z.string().default('http://localhost:11434'),
   OLLAMA_MODEL: z.string().default('qwen3:4b'),
   OLLAMA_CHAT_MODEL: z.string().default('qwen3:0.6b'),
+
+  // AI — Provider preference
+  AI_PROVIDER: z.enum(['gemini', 'openai', 'claude', 'ollama', 'auto']).default('auto'),
 
   // Email
   RESEND_API_KEY: z.string().optional(),
@@ -74,8 +85,13 @@ export const config = {
   },
 
   ai: {
+    provider: env.AI_PROVIDER,
     geminiApiKey: env.GEMINI_API_KEY || null,
     geminiModel: env.GEMINI_MODEL,
+    openaiApiKey: env.OPENAI_API_KEY || null,
+    openaiModel: env.OPENAI_MODEL,
+    anthropicApiKey: env.ANTHROPIC_API_KEY || null,
+    anthropicModel: env.ANTHROPIC_MODEL,
     ollamaUrl: env.OLLAMA_URL,
     ollamaModel: env.OLLAMA_MODEL,
     ollamaChatModel: env.OLLAMA_CHAT_MODEL,

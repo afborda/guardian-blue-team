@@ -8,6 +8,7 @@ import { DailyReportWorker } from './workers/daily-report.worker.js';
 import { EventCollectorWorker } from './workers/event-collector.worker.js';
 import { VulnScannerWorker } from './workers/vuln-scanner.worker.js';
 import { BlockCleanupWorker } from './workers/block-cleanup.worker.js';
+import { CVEMonitorWorker } from './workers/cve-monitor.worker.js';
 import { ThreatIntelManager } from './threat-intel/manager.js';
 import { PlaybookRegistry } from './playbooks/registry.js';
 import { handleTelegramCommand } from './telegram/commands.js';
@@ -130,6 +131,11 @@ async function start(): Promise<void> {
   PlaybookRegistry.init();
   startHeartbeat();
 
+  // CVE Monitor (optional, enabled by default)
+  if (config.cveMonitor.enabled) {
+    CVEMonitorWorker.start();
+  }
+
   // AutomaBotHub integration workers (optional)
   if (config.automabothub.enabled) {
     AbuseDetectionWorker.start();
@@ -156,6 +162,7 @@ async function shutdown(signal: string): Promise<void> {
     EventCollectorWorker.stop(),
     VulnScannerWorker.stop(),
     BlockCleanupWorker.stop(),
+    CVEMonitorWorker.stop(),
   ]);
   ThreatIntelManager.stop();
 

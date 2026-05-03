@@ -1,0 +1,192 @@
+import { ServerService } from '../services/server.service.js';
+import { LogCollector } from '../collectors/log-collector.js';
+import { ProcessCollector } from '../collectors/process-collector.js';
+import { NetworkCollector } from '../collectors/network-collector.js';
+import { EventNormalizer } from '../pipeline/normalizer.js';
+import { EventEnricher } from '../pipeline/enricher.js';
+import { EventDetector } from '../pipeline/detector.js';
+import { EventCorrelator, type CorrelationResult } from '../pipeline/correlator.js';
+import { EventIngestor } from '../pipeline/ingestor.js';
+import { PlaybookRegistry } from '../playbooks/registry.js';
+import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
+import { requestPlaybookApproval } from '../telegram/callbacks.js';
+import { requestLoginVerification } from '../telegram/login-verification.js';
+import { ThreatIntelManager } from '../threat-intel/manager.js';
+import { db } from '../database/connection.js';
+import { socIncidents } from '../database/schema.js';
+import { eq } from 'drizzle-orm';
+import { config } from '../config/environment.js';
+import { logger } from '../utils/logger.js';
+
+export class EventCollectorWorker {
+  private static intervalId: NodeJS.Timeout | null = null;
+  private static readonly INTERVAL_MS = 2 * 60 * 1000;
+  private static running = false;
+
+  static start(): void {
+    if (this.intervalId) return;
+
+    setTimeout(() => {
+      this.collect().catch(err => logger.error({ err }, 'Event collector error'));
+    }, 10_000);
+
+    this.intervalId = setInterval(() => {
+      this.collect().catch(err => logger.error({ err }, 'Event collector error'));
+    }, this.INTERVAL_MS);
+
+    logger.info('Event collector worker started (every 2min)');
+  }
+
+  static async collect(): Promise<void> {
+    if (this.running) return;
+    this.running = true;
+
+    try {
+      const servers = await ServerService.getEnabled();
+      if (servers.length === 0) {
+        logger.debug('No servers registered, skipping event collection');
+        return;
+      }
+
+      let totalEvents = 0;
+      const newIncidentResults: CorrelationResult[] = [];
+
+      for (const server of servers) {
+        const target = ServerService.toSSHTarget(server);
+
+        const [authLogs, ufwLogs, dockerEvents, suspiciousProcs, networkAnomaly] = await Promise.all([
+          LogCollector.collectAuthLogs(target, 3),
+          LogCollector.collectUfwLogs(target, 3),
+          LogCollector.collectDockerEvents(target, 3),
+          ProcessCollector.detectSuspiciousProcesses(target),
+          NetworkCollector.detectSuspiciousConnections(target),
+        ]);
+
+        const rawLogs = [...authLogs, ...ufwLogs, ...dockerEvents, ...suspiciousProcs, ...networkAnomaly];
+        if (rawLogs.length === 0) continue;
+
+        let normalized = EventNormalizer.normalizeBatch(rawLogs);
+        if (normalized.length === 0) continue;
+
+        const detected = EventDetector.detect(normalized);
+        if (detected.length > 0) {
+          normalized = [...normalized, ...detected];
+        }
+
+        normalized = await EventEnricher.enrich(normalized);
+
+        const correlated = await EventCorrelator.correlate(normalized);
+        await EventIngestor.persist(correlated);
+
+        totalEvents += correlated.length;
+        newIncidentResults.push(...correlated.filter(r => r.isNewIncident));
+
+        await ServerService.updateLastSeen(server.id);
+      }
+
+      if (totalEvents > 0) {
+        logger.info({ events: totalEvents, newIncidents: newIncidentResults.length, servers: servers.length }, 'Event collection cycle complete');
+      }
+
+      if (newIncidentResults.length > 0) {
+        await this.notifyNewIncidents(newIncidentResults.length);
+        await this.triggerPlaybooks(newIncidentResults);
+      }
+    } finally {
+      this.running = false;
+    }
+  }
+
+  private static async triggerPlaybooks(results: CorrelationResult[]): Promise<void> {
+    const serverCache = new Map<number, string>();
+
+    for (const result of results) {
+      const matchingPlaybooks = PlaybookRegistry.getByTrigger(result.event.eventType);
+
+      let serverName = serverCache.get(result.event.serverId);
+      if (!serverName) {
+        const server = await ServerService.getById(result.event.serverId);
+        serverName = server?.name ?? `server-${result.event.serverId}`;
+        serverCache.set(result.event.serverId, serverName);
+      }
+
+      for (const playbook of matchingPlaybooks) {
+        const ctx: PlaybookContext = {
+          serverId: result.event.serverId,
+          serverName,
+          incidentId: result.incidentId ?? undefined,
+          sourceIp: result.event.sourceIp ?? undefined,
+          triggeredBy: 'auto',
+          variables: {},
+        };
+
+        if (playbook.requiresApproval) {
+          requestPlaybookApproval(playbook.name, ctx);
+          continue;
+        }
+
+        PlaybookEngine.execute(playbook, ctx).catch(err =>
+          logger.error({ err, playbook: playbook.name }, 'Auto-triggered playbook failed')
+        );
+
+        logger.info({ playbook: playbook.name, ip: result.event.sourceIp, incident: result.incidentId }, 'Playbook auto-triggered');
+      }
+
+      if (result.event.eventType === 'port_scan' && result.incidentId && result.event.sourceIp) {
+        await this.autoCloseIfLowRisk(result.incidentId, result.event.sourceIp);
+      }
+
+      if (result.event.eventType === 'unauthorized_login' && result.incidentId && result.event.sourceIp) {
+        requestLoginVerification({
+          incidentId: result.incidentId,
+          sourceIp: result.event.sourceIp,
+          userName: result.event.userName ?? 'unknown',
+          serverName,
+          authMethod: (result.event.metadata?.authMethod as string) ?? 'unknown',
+          fingerprint: (result.event.metadata?.fingerprint as string) ?? null,
+          timestamp: result.event.timestamp,
+        });
+      }
+    }
+  }
+
+  private static async autoCloseIfLowRisk(incidentId: number, ip: string): Promise<void> {
+    const report = await ThreatIntelManager.enrichIP(ip);
+
+    if (report && report.score >= 50) {
+      logger.info({ ip, score: report.score, incidentId }, 'Port scan from malicious IP — keeping open');
+      return;
+    }
+
+    await db.update(socIncidents)
+      .set({ status: 'resolved', resolvedAt: new Date() })
+      .where(eq(socIncidents.id, incidentId));
+
+    logger.info({ ip, score: report?.score ?? 0, incidentId }, 'Port scan auto-closed (low risk)');
+  }
+
+  private static async notifyNewIncidents(count: number): Promise<void> {
+    try {
+      await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: config.telegram.chatId,
+          text: `🚨 <b>${count} novo(s) incidente(s) detectado(s)</b>\nUse /incidents para detalhes.`,
+          parse_mode: 'HTML',
+        }),
+      });
+    } catch {
+      logger.warn('Failed to notify new incidents');
+    }
+  }
+
+  static async stop(): Promise<void> {
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+    }
+    this.running = false;
+    logger.info('Event collector worker stopped');
+  }
+}

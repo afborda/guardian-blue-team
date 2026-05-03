@@ -4,15 +4,19 @@ services:
     container_name: guardian
     restart: unless-stopped
     env_file: .env
+    depends_on:
+      guardian-db:
+        condition: service_healthy
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${SSH_KEY_DIR:-~/.ssh}:/home/node/.ssh:ro
     networks:
-      - docker_internal
+      - guardian-internal
+      - traefik-public
     labels:
       - "traefik.enable=true"
-      - "traefik.docker.network=docker_internal"
-      - "traefik.http.routers.guardian.rule=Host(`guardian.automabothub.com`)"
+      - "traefik.docker.network=traefik-public"
+      - "traefik.http.routers.guardian.rule=Host(`${GUARDIAN_DOMAIN:-guardian.example.com}`)"
       - "traefik.http.routers.guardian.entrypoints=websecure"
       - "traefik.http.routers.guardian.tls.certresolver=letsencrypt"
       - "traefik.http.services.guardian.loadbalancer.server.port=3334"
@@ -23,6 +27,30 @@ services:
       retries: 3
       start_period: 30s
 
+  guardian-db:
+    image: postgres:16-alpine
+    container_name: guardian-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: guardian
+      POSTGRES_USER: guardian
+      POSTGRES_PASSWORD: ${GUARDIAN_DB_PASSWORD:-guardian_secret}
+    volumes:
+      - guardian_pgdata:/var/lib/postgresql/data
+    networks:
+      - guardian-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guardian -d guardian"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  guardian_pgdata:
+
 networks:
-  docker_internal:
+  guardian-internal:
+    driver: bridge
+  traefik-public:
     external: true

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db, dbFalse, dbNow } from '../database/connection.js';
-import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts } from '../database/schema.js';
+import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts, serverMetrics, serverScores } from '../database/schema.js';
 import { eq, count, desc } from 'drizzle-orm';
 import { layout } from './views/layout.js';
 import { overviewPage } from './views/overview.js';
@@ -87,6 +87,44 @@ dashboardPages.get('/logs', (_req, res) => {
     </div>
   `;
   res.send(layout('Logs', content));
+});
+
+dashboardPages.get('/health', (_req, res) => {
+  const token = process.env.DASHBOARD_TOKEN || '';
+  const content = `
+    <h2>Fleet Health</h2>
+    <div hx-get="/api/dashboard/fleet-health?token=${token}" hx-trigger="load" hx-swap="innerHTML">
+      <p aria-busy="true">Loading fleet status...</p>
+    </div>
+  `;
+  res.send(layout('Fleet Health', content));
+});
+
+dashboardPages.get('/health/:id', (req, res) => {
+  const token = process.env.DASHBOARD_TOKEN || '';
+  const id = req.params.id;
+  const content = `
+    <h2>Server Detail</h2>
+    <div hx-get="/api/dashboard/server/${id}/metrics?token=${token}" hx-trigger="load" hx-swap="innerHTML">
+      <p aria-busy="true">Loading metrics...</p>
+    </div>
+    <h3>Score History</h3>
+    <div hx-get="/api/dashboard/server/${id}/scores?token=${token}" hx-trigger="load" hx-swap="innerHTML">
+      <p aria-busy="true">Loading scores...</p>
+    </div>
+  `;
+  res.send(layout('Server Detail', content));
+});
+
+dashboardPages.get('/scores', (_req, res) => {
+  const token = process.env.DASHBOARD_TOKEN || '';
+  const content = `
+    <h2>Server Scores</h2>
+    <div hx-get="/api/dashboard/scores?token=${token}" hx-trigger="load" hx-swap="innerHTML">
+      <p aria-busy="true">Loading scores...</p>
+    </div>
+  `;
+  res.send(layout('Scores', content));
 });
 
 // ─── API Routes (JSON/HTML fragments for HTMX) ─────────────────────────────
@@ -258,5 +296,156 @@ dashboardApi.get('/events', async (req, res) => {
   } catch (err) {
     logger.error({ err }, 'Dashboard events API error');
     res.status(500).send('<p>Error loading events</p>');
+  }
+});
+
+// ─── Fleet Health & Scores API ───────────────────────────────────────────────
+
+dashboardApi.get('/fleet-health', async (_req, res) => {
+  try {
+    const servers = await db.select().from(socServers).orderBy(socServers.name);
+
+    if (servers.length === 0) {
+      res.send('<p>No servers registered.</p>');
+      return;
+    }
+
+    const token = process.env.DASHBOARD_TOKEN || '';
+    let html = '<div class="grid-stats">';
+
+    for (const server of servers) {
+      const [latestScore] = await db.select().from(serverScores)
+        .where(eq(serverScores.serverId, server.id))
+        .orderBy(desc(serverScores.periodStart))
+        .limit(1);
+
+      const overall = latestScore?.overallScore ?? '-';
+      const color = typeof overall === 'number'
+        ? (overall >= 80 ? '#27ae60' : overall >= 60 ? '#f1c40f' : overall >= 40 ? '#e67e22' : '#e74c3c')
+        : 'var(--pico-muted-color)';
+
+      html += `
+        <a href="/dashboard/health/${server.id}?token=${token}" style="text-decoration: none;">
+          <div class="card">
+            <strong>${server.name}</strong><br>
+            <span class="stat-value" style="color: ${color}">${overall}</span>
+            <small>/100</small><br>
+            <small>${server.host}</small>
+          </div>
+        </a>`;
+    }
+
+    html += '</div>';
+    res.send(html);
+  } catch (err) {
+    logger.error({ err }, 'Fleet health API error');
+    res.status(500).send('<p>Error loading fleet health</p>');
+  }
+});
+
+dashboardApi.get('/server/:id/metrics', async (req, res) => {
+  try {
+    const serverId = parseInt(req.params.id);
+    const metrics = await db.select().from(serverMetrics)
+      .where(eq(serverMetrics.serverId, serverId))
+      .orderBy(desc(serverMetrics.collectedAt))
+      .limit(20);
+
+    if (metrics.length === 0) {
+      res.send('<p>No metrics collected yet.</p>');
+      return;
+    }
+
+    const latest = metrics[0];
+    const memPct = latest.memTotalBytes ? Math.round(((latest.memUsedBytes ?? 0) / latest.memTotalBytes) * 100) : 0;
+    const loadRatio = ((latest.load1 ?? 0) / Math.max(latest.cpuCount ?? 1, 1)).toFixed(2);
+    const disks = (latest.disks as any[]) ?? [];
+    const failedUnits = (latest.failedUnits as string[]) ?? [];
+
+    let html = `
+      <div class="grid-stats">
+        <div class="card"><small>Load Ratio</small><br><span class="stat-value">${loadRatio}</span></div>
+        <div class="card"><small>Memory</small><br><span class="stat-value">${memPct}%</span></div>
+        <div class="card"><small>CPUs</small><br><span class="stat-value">${latest.cpuCount ?? '-'}</span></div>
+        <div class="card"><small>Uptime</small><br><span class="stat-value">${latest.uptimeSeconds ? Math.floor(latest.uptimeSeconds / 86400) + 'd' : '-'}</span></div>
+      </div>`;
+
+    if (disks.length > 0) {
+      html += '<h4>Disks</h4><table role="grid"><thead><tr><th>Mount</th><th>Used</th><th>Available</th></tr></thead><tbody>';
+      for (const d of disks) {
+        html += `<tr><td>${d.mountpoint}</td><td>${d.usedPercent}%</td><td>${Math.round(d.availableBytes / 1073741824)}G</td></tr>`;
+      }
+      html += '</tbody></table>';
+    }
+
+    if (failedUnits.length > 0) {
+      html += `<h4>Failed Units</h4><ul>${failedUnits.map(u => `<li><code>${u}</code></li>`).join('')}</ul>`;
+    }
+
+    res.send(html);
+  } catch (err) {
+    logger.error({ err }, 'Server metrics API error');
+    res.status(500).send('<p>Error loading metrics</p>');
+  }
+});
+
+dashboardApi.get('/server/:id/scores', async (req, res) => {
+  try {
+    const serverId = parseInt(req.params.id);
+    const scores = await db.select().from(serverScores)
+      .where(eq(serverScores.serverId, serverId))
+      .orderBy(desc(serverScores.periodStart))
+      .limit(24);
+
+    if (scores.length === 0) {
+      res.send('<p>No scores computed yet.</p>');
+      return;
+    }
+
+    const html = `<table role="grid"><thead><tr><th>Period</th><th>Overall</th><th>Health</th><th>Security</th><th>Quality</th><th>Waste</th><th>Vuln</th><th>Avail</th></tr></thead><tbody>${
+      scores.map(s => {
+        const color = s.overallScore >= 80 ? '#27ae60' : s.overallScore >= 60 ? '#f1c40f' : s.overallScore >= 40 ? '#e67e22' : '#e74c3c';
+        return `<tr><td>${new Date(s.periodStart).toLocaleString()}</td><td style="color:${color};font-weight:bold">${s.overallScore}</td><td>${s.healthScore}</td><td>${s.securityScore}</td><td>${s.qualityScore}</td><td>${s.wasteScore}</td><td>${s.vulnerabilityScore}</td><td>${s.availabilityScore}</td></tr>`;
+      }).join('')
+    }</tbody></table>`;
+
+    res.send(html);
+  } catch (err) {
+    logger.error({ err }, 'Server scores API error');
+    res.status(500).send('<p>Error loading scores</p>');
+  }
+});
+
+dashboardApi.get('/scores', async (_req, res) => {
+  try {
+    const servers = await db.select().from(socServers).orderBy(socServers.name);
+
+    if (servers.length === 0) {
+      res.send('<p>No servers registered.</p>');
+      return;
+    }
+
+    let html = '<table role="grid"><thead><tr><th>Server</th><th>Overall</th><th>Health</th><th>Security</th><th>Quality</th><th>Waste</th><th>Vuln</th><th>Avail</th></tr></thead><tbody>';
+
+    for (const server of servers) {
+      const [s] = await db.select().from(serverScores)
+        .where(eq(serverScores.serverId, server.id))
+        .orderBy(desc(serverScores.periodStart))
+        .limit(1);
+
+      if (!s) {
+        html += `<tr><td>${server.name}</td><td colspan="7"><em>No data</em></td></tr>`;
+        continue;
+      }
+
+      const color = s.overallScore >= 80 ? '#27ae60' : s.overallScore >= 60 ? '#f1c40f' : s.overallScore >= 40 ? '#e67e22' : '#e74c3c';
+      html += `<tr><td><strong>${server.name}</strong></td><td style="color:${color};font-weight:bold">${s.overallScore}</td><td>${s.healthScore}</td><td>${s.securityScore}</td><td>${s.qualityScore}</td><td>${s.wasteScore}</td><td>${s.vulnerabilityScore}</td><td>${s.availabilityScore}</td></tr>`;
+    }
+
+    html += '</tbody></table>';
+    res.send(html);
+  } catch (err) {
+    logger.error({ err }, 'Scores API error');
+    res.status(500).send('<p>Error loading scores</p>');
   }
 });

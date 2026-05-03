@@ -30,6 +30,8 @@ export function layout(title: string, content: string): string {
     </ul>
     <ul>
       <li><a href="/dashboard?token=${token}">Overview</a></li>
+      <li><a href="/dashboard/health?token=${token}">Fleet Health</a></li>
+      <li><a href="/dashboard/scores?token=${token}">Scores</a></li>
       <li><a href="/dashboard/incidents?token=${token}">Incidents</a></li>
       <li><a href="/dashboard/servers?token=${token}">Servers</a></li>
       <li><a href="/dashboard/cve?token=${token}">CVE</a></li>

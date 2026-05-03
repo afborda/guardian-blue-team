@@ -12,7 +12,7 @@ import { PlaybookRegistry } from './playbooks/registry.js';
 import { handleTelegramCommand } from './telegram/commands.js';
 import { handleTelegramCallback } from './telegram/callbacks.js';
 import { registerBuiltinPlugins, PluginManager } from './plugins/index.js';
-import { dashboardRouter } from './dashboard/routes.js';
+import { dashboardPages, dashboardApi } from './dashboard/routes.js';
 import { dashboardAuth } from './dashboard/auth.js';
 import { CONSTANTS } from './config/constants.js';
 
@@ -21,8 +21,8 @@ app.use(express.json());
 
 // ─── Dashboard ──────────────────────────────────────────────────────────────
 
-app.use('/dashboard', dashboardAuth, dashboardRouter);
-app.use('/api/dashboard', dashboardAuth, dashboardRouter);
+app.use('/dashboard', dashboardAuth, dashboardPages);
+app.use('/api/dashboard', dashboardAuth, dashboardApi);
 
 // ─── Health ─────────────────────────────────────────────────────────────────
 

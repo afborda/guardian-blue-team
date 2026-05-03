@@ -21,6 +21,10 @@ vi.mock('../src/database/connection.js', () => ({
     insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: 1 }]) }) }),
     update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
   },
+  dbTrue: true,
+  dbFalse: false,
+  dbNow: () => new Date(),
+  dbDate: (d: Date) => d,
 }));
 
 vi.mock('../src/utils/logger.js', () => ({

@@ -161,6 +161,46 @@ async function createPostgresTables(pool: Pool): Promise<void> {
       CREATE INDEX IF NOT EXISTS blocked_ips_active_idx ON blocked_ips(active);
       CREATE INDEX IF NOT EXISTS blocked_ips_expires_idx ON blocked_ips(expires_at);
       CREATE INDEX IF NOT EXISTS blocked_ips_ip_server_idx ON blocked_ips(ip, server_id);
+
+      CREATE TABLE IF NOT EXISTS server_metrics (
+        id SERIAL PRIMARY KEY,
+        server_id INTEGER NOT NULL,
+        collected_at TIMESTAMP NOT NULL,
+        load_1 REAL,
+        load_5 REAL,
+        load_15 REAL,
+        cpu_count INTEGER,
+        mem_total_bytes BIGINT,
+        mem_used_bytes BIGINT,
+        mem_available_bytes BIGINT,
+        swap_total_bytes BIGINT,
+        swap_used_bytes BIGINT,
+        disks JSONB DEFAULT '[]',
+        uptime_seconds INTEGER,
+        disk_io JSONB,
+        network_io JSONB,
+        failed_units JSONB DEFAULT '[]',
+        kernel_errors INTEGER DEFAULT 0,
+        journal_errors INTEGER DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS server_metrics_server_collected_idx ON server_metrics(server_id, collected_at);
+
+      CREATE TABLE IF NOT EXISTS server_scores (
+        id SERIAL PRIMARY KEY,
+        server_id INTEGER NOT NULL,
+        period_start TIMESTAMP NOT NULL,
+        period_end TIMESTAMP NOT NULL,
+        period_type VARCHAR(10) NOT NULL DEFAULT 'hourly',
+        health_score INTEGER NOT NULL,
+        security_score INTEGER NOT NULL,
+        quality_score INTEGER NOT NULL,
+        waste_score INTEGER NOT NULL,
+        vulnerability_score INTEGER NOT NULL,
+        availability_score INTEGER NOT NULL,
+        overall_score INTEGER NOT NULL,
+        score_details JSONB DEFAULT '{}'
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS server_scores_server_period_idx ON server_scores(server_id, period_start, period_type);
     `);
   } finally {
     client.release();
@@ -323,6 +363,46 @@ function createSqliteTables(sqlite: { exec: (sql: string) => void }): void {
     CREATE INDEX IF NOT EXISTS blocked_ips_active_idx ON blocked_ips(active);
     CREATE INDEX IF NOT EXISTS blocked_ips_expires_idx ON blocked_ips(expires_at);
     CREATE INDEX IF NOT EXISTS blocked_ips_ip_server_idx ON blocked_ips(ip, server_id);
+
+    CREATE TABLE IF NOT EXISTS server_metrics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      server_id INTEGER NOT NULL,
+      collected_at TEXT NOT NULL,
+      load_1 REAL,
+      load_5 REAL,
+      load_15 REAL,
+      cpu_count INTEGER,
+      mem_total_bytes INTEGER,
+      mem_used_bytes INTEGER,
+      mem_available_bytes INTEGER,
+      swap_total_bytes INTEGER,
+      swap_used_bytes INTEGER,
+      disks TEXT DEFAULT '[]',
+      uptime_seconds INTEGER,
+      disk_io TEXT,
+      network_io TEXT,
+      failed_units TEXT DEFAULT '[]',
+      kernel_errors INTEGER DEFAULT 0,
+      journal_errors INTEGER DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS server_metrics_server_collected_idx ON server_metrics(server_id, collected_at);
+
+    CREATE TABLE IF NOT EXISTS server_scores (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      server_id INTEGER NOT NULL,
+      period_start TEXT NOT NULL,
+      period_end TEXT NOT NULL,
+      period_type VARCHAR(10) NOT NULL DEFAULT 'hourly',
+      health_score INTEGER NOT NULL,
+      security_score INTEGER NOT NULL,
+      quality_score INTEGER NOT NULL,
+      waste_score INTEGER NOT NULL,
+      vulnerability_score INTEGER NOT NULL,
+      availability_score INTEGER NOT NULL,
+      overall_score INTEGER NOT NULL,
+      score_details TEXT DEFAULT '{}'
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS server_scores_server_period_idx ON server_scores(server_id, period_start, period_type);
   `);
 }
 

@@ -1,5 +1,6 @@
 import type { NormalizedEvent } from './normalizer.js';
 import { logger } from '../utils/logger.js';
+import { CONSTANTS } from '../config/constants.js';
 
 export interface DetectionRule {
   name: string;
@@ -10,14 +11,7 @@ export interface DetectionRule {
 }
 
 // IPs that are expected to login — add your admin IPs here
-const TRUSTED_IPS = new Set([
-  '203.0.113.10',   // Home IP
-  '203.0.113.11',    // synthfin-direct
-  '203.0.113.12',     // ovh-automabothub (old IP)
-  '203.0.113.13',      // ovh-automabothub
-  '203.0.113.14',     // ovh-spark
-  '203.0.113.15',    // GCP Cloud Shell / deploy
-]);
+const TRUSTED_IPS = new Set(CONSTANTS.trustedIps);
 
 function isTrustedIp(ip: string): boolean {
   if (TRUSTED_IPS.has(ip)) return true;
@@ -53,8 +47,7 @@ const DETECTION_RULES: DetectionRule[] = [
     name: 'crypto_mining',
     description: 'Detects cryptocurrency mining processes',
     condition: (_events, current) => {
-      const patterns = /xmrig|minerd|cpuminer|cryptonight|kdevtmpfsi|kinsing/i;
-      return current.source === 'process' && patterns.test(current.rawLog);
+      return current.source === 'process' && CONSTANTS.cryptoMiningPatterns.test(current.rawLog);
     },
     severity: 'critical',
     eventType: 'crypto_mining',
@@ -71,7 +64,7 @@ const DETECTION_RULES: DetectionRule[] = [
         (e.eventType === 'ssh_failed_password' || e.eventType === 'ssh_invalid_user')
       ).length;
 
-      return count >= 20;
+      return count >= CONSTANTS.detection.bruteForceThreshold;
     },
     severity: 'high',
     eventType: 'ssh_brute_force',
@@ -167,7 +160,7 @@ const DETECTION_RULES: DetectionRule[] = [
       if (current.userName && KNOWN_USERS.has(current.userName)) return false;
       const brt = new Date(current.timestamp.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
       const hour = brt.getHours();
-      return hour >= 0 && hour < 6;
+      return hour >= CONSTANTS.detection.unusualHourStart && hour < CONSTANTS.detection.unusualHourEnd;
     },
     severity: 'medium',
     eventType: 'unusual_hour_login',
@@ -176,7 +169,7 @@ const DETECTION_RULES: DetectionRule[] = [
 
 export class EventDetector {
   private static eventBuffer: NormalizedEvent[] = [];
-  private static readonly MAX_BUFFER = 2000;
+  private static readonly MAX_BUFFER = CONSTANTS.detection.eventBufferSize;
 
   static detect(events: NormalizedEvent[]): NormalizedEvent[] {
     this.eventBuffer.push(...events);

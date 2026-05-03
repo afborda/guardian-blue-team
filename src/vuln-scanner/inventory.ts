@@ -1,6 +1,7 @@
 import { SSHCollector, type SSHTarget } from '../collectors/ssh-collector.js';
 import { ServerService } from '../services/server.service.js';
 import { logger } from '../utils/logger.js';
+import { CONSTANTS } from '../config/constants.js';
 
 export interface InstalledPackage {
   name: string;
@@ -13,14 +14,12 @@ interface CacheEntry {
   updatedAt: number;
 }
 
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-
 export class InventoryCollector {
   private static cache = new Map<number, CacheEntry>();
 
   static async getServerInventory(serverId: number): Promise<InstalledPackage[]> {
     const cached = this.cache.get(serverId);
-    if (cached && Date.now() - cached.updatedAt < CACHE_TTL_MS) {
+    if (cached && Date.now() - cached.updatedAt < CONSTANTS.inventory.cacheTtlMs) {
       return cached.packages;
     }
 
@@ -66,8 +65,8 @@ export class InventoryCollector {
   private static async collectPackages(target: SSHTarget): Promise<InstalledPackage[]> {
     const result = await SSHCollector.run(
       target,
-      "dpkg-query -W -f '${Package} ${Version}\\n' 2>/dev/null | head -2000",
-      30_000
+      `dpkg-query -W -f '\${Package} \${Version}\\n' 2>/dev/null | head -${CONSTANTS.inventory.maxPackages}`,
+      CONSTANTS.inventory.sshTimeoutMs
     );
 
     if (!result.success || !result.stdout.trim()) {
@@ -90,8 +89,8 @@ export class InventoryCollector {
   private static async collectAlpinePackages(target: SSHTarget): Promise<InstalledPackage[]> {
     const result = await SSHCollector.run(
       target,
-      "apk list --installed 2>/dev/null | head -2000",
-      20_000
+      `apk list --installed 2>/dev/null | head -${CONSTANTS.inventory.maxPackages}`,
+      CONSTANTS.inventory.sshTimeoutMs
     );
 
     if (!result.success || !result.stdout.trim()) return [];

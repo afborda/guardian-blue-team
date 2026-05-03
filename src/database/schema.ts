@@ -7,4 +7,6 @@ export {
   vulnerabilities,
   blockedIps,
   cveAlerts,
+  serverMetrics,
+  serverScores,
 } from './guardian-schema.js';

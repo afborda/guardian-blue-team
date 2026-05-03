@@ -1,6 +1,6 @@
 import { config } from '../config/environment.js';
 import { addTrustedIp, addTrustedFingerprint } from '../pipeline/detector.js';
-import { db } from '../database/connection.js';
+import { db, dbNow } from '../database/connection.js';
 import { socIncidents } from '../database/schema.js';
 import { eq } from 'drizzle-orm';
 import { logger } from '../utils/logger.js';
@@ -108,7 +108,7 @@ export async function handleLoginVerification(
       addTrustedFingerprint(hashPart);
     }
     await db.update(socIncidents)
-      .set({ status: 'resolved', resolvedAt: new Date() })
+      .set({ status: 'resolved', resolvedAt: dbNow() })
       .where(eq(socIncidents.id, pending.incidentId));
 
     const msg = [`✅ Confirmado por ${operator}.`, `IP <code>${pending.sourceIp}</code> adicionado à whitelist.`];

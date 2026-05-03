@@ -1,6 +1,6 @@
 import { HostSecurityService } from '../services/host-security.service.js';
 import { ServerService } from '../services/server.service.js';
-import { db } from '../database/connection.js';
+import { db, dbDate } from '../database/connection.js';
 import { securityEvents, socIncidents } from '../database/schema.js';
 import { gte, ne, desc, count, eq, and } from 'drizzle-orm';
 import { NotifierManager } from '../plugins/notifier-manager.js';
@@ -39,6 +39,7 @@ export class DailyReportWorker {
 
     const servers = await ServerService.getEnabled();
     const since24h = new Date(Date.now() - 24 * 3600 * 1000);
+    const since24hDb = dbDate(since24h);
 
     const lines: string[] = [
       `📊 <b>RELATÓRIO DIÁRIO</b>`,
@@ -47,9 +48,9 @@ export class DailyReportWorker {
     ];
 
     const [totalEvents] = await db.select({ cnt: count() })
-      .from(securityEvents).where(gte(securityEvents.timestamp, since24h));
+      .from(securityEvents).where(gte(securityEvents.timestamp, since24hDb));
     const [totalIncidents] = await db.select({ cnt: count() })
-      .from(socIncidents).where(gte(socIncidents.firstSeenAt, since24h));
+      .from(socIncidents).where(gte(socIncidents.firstSeenAt, since24hDb));
     const [openIncidents] = await db.select({ cnt: count() })
       .from(socIncidents).where(eq(socIncidents.status, 'open'));
 
@@ -66,7 +67,7 @@ export class DailyReportWorker {
     })
       .from(securityEvents)
       .where(and(
-        gte(securityEvents.timestamp, since24h),
+        gte(securityEvents.timestamp, since24hDb),
         ne(securityEvents.severity, 'info'),
       ))
       .groupBy(securityEvents.sourceIp)

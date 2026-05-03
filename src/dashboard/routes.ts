@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db } from '../database/connection.js';
+import { db, dbFalse, dbNow } from '../database/connection.js';
 import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts } from '../database/schema.js';
 import { eq, count, desc } from 'drizzle-orm';
 import { layout } from './views/layout.js';
@@ -181,7 +181,7 @@ dashboardApi.get('/cve-alerts', async (_req, res) => {
 dashboardApi.post('/cve/:id/update', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    await db.update(cveAlerts).set({ status: 'updating', resolvedAt: new Date() }).where(eq(cveAlerts.id, id));
+    await db.update(cveAlerts).set({ status: 'updating', resolvedAt: dbNow() }).where(eq(cveAlerts.id, id));
     res.send(`<tr><td colspan="5">CVE #${id} — update triggered</td></tr>`);
   } catch (err) {
     logger.error({ err }, 'Dashboard CVE update error');
@@ -192,7 +192,7 @@ dashboardApi.post('/cve/:id/update', async (req, res) => {
 dashboardApi.post('/cve/:id/ignore', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    await db.update(cveAlerts).set({ status: 'ignored', resolvedAt: new Date(), resolvedBy: 'dashboard' }).where(eq(cveAlerts.id, id));
+    await db.update(cveAlerts).set({ status: 'ignored', resolvedAt: dbNow(), resolvedBy: 'dashboard' }).where(eq(cveAlerts.id, id));
     res.send(`<tr><td colspan="5">CVE #${id} — ignored</td></tr>`);
   } catch (err) {
     logger.error({ err }, 'Dashboard CVE ignore error');
@@ -202,10 +202,11 @@ dashboardApi.post('/cve/:id/ignore', async (req, res) => {
 
 dashboardApi.get('/blocks', async (_req, res) => {
   try {
-    const blocks = await db.select().from(blockedIps)
-      .where(eq(blockedIps.active, true))
+    const allBlocks = await db.select().from(blockedIps)
       .orderBy(desc(blockedIps.blockedAt))
       .limit(50);
+
+    const blocks = allBlocks.filter(b => b.active);
 
     if (blocks.length === 0) {
       res.send('<p>No active IP blocks.</p>');
@@ -227,7 +228,7 @@ dashboardApi.get('/blocks', async (_req, res) => {
 dashboardApi.post('/blocks/:id/unblock', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    await db.update(blockedIps).set({ active: false, unblockedAt: new Date() }).where(eq(blockedIps.id, id));
+    await db.update(blockedIps).set({ active: dbFalse, unblockedAt: dbNow() }).where(eq(blockedIps.id, id));
     res.send(`<tr><td colspan="5">Block #${id} — removed</td></tr>`);
   } catch (err) {
     logger.error({ err }, 'Dashboard unblock error');

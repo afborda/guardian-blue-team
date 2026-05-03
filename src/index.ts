@@ -9,6 +9,7 @@ import { BlockCleanupWorker } from './workers/block-cleanup.worker.js';
 import { CVEMonitorWorker } from './workers/cve-monitor.worker.js';
 import { ScoreCalculatorWorker } from './workers/score-calculator.worker.js';
 import { MetricsRetentionWorker } from './workers/metrics-retention.worker.js';
+import { IntelligenceWorker } from './workers/intelligence.worker.js';
 import { ThreatIntelManager } from './threat-intel/manager.js';
 import { PlaybookRegistry } from './playbooks/registry.js';
 import { handleTelegramCommand } from './telegram/commands.js';
@@ -135,6 +136,7 @@ async function start(): Promise<void> {
   EventCollectorWorker.start();
   ScoreCalculatorWorker.start();
   MetricsRetentionWorker.start();
+  IntelligenceWorker.start();
   DailyReportWorker.start();
   VulnScannerWorker.start();
   BlockCleanupWorker.start();
@@ -161,6 +163,7 @@ async function shutdown(signal: string): Promise<void> {
     EventCollectorWorker.stop(),
     ScoreCalculatorWorker.stop(),
     MetricsRetentionWorker.stop(),
+    IntelligenceWorker.stop(),
     VulnScannerWorker.stop(),
     BlockCleanupWorker.stop(),
     CVEMonitorWorker.stop(),

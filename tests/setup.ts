@@ -5,7 +5,7 @@ vi.mock('../src/config/environment.js', () => ({
     server: { port: 3334, nodeEnv: 'test' },
     database: { url: 'postgres://test:test@localhost:5432/test' },
     telegram: { botToken: 'test-token', chatId: '12345', webhookSecret: undefined },
-    ai: { geminiApiKey: null, geminiModel: 'test', ollamaUrl: 'http://localhost:11434', ollamaModel: 'test', ollamaChatModel: 'test' },
+    ai: { provider: 'auto', geminiApiKey: null, geminiModel: 'test', openaiApiKey: null, openaiModel: 'test', anthropicApiKey: null, anthropicModel: 'test', ollamaUrl: 'http://localhost:11434', ollamaModel: 'test', ollamaChatModel: 'test' },
     resend: { apiKey: null, fromEmail: 'test@test.com' },
     abuse: { confidenceThreshold: 70 },
     health: { uptimeKumaPushUrl: null },

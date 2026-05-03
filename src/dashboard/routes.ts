@@ -1,24 +1,23 @@
 import { Router } from 'express';
 import { db } from '../database/connection.js';
 import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts } from '../database/schema.js';
-import { eq, count, gte, desc } from 'drizzle-orm';
+import { eq, count, desc } from 'drizzle-orm';
 import { layout } from './views/layout.js';
 import { overviewPage } from './views/overview.js';
 import { logger } from '../utils/logger.js';
 
-export const dashboardRouter = Router();
+export const dashboardPages = Router();
+export const dashboardApi = Router();
 
 // ─── HTML Pages ──────────────────────────────────────────────────────────────
 
-dashboardRouter.get('/', async (_req, res) => {
+dashboardPages.get('/', async (_req, res) => {
   try {
-    const since24h = new Date(Date.now() - 24 * 3600 * 1000);
-
-    const [serversCount] = await db.select({ cnt: count() }).from(socServers).where(eq(socServers.enabled, true));
+    const [serversCount] = await db.select({ cnt: count() }).from(socServers);
     const [openCount] = await db.select({ cnt: count() }).from(socIncidents).where(eq(socIncidents.status, 'open'));
-    const [blockedCount] = await db.select({ cnt: count() }).from(blockedIps).where(eq(blockedIps.active, true));
+    const [blockedCount] = await db.select({ cnt: count() }).from(blockedIps);
     const [cveCount] = await db.select({ cnt: count() }).from(cveAlerts).where(eq(cveAlerts.status, 'notified'));
-    const [eventsCount] = await db.select({ cnt: count() }).from(securityEvents).where(gte(securityEvents.timestamp, since24h));
+    const [eventsCount] = await db.select({ cnt: count() }).from(securityEvents);
 
     const content = overviewPage({
       servers: serversCount.cnt,
@@ -35,66 +34,70 @@ dashboardRouter.get('/', async (_req, res) => {
   }
 });
 
-dashboardRouter.get('/incidents', (_req, res) => {
+dashboardPages.get('/incidents', (_req, res) => {
+  const token = process.env.DASHBOARD_TOKEN || '';
   const content = `
     <h2>Incidents</h2>
-    <div hx-get="/api/dashboard/incidents?token=${process.env.DASHBOARD_TOKEN || ''}" hx-trigger="load" hx-swap="innerHTML">
+    <div hx-get="/api/dashboard/incidents?token=${token}" hx-trigger="load" hx-swap="innerHTML">
       <p aria-busy="true">Loading...</p>
     </div>
   `;
   res.send(layout('Incidents', content));
 });
 
-dashboardRouter.get('/servers', (_req, res) => {
+dashboardPages.get('/servers', (_req, res) => {
+  const token = process.env.DASHBOARD_TOKEN || '';
   const content = `
     <h2>Servers</h2>
-    <div hx-get="/api/dashboard/servers?token=${process.env.DASHBOARD_TOKEN || ''}" hx-trigger="load" hx-swap="innerHTML">
+    <div hx-get="/api/dashboard/servers?token=${token}" hx-trigger="load" hx-swap="innerHTML">
       <p aria-busy="true">Loading...</p>
     </div>
   `;
   res.send(layout('Servers', content));
 });
 
-dashboardRouter.get('/cve', (_req, res) => {
+dashboardPages.get('/cve', (_req, res) => {
+  const token = process.env.DASHBOARD_TOKEN || '';
   const content = `
     <h2>CVE Alerts</h2>
-    <div id="cve-list" hx-get="/api/dashboard/cve-alerts?token=${process.env.DASHBOARD_TOKEN || ''}" hx-trigger="load" hx-swap="innerHTML">
+    <div id="cve-list" hx-get="/api/dashboard/cve-alerts?token=${token}" hx-trigger="load" hx-swap="innerHTML">
       <p aria-busy="true">Loading...</p>
     </div>
   `;
   res.send(layout('CVE Alerts', content));
 });
 
-dashboardRouter.get('/blocks', (_req, res) => {
+dashboardPages.get('/blocks', (_req, res) => {
+  const token = process.env.DASHBOARD_TOKEN || '';
   const content = `
     <h2>Active IP Blocks</h2>
-    <div id="blocks-list" hx-get="/api/dashboard/blocks?token=${process.env.DASHBOARD_TOKEN || ''}" hx-trigger="load" hx-swap="innerHTML">
+    <div id="blocks-list" hx-get="/api/dashboard/blocks?token=${token}" hx-trigger="load" hx-swap="innerHTML">
       <p aria-busy="true">Loading...</p>
     </div>
   `;
   res.send(layout('Blocks', content));
 });
 
-dashboardRouter.get('/logs', (_req, res) => {
+dashboardPages.get('/logs', (_req, res) => {
+  const token = process.env.DASHBOARD_TOKEN || '';
   const content = `
     <h2>Security Events</h2>
-    <div hx-get="/api/dashboard/events?token=${process.env.DASHBOARD_TOKEN || ''}" hx-trigger="load" hx-swap="innerHTML">
+    <div hx-get="/api/dashboard/events?token=${token}" hx-trigger="load" hx-swap="innerHTML">
       <p aria-busy="true">Loading...</p>
     </div>
   `;
   res.send(layout('Logs', content));
 });
 
-// ─── API Routes (JSON/HTML fragments) ───────────────────────────────────────
+// ─── API Routes (JSON/HTML fragments for HTMX) ─────────────────────────────
 
-dashboardRouter.get('/api/stats', async (_req, res) => {
+dashboardApi.get('/stats', async (_req, res) => {
   try {
-    const since24h = new Date(Date.now() - 24 * 3600 * 1000);
-    const [servers] = await db.select({ cnt: count() }).from(socServers).where(eq(socServers.enabled, true));
+    const [servers] = await db.select({ cnt: count() }).from(socServers);
     const [incidents] = await db.select({ cnt: count() }).from(socIncidents).where(eq(socIncidents.status, 'open'));
-    const [blocks] = await db.select({ cnt: count() }).from(blockedIps).where(eq(blockedIps.active, true));
+    const [blocks] = await db.select({ cnt: count() }).from(blockedIps);
     const [cves] = await db.select({ cnt: count() }).from(cveAlerts).where(eq(cveAlerts.status, 'notified'));
-    const [events] = await db.select({ cnt: count() }).from(securityEvents).where(gte(securityEvents.timestamp, since24h));
+    const [events] = await db.select({ cnt: count() }).from(securityEvents);
 
     res.json({ servers: servers.cnt, openIncidents: incidents.cnt, blockedIps: blocks.cnt, pendingCves: cves.cnt, eventsToday: events.cnt });
   } catch (err) {
@@ -103,7 +106,7 @@ dashboardRouter.get('/api/stats', async (_req, res) => {
   }
 });
 
-dashboardRouter.get('/api/incidents', async (req, res) => {
+dashboardApi.get('/incidents', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
     const status = req.query.status as string || 'open';
@@ -127,7 +130,7 @@ dashboardRouter.get('/api/incidents', async (req, res) => {
   }
 });
 
-dashboardRouter.get('/api/servers', async (_req, res) => {
+dashboardApi.get('/servers', async (_req, res) => {
   try {
     const servers = await db.select().from(socServers).orderBy(socServers.name);
 
@@ -144,7 +147,7 @@ dashboardRouter.get('/api/servers', async (_req, res) => {
   }
 });
 
-dashboardRouter.get('/api/cve-alerts', async (_req, res) => {
+dashboardApi.get('/cve-alerts', async (_req, res) => {
   try {
     const alerts = await db.select().from(cveAlerts)
       .where(eq(cveAlerts.status, 'notified'))
@@ -175,7 +178,7 @@ dashboardRouter.get('/api/cve-alerts', async (_req, res) => {
   }
 });
 
-dashboardRouter.post('/api/cve/:id/update', async (req, res) => {
+dashboardApi.post('/cve/:id/update', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     await db.update(cveAlerts).set({ status: 'updating', resolvedAt: new Date() }).where(eq(cveAlerts.id, id));
@@ -186,7 +189,7 @@ dashboardRouter.post('/api/cve/:id/update', async (req, res) => {
   }
 });
 
-dashboardRouter.post('/api/cve/:id/ignore', async (req, res) => {
+dashboardApi.post('/cve/:id/ignore', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     await db.update(cveAlerts).set({ status: 'ignored', resolvedAt: new Date(), resolvedBy: 'dashboard' }).where(eq(cveAlerts.id, id));
@@ -197,7 +200,7 @@ dashboardRouter.post('/api/cve/:id/ignore', async (req, res) => {
   }
 });
 
-dashboardRouter.get('/api/blocks', async (_req, res) => {
+dashboardApi.get('/blocks', async (_req, res) => {
   try {
     const blocks = await db.select().from(blockedIps)
       .where(eq(blockedIps.active, true))
@@ -221,7 +224,7 @@ dashboardRouter.get('/api/blocks', async (_req, res) => {
   }
 });
 
-dashboardRouter.post('/api/blocks/:id/unblock', async (req, res) => {
+dashboardApi.post('/blocks/:id/unblock', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     await db.update(blockedIps).set({ active: false, unblockedAt: new Date() }).where(eq(blockedIps.id, id));
@@ -232,7 +235,7 @@ dashboardRouter.post('/api/blocks/:id/unblock', async (req, res) => {
   }
 });
 
-dashboardRouter.get('/api/events', async (req, res) => {
+dashboardApi.get('/events', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 100, 200);
 

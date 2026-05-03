@@ -1,4 +1,4 @@
-import { db } from '../database/connection.js';
+import { db, dbTrue, dbFalse, dbNow } from '../database/connection.js';
 import { blockedIps } from '../database/schema.js';
 import { and, eq, lte } from 'drizzle-orm';
 import { SSHCollector } from '../collectors/ssh-collector.js';
@@ -22,8 +22,8 @@ export class BlockCleanupWorker {
   static async cleanup(): Promise<void> {
     const expired = await db.select().from(blockedIps)
       .where(and(
-        eq(blockedIps.active, true),
-        lte(blockedIps.expiresAt, new Date()),
+        eq(blockedIps.active, dbTrue),
+        lte(blockedIps.expiresAt, dbNow()),
       ));
 
     if (expired.length === 0) return;
@@ -35,7 +35,7 @@ export class BlockCleanupWorker {
       const server = servers.find(s => s.id === block.serverId);
       if (!server) {
         await db.update(blockedIps)
-          .set({ active: false, unblockedAt: new Date() })
+          .set({ active: dbFalse, unblockedAt: dbNow() })
           .where(eq(blockedIps.id, block.id));
         continue;
       }
@@ -45,7 +45,7 @@ export class BlockCleanupWorker {
 
       if (result.success) {
         await db.update(blockedIps)
-          .set({ active: false, unblockedAt: new Date() })
+          .set({ active: dbFalse, unblockedAt: dbNow() })
           .where(eq(blockedIps.id, block.id));
         unblocked++;
         logger.info({ ip: block.ip, server: server.name, blockedAt: block.blockedAt }, 'IP auto-unblocked (TTL expired)');

@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { db } from '../database/connection.js';
+import { db, dbTrue, dbNow } from '../database/connection.js';
 import { socServers } from '../database/schema.js';
 import { SSHCollector, type SSHTarget } from '../collectors/ssh-collector.js';
 import { logger } from '../utils/logger.js';
@@ -33,7 +33,7 @@ export class ServerService {
   }
 
   static async getEnabled(): Promise<ServerInfo[]> {
-    const rows = await db.select().from(socServers).where(eq(socServers.enabled, true));
+    const rows = await db.select().from(socServers).where(eq(socServers.enabled, dbTrue));
     return rows.map(r => ({
       id: r.id,
       name: r.name,
@@ -124,7 +124,7 @@ export class ServerService {
   }
 
   static async updateLastSeen(id: number): Promise<void> {
-    await db.update(socServers).set({ lastSeenAt: new Date() }).where(eq(socServers.id, id));
+    await db.update(socServers).set({ lastSeenAt: dbNow() }).where(eq(socServers.id, id));
   }
 
   static toSSHTarget(server: ServerInfo): SSHTarget {

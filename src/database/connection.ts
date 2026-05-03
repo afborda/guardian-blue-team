@@ -341,6 +341,19 @@ export const db = new Proxy({} as NodePgDatabase, {
   },
 });
 
+// SQLite stores booleans as INTEGER (1/0), PostgreSQL as BOOLEAN (true/false)
+export const dbTrue: any = config.database.isSqlite ? 1 : true;
+export const dbFalse: any = config.database.isSqlite ? 0 : false;
+
+// SQLite stores timestamps as TEXT (ISO), PostgreSQL as TIMESTAMP (Date)
+export function dbNow(): any {
+  return config.database.isSqlite ? new Date().toISOString() : new Date();
+}
+
+export function dbDate(d: Date): any {
+  return config.database.isSqlite ? d.toISOString() : d;
+}
+
 export async function testConnection(): Promise<boolean> {
   try {
     if (config.database.isSqlite) {

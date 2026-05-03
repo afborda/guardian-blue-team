@@ -1,0 +1,258 @@
+import { Router } from 'express';
+import { db } from '../database/connection.js';
+import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts } from '../database/schema.js';
+import { eq, count, gte, desc } from 'drizzle-orm';
+import { layout } from './views/layout.js';
+import { overviewPage } from './views/overview.js';
+import { logger } from '../utils/logger.js';
+
+export const dashboardRouter = Router();
+
+// ─── HTML Pages ──────────────────────────────────────────────────────────────
+
+dashboardRouter.get('/', async (_req, res) => {
+  try {
+    const since24h = new Date(Date.now() - 24 * 3600 * 1000);
+
+    const [serversCount] = await db.select({ cnt: count() }).from(socServers).where(eq(socServers.enabled, true));
+    const [openCount] = await db.select({ cnt: count() }).from(socIncidents).where(eq(socIncidents.status, 'open'));
+    const [blockedCount] = await db.select({ cnt: count() }).from(blockedIps).where(eq(blockedIps.active, true));
+    const [cveCount] = await db.select({ cnt: count() }).from(cveAlerts).where(eq(cveAlerts.status, 'notified'));
+    const [eventsCount] = await db.select({ cnt: count() }).from(securityEvents).where(gte(securityEvents.timestamp, since24h));
+
+    const content = overviewPage({
+      servers: serversCount.cnt,
+      openIncidents: openCount.cnt,
+      blockedIps: blockedCount.cnt,
+      pendingCves: cveCount.cnt,
+      eventsToday: eventsCount.cnt,
+    });
+
+    res.send(layout('Overview', content));
+  } catch (err) {
+    logger.error({ err }, 'Dashboard overview error');
+    res.status(500).send(layout('Error', '<p>Failed to load dashboard</p>'));
+  }
+});
+
+dashboardRouter.get('/incidents', (_req, res) => {
+  const content = `
+    <h2>Incidents</h2>
+    <div hx-get="/api/dashboard/incidents?token=${process.env.DASHBOARD_TOKEN || ''}" hx-trigger="load" hx-swap="innerHTML">
+      <p aria-busy="true">Loading...</p>
+    </div>
+  `;
+  res.send(layout('Incidents', content));
+});
+
+dashboardRouter.get('/servers', (_req, res) => {
+  const content = `
+    <h2>Servers</h2>
+    <div hx-get="/api/dashboard/servers?token=${process.env.DASHBOARD_TOKEN || ''}" hx-trigger="load" hx-swap="innerHTML">
+      <p aria-busy="true">Loading...</p>
+    </div>
+  `;
+  res.send(layout('Servers', content));
+});
+
+dashboardRouter.get('/cve', (_req, res) => {
+  const content = `
+    <h2>CVE Alerts</h2>
+    <div id="cve-list" hx-get="/api/dashboard/cve-alerts?token=${process.env.DASHBOARD_TOKEN || ''}" hx-trigger="load" hx-swap="innerHTML">
+      <p aria-busy="true">Loading...</p>
+    </div>
+  `;
+  res.send(layout('CVE Alerts', content));
+});
+
+dashboardRouter.get('/blocks', (_req, res) => {
+  const content = `
+    <h2>Active IP Blocks</h2>
+    <div id="blocks-list" hx-get="/api/dashboard/blocks?token=${process.env.DASHBOARD_TOKEN || ''}" hx-trigger="load" hx-swap="innerHTML">
+      <p aria-busy="true">Loading...</p>
+    </div>
+  `;
+  res.send(layout('Blocks', content));
+});
+
+dashboardRouter.get('/logs', (_req, res) => {
+  const content = `
+    <h2>Security Events</h2>
+    <div hx-get="/api/dashboard/events?token=${process.env.DASHBOARD_TOKEN || ''}" hx-trigger="load" hx-swap="innerHTML">
+      <p aria-busy="true">Loading...</p>
+    </div>
+  `;
+  res.send(layout('Logs', content));
+});
+
+// ─── API Routes (JSON/HTML fragments) ───────────────────────────────────────
+
+dashboardRouter.get('/api/stats', async (_req, res) => {
+  try {
+    const since24h = new Date(Date.now() - 24 * 3600 * 1000);
+    const [servers] = await db.select({ cnt: count() }).from(socServers).where(eq(socServers.enabled, true));
+    const [incidents] = await db.select({ cnt: count() }).from(socIncidents).where(eq(socIncidents.status, 'open'));
+    const [blocks] = await db.select({ cnt: count() }).from(blockedIps).where(eq(blockedIps.active, true));
+    const [cves] = await db.select({ cnt: count() }).from(cveAlerts).where(eq(cveAlerts.status, 'notified'));
+    const [events] = await db.select({ cnt: count() }).from(securityEvents).where(gte(securityEvents.timestamp, since24h));
+
+    res.json({ servers: servers.cnt, openIncidents: incidents.cnt, blockedIps: blocks.cnt, pendingCves: cves.cnt, eventsToday: events.cnt });
+  } catch (err) {
+    logger.error({ err }, 'Dashboard stats API error');
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+dashboardRouter.get('/api/incidents', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+    const status = req.query.status as string || 'open';
+
+    const incidents = await db.select()
+      .from(socIncidents)
+      .where(eq(socIncidents.status, status))
+      .orderBy(desc(socIncidents.lastSeenAt))
+      .limit(limit);
+
+    const html = incidents.length === 0
+      ? '<p>No incidents found.</p>'
+      : `<table role="grid"><thead><tr><th>ID</th><th>Title</th><th>Severity</th><th>Events</th><th>Last Seen</th></tr></thead><tbody>${
+        incidents.map(i => `<tr><td>#${i.id}</td><td>${i.title}</td><td><span class="severity-${i.severity}">${i.severity}</span></td><td>${i.eventCount}</td><td>${i.lastSeenAt.toLocaleString()}</td></tr>`).join('')
+      }</tbody></table>`;
+
+    res.send(html);
+  } catch (err) {
+    logger.error({ err }, 'Dashboard incidents API error');
+    res.status(500).send('<p>Error loading incidents</p>');
+  }
+});
+
+dashboardRouter.get('/api/servers', async (_req, res) => {
+  try {
+    const servers = await db.select().from(socServers).orderBy(socServers.name);
+
+    const html = servers.length === 0
+      ? '<p>No servers registered.</p>'
+      : `<table role="grid"><thead><tr><th>Name</th><th>Host</th><th>Enabled</th><th>Last Seen</th></tr></thead><tbody>${
+        servers.map(s => `<tr><td><strong>${s.name}</strong></td><td>${s.host}:${s.sshPort}</td><td>${s.enabled ? '✅' : '❌'}</td><td>${s.lastSeenAt?.toLocaleString() ?? 'never'}</td></tr>`).join('')
+      }</tbody></table>`;
+
+    res.send(html);
+  } catch (err) {
+    logger.error({ err }, 'Dashboard servers API error');
+    res.status(500).send('<p>Error loading servers</p>');
+  }
+});
+
+dashboardRouter.get('/api/cve-alerts', async (_req, res) => {
+  try {
+    const alerts = await db.select().from(cveAlerts)
+      .where(eq(cveAlerts.status, 'notified'))
+      .orderBy(desc(cveAlerts.createdAt))
+      .limit(50);
+
+    if (alerts.length === 0) {
+      res.send('<p>No pending CVE alerts.</p>');
+      return;
+    }
+
+    const token = process.env.DASHBOARD_TOKEN || '';
+    const html = `<table role="grid"><thead><tr><th>CVE</th><th>Package</th><th>CVSS</th><th>Fix</th><th>Actions</th></tr></thead><tbody>${
+      alerts.map(a => {
+        const cvss = a.cvssScore ? (a.cvssScore / 10).toFixed(1) : '?';
+        const actions = [
+          a.fixedVersion ? `<button hx-post="/api/dashboard/cve/${a.id}/update?token=${token}" hx-swap="outerHTML" hx-target="closest tr">Update</button>` : '',
+          `<button class="secondary" hx-post="/api/dashboard/cve/${a.id}/ignore?token=${token}" hx-swap="outerHTML" hx-target="closest tr">Ignore</button>`,
+        ].filter(Boolean).join(' ');
+        return `<tr><td><code>${a.cveId}</code></td><td>${a.packageName} ${a.installedVersion}</td><td><span class="severity-${Number(cvss) >= 9 ? 'critical' : 'high'}">${cvss}</span></td><td>${a.fixedVersion ?? '-'}</td><td>${actions}</td></tr>`;
+      }).join('')
+    }</tbody></table>`;
+
+    res.send(html);
+  } catch (err) {
+    logger.error({ err }, 'Dashboard CVE API error');
+    res.status(500).send('<p>Error loading CVE alerts</p>');
+  }
+});
+
+dashboardRouter.post('/api/cve/:id/update', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    await db.update(cveAlerts).set({ status: 'updating', resolvedAt: new Date() }).where(eq(cveAlerts.id, id));
+    res.send(`<tr><td colspan="5">CVE #${id} — update triggered</td></tr>`);
+  } catch (err) {
+    logger.error({ err }, 'Dashboard CVE update error');
+    res.status(500).send('<tr><td colspan="5">Error</td></tr>');
+  }
+});
+
+dashboardRouter.post('/api/cve/:id/ignore', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    await db.update(cveAlerts).set({ status: 'ignored', resolvedAt: new Date(), resolvedBy: 'dashboard' }).where(eq(cveAlerts.id, id));
+    res.send(`<tr><td colspan="5">CVE #${id} — ignored</td></tr>`);
+  } catch (err) {
+    logger.error({ err }, 'Dashboard CVE ignore error');
+    res.status(500).send('<tr><td colspan="5">Error</td></tr>');
+  }
+});
+
+dashboardRouter.get('/api/blocks', async (_req, res) => {
+  try {
+    const blocks = await db.select().from(blockedIps)
+      .where(eq(blockedIps.active, true))
+      .orderBy(desc(blockedIps.blockedAt))
+      .limit(50);
+
+    if (blocks.length === 0) {
+      res.send('<p>No active IP blocks.</p>');
+      return;
+    }
+
+    const token = process.env.DASHBOARD_TOKEN || '';
+    const html = `<table role="grid"><thead><tr><th>IP</th><th>Server</th><th>Blocked At</th><th>Expires</th><th>Actions</th></tr></thead><tbody>${
+      blocks.map(b => `<tr><td><code>${b.ip}</code></td><td>Server #${b.serverId}</td><td>${b.blockedAt.toLocaleString()}</td><td>${b.expiresAt?.toLocaleString() ?? 'permanent'}</td><td><button class="secondary" hx-post="/api/dashboard/blocks/${b.id}/unblock?token=${token}" hx-swap="outerHTML" hx-target="closest tr">Unblock</button></td></tr>`).join('')
+    }</tbody></table>`;
+
+    res.send(html);
+  } catch (err) {
+    logger.error({ err }, 'Dashboard blocks API error');
+    res.status(500).send('<p>Error loading blocks</p>');
+  }
+});
+
+dashboardRouter.post('/api/blocks/:id/unblock', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    await db.update(blockedIps).set({ active: false, unblockedAt: new Date() }).where(eq(blockedIps.id, id));
+    res.send(`<tr><td colspan="5">Block #${id} — removed</td></tr>`);
+  } catch (err) {
+    logger.error({ err }, 'Dashboard unblock error');
+    res.status(500).send('<tr><td colspan="5">Error</td></tr>');
+  }
+});
+
+dashboardRouter.get('/api/events', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 100, 200);
+
+    const events = await db.select()
+      .from(securityEvents)
+      .orderBy(desc(securityEvents.timestamp))
+      .limit(limit);
+
+    if (events.length === 0) {
+      res.send('<p>No events found.</p>');
+      return;
+    }
+
+    const html = `<table role="grid"><thead><tr><th>Time</th><th>Type</th><th>Severity</th><th>Source IP</th><th>Server</th></tr></thead><tbody>${
+      events.map(e => `<tr><td>${e.timestamp.toLocaleString()}</td><td>${e.eventType}</td><td><span class="severity-${e.severity}">${e.severity}</span></td><td><code>${e.sourceIp ?? '-'}</code></td><td>#${e.serverId}</td></tr>`).join('')
+    }</tbody></table>`;
+
+    res.send(html);
+  } catch (err) {
+    logger.error({ err }, 'Dashboard events API error');
+    res.status(500).send('<p>Error loading events</p>');
+  }
+});

@@ -1,9 +1,7 @@
 import express from 'express';
 import { config } from './config/environment.js';
 import { logger } from './utils/logger.js';
-import { testConnection, closeConnection } from './database/connection.js';
-import { AbuseDetectionWorker } from './workers/abuse-detection.worker.js';
-import { ProfileBuilderWorker } from './workers/profile-builder.worker.js';
+import { testConnection, closeConnection, initDatabase } from './database/connection.js';
 import { DailyReportWorker } from './workers/daily-report.worker.js';
 import { EventCollectorWorker } from './workers/event-collector.worker.js';
 import { VulnScannerWorker } from './workers/vuln-scanner.worker.js';
@@ -13,10 +11,18 @@ import { ThreatIntelManager } from './threat-intel/manager.js';
 import { PlaybookRegistry } from './playbooks/registry.js';
 import { handleTelegramCommand } from './telegram/commands.js';
 import { handleTelegramCallback } from './telegram/callbacks.js';
+import { registerBuiltinPlugins, PluginManager } from './plugins/index.js';
+import { dashboardRouter } from './dashboard/routes.js';
+import { dashboardAuth } from './dashboard/auth.js';
 import { CONSTANTS } from './config/constants.js';
 
 const app = express();
 app.use(express.json());
+
+// ─── Dashboard ──────────────────────────────────────────────────────────────
+
+app.use('/dashboard', dashboardAuth, dashboardRouter);
+app.use('/api/dashboard', dashboardAuth, dashboardRouter);
 
 // ─── Health ─────────────────────────────────────────────────────────────────
 
@@ -58,10 +64,8 @@ app.post('/webhook/telegram', async (req, res) => {
       const text = update.message.text;
       const chatId = update.message.chat.id;
 
-      // Only process commands from the authorized chat
       if (String(chatId) !== config.telegram.chatId) return;
 
-      // Rate limiting
       if (isRateLimited(String(chatId))) {
         await sendTelegramMessage(chatId, '⚠️ Rate limit: máximo 10 comandos por minuto.');
         return;
@@ -110,6 +114,8 @@ function startHeartbeat(): void {
 async function start(): Promise<void> {
   logger.info('Guardian starting...');
 
+  await initDatabase();
+
   const dbOk = await testConnection();
   if (!dbOk) {
     logger.error('Database connection failed, exiting');
@@ -117,11 +123,13 @@ async function start(): Promise<void> {
   }
   logger.info('Database connected');
 
+  registerBuiltinPlugins();
+  await PluginManager.loadNotifiers(config.notifiers);
+
   app.listen(config.server.port, () => {
     logger.info(`Guardian listening on :${config.server.port}`);
   });
 
-  // Core workers (always active)
   EventCollectorWorker.start();
   DailyReportWorker.start();
   VulnScannerWorker.start();
@@ -130,18 +138,8 @@ async function start(): Promise<void> {
   PlaybookRegistry.init();
   startHeartbeat();
 
-  // CVE Monitor (optional, enabled by default)
   if (config.cveMonitor.enabled) {
     CVEMonitorWorker.start();
-  }
-
-  // AutomaBotHub integration workers (optional)
-  if (config.automabothub.enabled) {
-    AbuseDetectionWorker.start();
-    ProfileBuilderWorker.start();
-    logger.info('AutomaBotHub integration enabled');
-  } else {
-    logger.info('AutomaBotHub integration disabled (standalone mode)');
   }
 
   logger.info('All workers started');
@@ -155,8 +153,6 @@ async function shutdown(signal: string): Promise<void> {
   if (heartbeatInterval) clearInterval(heartbeatInterval);
 
   await Promise.allSettled([
-    AbuseDetectionWorker.stop(),
-    ProfileBuilderWorker.stop(),
     DailyReportWorker.stop(),
     EventCollectorWorker.stop(),
     VulnScannerWorker.stop(),

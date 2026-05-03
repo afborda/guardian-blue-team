@@ -1,4 +1,3 @@
-import { GuardianDecisionService } from '../services/guardian-decision.service.js';
 import { PlaybookRegistry } from '../playbooks/registry.js';
 import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
 import { handleLoginVerification } from './login-verification.js';
@@ -21,11 +20,6 @@ export async function handleTelegramCallback(callbackQuery: {
   from?: { first_name?: string };
 }): Promise<void> {
   if (!callbackQuery.data) return;
-
-  if (callbackQuery.data.startsWith('guardian_')) {
-    await GuardianDecisionService.handleCallback(callbackQuery);
-    return;
-  }
 
   if (callbackQuery.data.startsWith('pb_approve_')) {
     const approvalId = callbackQuery.data.replace('pb_approve_', '');

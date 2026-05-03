@@ -8,7 +8,16 @@
     "url": "https://github.com/afborda/guardian-blue-team.git"
   },
   "homepage": "https://github.com/afborda/guardian-blue-team",
-  "keywords": ["siem", "soar", "security", "monitoring", "ssh", "threat-detection", "cve", "homelab"],
+  "keywords": [
+    "siem",
+    "soar",
+    "security",
+    "monitoring",
+    "ssh",
+    "threat-detection",
+    "cve",
+    "homelab"
+  ],
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -43,6 +52,7 @@
     "tsup": "^8.3.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
+    "typescript-eslint": "^8.59.1",
     "vitest": "^4.1.5"
   }
 }

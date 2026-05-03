@@ -46,6 +46,11 @@ const envSchema = z.object({
   // Threat Intelligence
   ABUSEIPDB_API_KEY: z.string().optional(),
   VIRUSTOTAL_API_KEY: z.string().optional(),
+
+  // CVE Monitor
+  CVE_MONITOR_ENABLED: z.string().transform(v => v !== 'false').default('true'),
+  CVE_MONITOR_MIN_CVSS: z.string().transform(Number).default('7.0'),
+  CVE_MONITOR_INTERVAL_HOURS: z.string().transform(Number).default('6'),
 });
 
 const env = envSchema.parse(process.env);
@@ -102,6 +107,12 @@ export const config = {
   threatIntel: {
     abuseIpDbKey: env.ABUSEIPDB_API_KEY || null,
     virusTotalKey: env.VIRUSTOTAL_API_KEY || null,
+  },
+
+  cveMonitor: {
+    enabled: env.CVE_MONITOR_ENABLED,
+    minCvss: env.CVE_MONITOR_MIN_CVSS,
+    checkIntervalHours: env.CVE_MONITOR_INTERVAL_HOURS,
   },
 } as const;
 

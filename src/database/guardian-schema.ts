@@ -112,6 +112,26 @@ export const vulnerabilities = pgTable('vulnerabilities', {
   fixedAt: timestamp('fixed_at'),
 });
 
+export const cveAlerts = pgTable('cve_alerts', {
+  id: serial('id').primaryKey(),
+  cveId: varchar('cve_id', { length: 30 }).notNull(),
+  serverId: integer('server_id').notNull(),
+  packageName: varchar('package_name', { length: 200 }).notNull(),
+  installedVersion: varchar('installed_version', { length: 100 }).notNull(),
+  fixedVersion: varchar('fixed_version', { length: 100 }),
+  ecosystem: varchar('ecosystem', { length: 50 }).notNull(),
+  cvssScore: integer('cvss_score'),
+  summary: text('summary'),
+  status: varchar('status', { length: 30 }).default('pending').notNull(),
+  notifiedAt: timestamp('notified_at'),
+  resolvedAt: timestamp('resolved_at'),
+  resolvedBy: varchar('resolved_by', { length: 100 }),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  cveServerIdx: index('cve_alerts_cve_server_idx').on(table.cveId, table.serverId),
+  statusIdx: index('cve_alerts_status_idx').on(table.status),
+}));
+
 export const blockedIps = pgTable('blocked_ips', {
   id: serial('id').primaryKey(),
   ip: varchar('ip', { length: 45 }).notNull(),

@@ -2,6 +2,7 @@ import { GuardianDecisionService } from '../services/guardian-decision.service.j
 import { PlaybookRegistry } from '../playbooks/registry.js';
 import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
 import { handleLoginVerification } from './login-verification.js';
+import { handleCVECallback } from './cve-actions.js';
 import { config } from '../config/environment.js';
 import { logger } from '../utils/logger.js';
 
@@ -44,6 +45,11 @@ export async function handleTelegramCallback(callbackQuery: {
     const action = rest.slice(0, sep);
     const verificationId = rest.slice(sep + 1);
     await handleLoginVerification(action, verificationId, callbackQuery);
+    return;
+  }
+
+  if (callbackQuery.data.startsWith('cve_')) {
+    await handleCVECallback(callbackQuery);
     return;
   }
 

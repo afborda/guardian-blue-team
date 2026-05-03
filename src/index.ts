@@ -7,6 +7,7 @@ import { ProfileBuilderWorker } from './workers/profile-builder.worker.js';
 import { DailyReportWorker } from './workers/daily-report.worker.js';
 import { EventCollectorWorker } from './workers/event-collector.worker.js';
 import { VulnScannerWorker } from './workers/vuln-scanner.worker.js';
+import { BlockCleanupWorker } from './workers/block-cleanup.worker.js';
 import { ThreatIntelManager } from './threat-intel/manager.js';
 import { PlaybookRegistry } from './playbooks/registry.js';
 import { handleTelegramCommand } from './telegram/commands.js';
@@ -23,6 +24,19 @@ app.get('/health', (_req, res) => {
 
 // ─── Telegram Webhook ───────────────────────────────────────────────────────
 
+const rateLimitMap = new Map<string, number[]>();
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX = 10;
+
+function isRateLimited(chatId: string): boolean {
+  const now = Date.now();
+  const timestamps = rateLimitMap.get(chatId) ?? [];
+  const recent = timestamps.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+  recent.push(now);
+  rateLimitMap.set(chatId, recent);
+  return recent.length > RATE_LIMIT_MAX;
+}
+
 app.post('/webhook/telegram', async (req, res) => {
   if (config.telegram.webhookSecret) {
     const token = req.headers['x-telegram-bot-api-secret-token'];
@@ -37,10 +51,21 @@ app.post('/webhook/telegram', async (req, res) => {
 
   try {
     if (update.callback_query) {
+      const callbackChatId = String(update.callback_query.message?.chat?.id);
+      if (callbackChatId !== config.telegram.chatId) return;
       await handleTelegramCallback(update.callback_query);
     } else if (update.message?.text) {
       const text = update.message.text;
       const chatId = update.message.chat.id;
+
+      // Only process commands from the authorized chat
+      if (String(chatId) !== config.telegram.chatId) return;
+
+      // Rate limiting
+      if (isRateLimited(String(chatId))) {
+        await sendTelegramMessage(chatId, '⚠️ Rate limit: máximo 10 comandos por minuto.');
+        return;
+      }
 
       if (text.startsWith('/')) {
         const response = await handleTelegramCommand(text);
@@ -96,14 +121,23 @@ async function start(): Promise<void> {
     logger.info(`Guardian listening on :${config.server.port}`);
   });
 
-  AbuseDetectionWorker.start();
-  ProfileBuilderWorker.start();
-  DailyReportWorker.start();
+  // Core workers (always active)
   EventCollectorWorker.start();
+  DailyReportWorker.start();
   VulnScannerWorker.start();
+  BlockCleanupWorker.start();
   ThreatIntelManager.start();
   PlaybookRegistry.init();
   startHeartbeat();
+
+  // AutomaBotHub integration workers (optional)
+  if (config.automabothub.enabled) {
+    AbuseDetectionWorker.start();
+    ProfileBuilderWorker.start();
+    logger.info('AutomaBotHub integration enabled');
+  } else {
+    logger.info('AutomaBotHub integration disabled (standalone mode)');
+  }
 
   logger.info('All workers started');
 }
@@ -121,6 +155,7 @@ async function shutdown(signal: string): Promise<void> {
     DailyReportWorker.stop(),
     EventCollectorWorker.stop(),
     VulnScannerWorker.stop(),
+    BlockCleanupWorker.stop(),
   ]);
   ThreatIntelManager.stop();
 

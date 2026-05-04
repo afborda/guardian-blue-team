@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ─── Guardian Blue Team — Interactive Installer ─────────────────────────────────
 # Supports: Ubuntu/Debian, Alpine, macOS
-# Usage: curl -fsSL https://raw.githubusercontent.com/your-repo/guardian-blue-team/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/afborda/guardian-blue-team/main/install.sh | bash
 
 # ─── Colors & Helpers ────────────────────────────────────────────────────────────
 
@@ -87,49 +87,206 @@ success "OS: ${OS} | Package manager: ${PKG_MANAGER:-none detected}"
 step 2 "Checking prerequisites"
 
 MISSING=()
+WARNINGS=()
+HAS_DOCKER=false
+PREREQ_FAIL=false
 
+# ─── Node.js ────────────────────────────────────────────────────────────────────
 if ! command -v node &>/dev/null; then
-  MISSING+=("node")
-elif [[ $(node -v | sed 's/v//' | cut -d. -f1) -lt 20 ]]; then
-  warn "Node.js $(node -v) found but v20+ is required"
-  MISSING+=("node>=20")
+  MISSING+=("Node.js (v20+)")
+  error "Node.js not found"
 else
-  success "Node.js $(node -v)"
+  NODE_VERSION=$(node -v | sed 's/v//')
+  NODE_MAJOR=$(echo "$NODE_VERSION" | cut -d. -f1)
+  if [[ $NODE_MAJOR -lt 20 ]]; then
+    MISSING+=("Node.js >= 20 (current: v${NODE_VERSION})")
+    error "Node.js v${NODE_VERSION} found but v20+ is required"
+  else
+    success "Node.js v${NODE_VERSION}"
+  fi
 fi
 
+# ─── npm ────────────────────────────────────────────────────────────────────────
 if ! command -v npm &>/dev/null; then
   MISSING+=("npm")
+  error "npm not found"
 else
   success "npm $(npm -v)"
 fi
 
+# ─── Git ────────────────────────────────────────────────────────────────────────
+if ! command -v git &>/dev/null; then
+  MISSING+=("git")
+  error "git not found (needed to clone the repository)"
+else
+  success "git $(git --version | awk '{print $3}')"
+fi
+
+# ─── SSH client ─────────────────────────────────────────────────────────────────
+if ! command -v ssh &>/dev/null; then
+  MISSING+=("ssh client")
+  error "SSH client not found (required for agentless monitoring)"
+else
+  success "SSH client available"
+fi
+
+# ─── ssh-keygen ─────────────────────────────────────────────────────────────────
+if ! command -v ssh-keygen &>/dev/null; then
+  MISSING+=("ssh-keygen")
+  error "ssh-keygen not found (needed for key generation)"
+else
+  success "ssh-keygen available"
+fi
+
+# ─── openssl or /dev/urandom (for token generation) ─────────────────────────────
+if command -v openssl &>/dev/null; then
+  success "openssl available (token generation)"
+elif [[ -r /dev/urandom ]]; then
+  success "/dev/urandom readable (token generation)"
+else
+  WARNINGS+=("Neither openssl nor /dev/urandom available — dashboard token may need manual setting")
+  warn "No secure random source found"
+fi
+
+# ─── Docker (optional) ──────────────────────────────────────────────────────────
 if command -v docker &>/dev/null; then
-  success "Docker $(docker --version | grep -oP '\d+\.\d+\.\d+')"
-  HAS_DOCKER=true
+  DOCKER_VERSION=$(docker --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  if docker info &>/dev/null 2>&1; then
+    success "Docker ${DOCKER_VERSION} (daemon running)"
+    HAS_DOCKER=true
+  else
+    warn "Docker ${DOCKER_VERSION} installed but daemon not running"
+    info "  Start it with: sudo systemctl start docker"
+    HAS_DOCKER=false
+  fi
 else
   info "Docker not found (optional — needed for Docker Compose mode)"
   HAS_DOCKER=false
 fi
 
-if command -v ssh &>/dev/null; then
-  success "SSH client available"
+# ─── curl or wget (needed for Telegram, threat intel APIs) ──────────────────────
+if command -v curl &>/dev/null; then
+  success "curl available"
+elif command -v wget &>/dev/null; then
+  success "wget available"
 else
-  MISSING+=("ssh")
+  WARNINGS+=("Neither curl nor wget found — Telegram notifications may fail")
+  warn "No HTTP client (curl/wget) found"
+fi
+
+# ─── Disk space (minimum 500MB free) ────────────────────────────────────────────
+INSTALL_PARENT=$(dirname "${INSTALL_DIR:-$HOME/.guardian}")
+if command -v df &>/dev/null; then
+  if [[ "$OS" == "macos" ]]; then
+    FREE_MB=$(df -m "$INSTALL_PARENT" 2>/dev/null | awk 'NR==2{print $4}')
+  else
+    FREE_MB=$(df -m "$INSTALL_PARENT" 2>/dev/null | awk 'NR==2{print $4}')
+  fi
+  if [[ -n "$FREE_MB" && "$FREE_MB" -lt 500 ]]; then
+    MISSING+=("Disk space: only ${FREE_MB}MB free (need 500MB+)")
+    error "Insufficient disk space: ${FREE_MB}MB free in ${INSTALL_PARENT}"
+  elif [[ -n "$FREE_MB" ]]; then
+    success "Disk space: ${FREE_MB}MB free"
+  fi
+fi
+
+# ─── RAM (minimum 256MB available) ──────────────────────────────────────────────
+if [[ "$OS" == "macos" ]]; then
+  TOTAL_RAM_MB=$(sysctl -n hw.memsize 2>/dev/null | awk '{print int($1/1048576)}')
+  if [[ -n "$TOTAL_RAM_MB" && "$TOTAL_RAM_MB" -gt 0 ]]; then
+    success "RAM: ${TOTAL_RAM_MB}MB total"
+  fi
+elif [[ -f /proc/meminfo ]]; then
+  AVAIL_RAM_MB=$(grep MemAvailable /proc/meminfo 2>/dev/null | awk '{print int($2/1024)}')
+  if [[ -n "$AVAIL_RAM_MB" && "$AVAIL_RAM_MB" -lt 256 ]]; then
+    WARNINGS+=("Low RAM: only ${AVAIL_RAM_MB}MB available (Guardian uses ~50MB but Node.js build needs more)")
+    warn "Low available RAM: ${AVAIL_RAM_MB}MB (recommended: 512MB+)"
+  elif [[ -n "$AVAIL_RAM_MB" ]]; then
+    success "RAM: ${AVAIL_RAM_MB}MB available"
+  fi
+fi
+
+# ─── Write permissions ──────────────────────────────────────────────────────────
+INSTALL_PARENT_DIR=$(dirname "${INSTALL_DIR:-$HOME/.guardian}")
+if [[ -w "$INSTALL_PARENT_DIR" ]]; then
+  success "Write permission: $INSTALL_PARENT_DIR"
+else
+  MISSING+=("Write permission to ${INSTALL_PARENT_DIR}")
+  error "Cannot write to ${INSTALL_PARENT_DIR} — run as a user with write access"
+fi
+
+# ─── Network connectivity (check github.com + npm registry) ─────────────────────
+if command -v curl &>/dev/null; then
+  if curl -sf --max-time 5 "https://registry.npmjs.org/" &>/dev/null; then
+    success "Network: npm registry reachable"
+  else
+    WARNINGS+=("Cannot reach npm registry — install may fail if dependencies aren't cached")
+    warn "Cannot reach registry.npmjs.org (offline install may fail)"
+  fi
+  if curl -sf --max-time 5 "https://github.com" &>/dev/null; then
+    success "Network: github.com reachable"
+  else
+    WARNINGS+=("Cannot reach github.com — git clone will fail")
+    warn "Cannot reach github.com"
+  fi
+elif command -v wget &>/dev/null; then
+  if wget -q --timeout=5 --spider "https://registry.npmjs.org/" 2>/dev/null; then
+    success "Network: npm registry reachable"
+  else
+    WARNINGS+=("Cannot reach npm registry")
+    warn "Cannot reach registry.npmjs.org"
+  fi
+fi
+
+# ─── systemd (for native service mode) ──────────────────────────────────────────
+if command -v systemctl &>/dev/null; then
+  success "systemd available (for service management)"
+  HAS_SYSTEMD=true
+else
+  info "systemd not available (you'll need to manage the process manually)"
+  HAS_SYSTEMD=false
+fi
+
+# ─── Summary ────────────────────────────────────────────────────────────────────
+echo ""
+
+if [[ ${#WARNINGS[@]} -gt 0 ]]; then
+  echo -e "  ${YELLOW}${BOLD}Warnings (non-blocking):${NC}"
+  for w in "${WARNINGS[@]}"; do
+    echo -e "    ${YELLOW}•${NC} $w"
+  done
+  echo ""
 fi
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
-  error "Missing prerequisites: ${MISSING[*]}"
+  echo -e "  ${RED}${BOLD}Missing requirements:${NC}"
+  for m in "${MISSING[@]}"; do
+    echo -e "    ${RED}✖${NC} $m"
+  done
   echo ""
-  info "Install them and re-run this script:"
+  echo -e "  ${BOLD}How to fix:${NC}"
+  echo ""
   if [[ "$PKG_MANAGER" == "apt" ]]; then
-    echo -e "    ${DIM}sudo apt update && sudo apt install -y nodejs npm openssh-client${NC}"
+    echo -e "    ${DIM}# Install Node.js 20+ (via NodeSource):${NC}"
+    echo -e "    ${DIM}curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -${NC}"
+    echo -e "    ${DIM}sudo apt install -y nodejs git openssh-client${NC}"
   elif [[ "$PKG_MANAGER" == "brew" ]]; then
-    echo -e "    ${DIM}brew install node${NC}"
+    echo -e "    ${DIM}brew install node git openssh${NC}"
   elif [[ "$PKG_MANAGER" == "apk" ]]; then
-    echo -e "    ${DIM}apk add nodejs npm openssh-client${NC}"
+    echo -e "    ${DIM}apk add nodejs npm git openssh-client${NC}"
+  elif [[ "$PKG_MANAGER" == "yum" ]]; then
+    echo -e "    ${DIM}# Install Node.js 20+ (via NodeSource):${NC}"
+    echo -e "    ${DIM}curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -${NC}"
+    echo -e "    ${DIM}sudo yum install -y nodejs git openssh-clients${NC}"
+  else
+    echo -e "    ${DIM}Install Node.js 20+, npm, git, and an SSH client for your OS${NC}"
   fi
+  echo ""
+  error "Fix the issues above and re-run this script."
   exit 1
 fi
+
+success "All prerequisites met!"
 
 # ─── Step 3: Choose Install Directory ──────────────────────────────────────────
 
@@ -252,12 +409,12 @@ fi
 
 if [[ "$DEPLOY_MODE" == "1" ]]; then
   info "Pulling Guardian Docker image..."
-  docker pull ghcr.io/your-user/guardian-blue-team:latest 2>/dev/null || warn "Pull failed — will build locally"
+  docker pull ghcr.io/afborda/guardian-blue-team:latest 2>/dev/null || warn "Pull failed — will build locally"
   success "Docker mode ready. Run: docker compose up -d"
 else
   if [[ ! -d "${INSTALL_DIR}/app" ]]; then
     info "Cloning Guardian..."
-    git clone --depth 1 https://github.com/your-user/guardian-blue-team.git "${INSTALL_DIR}/app" 2>/dev/null || {
+    git clone --depth 1 https://github.com/afborda/guardian-blue-team.git "${INSTALL_DIR}/app" 2>/dev/null || {
       warn "Clone failed — ensure the repo URL is correct"
       mkdir -p "${INSTALL_DIR}/app"
     }
@@ -349,5 +506,5 @@ echo ""
 echo -e "  ${BOLD}Telegram:${NC}      Send /status to your bot to verify"
 echo -e "  ${BOLD}Add servers:${NC}   Send /add-server via Telegram"
 echo ""
-echo -e "  ${DIM}Documentation: https://github.com/your-user/guardian-blue-team${NC}"
+echo -e "  ${DIM}Documentation: https://github.com/afborda/guardian-blue-team${NC}"
 echo ""

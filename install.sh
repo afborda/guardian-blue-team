@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
+INSTALLER_VERSION="1.0.5"
+
 # ─── Guardian Blue Team — Interactive Installer ─────────────────────────────────
 # Supports: Ubuntu/Debian, Alpine, macOS
 # Usage:
@@ -27,6 +29,7 @@ banner() {
   echo "  ┌─────────────────────────────────────────────────────┐"
   echo "  │          🛡️  Guardian Blue Team Installer            │"
   echo "  │     Lightweight SIEM/SOAR for Infrastructure        │"
+  echo "  │                  v${INSTALLER_VERSION}                             │"
   echo "  └─────────────────────────────────────────────────────┘"
   echo -e "${NC}"
 }

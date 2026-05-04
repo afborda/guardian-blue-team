@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -eo pipefail
+set -e
 
 # ─── Guardian Blue Team — Interactive Installer ─────────────────────────────────
 # Supports: Ubuntu/Debian, Alpine, macOS
@@ -371,17 +371,24 @@ success "Directory: $INSTALL_DIR"
 
 step 4 "SSH key setup"
 
-# Unique key name to avoid overwriting user keys
-KEY_ID=$(openssl rand -hex 3 2>/dev/null | head -c 5 || printf '%05d' $((RANDOM % 100000)))
-SSH_KEY_PATH="${INSTALL_DIR}/keys/guardian-${KEY_ID}_ed25519"
+mkdir -p "${INSTALL_DIR}/keys"
 
-# Reuse existing guardian key if one exists (also check old id_ed25519)
-EXISTING_KEY=$(find "${INSTALL_DIR}/keys" -name "guardian-*_ed25519" -o -name "id_ed25519" 2>/dev/null | head -1)
-if [[ -n "$EXISTING_KEY" ]]; then
-  SSH_KEY_PATH="$EXISTING_KEY"
+# Check if any guardian key already exists
+SSH_KEY_PATH=""
+for f in "${INSTALL_DIR}/keys"/guardian-*_ed25519 "${INSTALL_DIR}/keys/id_ed25519"; do
+  if [[ -f "$f" ]]; then
+    SSH_KEY_PATH="$f"
+    break
+  fi
+done
+
+if [[ -n "$SSH_KEY_PATH" ]]; then
   success "SSH key already exists: $SSH_KEY_PATH"
 else
-  mkdir -p "${INSTALL_DIR}/keys"
+  # Generate unique key name
+  KEY_ID=$(openssl rand -hex 3 2>/dev/null || echo "$RANDOM")
+  KEY_ID="${KEY_ID:0:5}"
+  SSH_KEY_PATH="${INSTALL_DIR}/keys/guardian-${KEY_ID}_ed25519"
   ssh-keygen -t ed25519 -f "$SSH_KEY_PATH" -N "" -q -C "guardian-${KEY_ID}@$(hostname)"
   success "Generated SSH key: $SSH_KEY_PATH"
   echo ""

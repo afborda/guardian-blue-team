@@ -91,6 +91,11 @@ export const CONSTANTS = {
   // Set via TRUSTED_IPS env var (comma-separated). Add your admin/deploy IPs.
   trustedIps: (process.env.TRUSTED_IPS || '').split(',').map(s => s.trim()).filter(Boolean) as string[],
 
+  // ─── Trusted SSH Fingerprints ─────────────────────────────────────────────
+  // SSH key fingerprints that should NEVER trigger unauthorized_login alerts.
+  // Set via TRUSTED_FINGERPRINTS env var (comma-separated SHA256:xxx values).
+  trustedFingerprints: (process.env.TRUSTED_FINGERPRINTS || '').split(',').map(s => s.trim()).filter(Boolean) as string[],
+
   // ─── Crypto Mining Detection ───────────────────────────────────────────────
   // Patterns that indicate crypto mining processes
   cryptoMiningPatterns: /xmrig|minerd|cpuminer|cryptonight|kdevtmpfsi|kinsing/i,

@@ -19,11 +19,7 @@ function isTrustedIp(ip: string): boolean {
   return false;
 }
 
-const TRUSTED_FINGERPRINTS = new Set([
-  'SHA256:REDACTED_FINGERPRINT_1',
-  'SHA256:REDACTED_FINGERPRINT_2',
-  'SHA256:REDACTED_FINGERPRINT_3',
-]);
+const TRUSTED_FINGERPRINTS = new Set(CONSTANTS.trustedFingerprints);
 
 function isTrustedFingerprint(event: NormalizedEvent): boolean {
   const fp = event.metadata?.fingerprint as string | undefined;

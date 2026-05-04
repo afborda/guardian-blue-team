@@ -206,6 +206,14 @@ echo ""
 info "Threat intelligence (optional):"
 prompt_secret ABUSEIPDB_KEY "AbuseIPDB API key (Enter to skip)"
 
+echo ""
+info "Security — Trusted entities (optional):"
+info "These prevent false alerts for known-good connections."
+echo -e "    ${DIM}Comma-separated IPs. Example: 203.0.113.10,198.51.100.5${NC}"
+prompt TRUSTED_IPS_VAL "Your admin/home IPs (Enter to skip)" ""
+echo -e "    ${DIM}Comma-separated SHA256 fingerprints. Get yours with: ssh-keygen -lf ~/.ssh/id_ed25519.pub${NC}"
+prompt TRUSTED_FP_VAL "Your SSH key fingerprints (Enter to skip)" ""
+
 cat > "${INSTALL_DIR}/.env" << EOF
 # Guardian Blue Team — Auto-generated $(date -Iseconds)
 PORT=3334
@@ -222,6 +230,8 @@ OLLAMA_URL=http://localhost:11434
 OLLAMA_MODEL=qwen3:4b
 ABUSEIPDB_API_KEY=${ABUSEIPDB_KEY}
 HOST_SSH_KEY_PATH=${SSH_KEY_PATH}
+TRUSTED_IPS=${TRUSTED_IPS_VAL}
+TRUSTED_FINGERPRINTS=${TRUSTED_FP_VAL}
 CVE_MONITOR_ENABLED=true
 EOF
 
@@ -297,7 +307,7 @@ prompt SERVER_USER "SSH user" "ubuntu"
 
 echo ""
 info "Testing SSH connection to ${SERVER_USER}@${SERVER_HOST}:${SERVER_PORT}..."
-if ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p "$SERVER_PORT" "${SERVER_USER}@${SERVER_HOST}" "echo ok" &>/dev/null; then
+if ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -p "$SERVER_PORT" "${SERVER_USER}@${SERVER_HOST}" "echo ok" &>/dev/null; then
   success "SSH connection successful!"
 else
   warn "SSH connection failed. Check that the public key is authorized on the server."

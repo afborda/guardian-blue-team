@@ -18,14 +18,16 @@ import { registerBuiltinPlugins, PluginManager } from './plugins/index.js';
 import { dashboardPages, dashboardApi } from './dashboard/routes.js';
 import { dashboardAuth } from './dashboard/auth.js';
 import { CONSTANTS } from './config/constants.js';
+import { safeCompare } from './utils/sanitize.js';
+import { rateLimiter } from './middleware/rate-limiter.js';
 
 const app = express();
 app.use(express.json());
 
 // ─── Dashboard ──────────────────────────────────────────────────────────────
 
-app.use('/dashboard', dashboardAuth, dashboardPages);
-app.use('/api/dashboard', dashboardAuth, dashboardApi);
+app.use('/dashboard', rateLimiter(60), dashboardAuth, dashboardPages);
+app.use('/api/dashboard', rateLimiter(60), dashboardAuth, dashboardApi);
 
 // ─── Health ─────────────────────────────────────────────────────────────────
 
@@ -49,10 +51,14 @@ function isRateLimited(chatId: string): boolean {
 app.post('/webhook/telegram', async (req, res) => {
   if (config.telegram.webhookSecret) {
     const token = req.headers['x-telegram-bot-api-secret-token'];
-    if (token !== config.telegram.webhookSecret) {
+    if (!token || !safeCompare(String(token), config.telegram.webhookSecret)) {
       res.status(401).json({ error: 'unauthorized' });
       return;
     }
+  } else if (process.env.NODE_ENV === 'production') {
+    logger.warn('TELEGRAM_WEBHOOK_SECRET not set — rejecting webhook in production');
+    res.status(503).json({ error: 'webhook secret required in production' });
+    return;
   }
 
   const update = req.body;

@@ -88,15 +88,8 @@ export const CONSTANTS = {
 
   // ─── Trusted IPs ──────────────────────────────────────────────────────────
   // IPs that should NEVER trigger unauthorized_login alerts.
-  // Add your admin/deploy IPs here.
-  trustedIps: [
-    '203.0.113.10',   // Home IP
-    '203.0.113.11',    // synthfin-direct
-    '203.0.113.12',     // ovh-vps-1
-    '203.0.113.13',      // ovh-vps-2
-    '203.0.113.14',     // ovh-spark
-    '203.0.113.15',    // GCP Cloud Shell / deploy
-  ] as string[],
+  // Set via TRUSTED_IPS env var (comma-separated). Add your admin/deploy IPs.
+  trustedIps: (process.env.TRUSTED_IPS || '').split(',').map(s => s.trim()).filter(Boolean) as string[],
 
   // ─── Crypto Mining Detection ───────────────────────────────────────────────
   // Patterns that indicate crypto mining processes

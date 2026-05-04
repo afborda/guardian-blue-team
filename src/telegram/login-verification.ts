@@ -3,6 +3,7 @@ import { addTrustedIp, addTrustedFingerprint } from '../pipeline/detector.js';
 import { db, dbNow } from '../database/connection.js';
 import { socIncidents } from '../database/schema.js';
 import { eq } from 'drizzle-orm';
+import { secureId } from '../utils/sanitize.js';
 import { logger } from '../utils/logger.js';
 
 interface PendingVerification {
@@ -26,7 +27,7 @@ export function requestLoginVerification(data: {
   fingerprint: string | null;
   timestamp: Date;
 }): void {
-  const verificationId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const verificationId = secureId();
 
   pendingVerifications.set(verificationId, data);
 

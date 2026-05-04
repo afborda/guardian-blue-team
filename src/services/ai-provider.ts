@@ -65,7 +65,7 @@ export class AIProvider {
   private static async callGemini(prompt: string, systemPrompt?: string): Promise<string | null> {
     if (!config.ai.geminiApiKey) return null;
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.ai.geminiModel}:generateContent?key=${config.ai.geminiApiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.ai.geminiModel}:generateContent`;
     const body: any = {
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: { maxOutputTokens: 2048, temperature: 0.3 },
@@ -76,7 +76,7 @@ export class AIProvider {
 
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': config.ai.geminiApiKey },
       body: JSON.stringify(body),
     });
 

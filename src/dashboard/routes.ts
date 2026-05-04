@@ -5,6 +5,7 @@ import { eq, count, desc } from 'drizzle-orm';
 import { layout } from './views/layout.js';
 import { overviewPage } from './views/overview.js';
 import { logger } from '../utils/logger.js';
+import { escapeHtml } from '../utils/sanitize.js';
 
 export const dashboardPages = Router();
 export const dashboardApi = Router();
@@ -158,7 +159,7 @@ dashboardApi.get('/incidents', async (req, res) => {
     const html = incidents.length === 0
       ? '<p>No incidents found.</p>'
       : `<table role="grid"><thead><tr><th>ID</th><th>Title</th><th>Severity</th><th>Events</th><th>Last Seen</th></tr></thead><tbody>${
-        incidents.map(i => `<tr><td>#${i.id}</td><td>${i.title}</td><td><span class="severity-${i.severity}">${i.severity}</span></td><td>${i.eventCount}</td><td>${i.lastSeenAt.toLocaleString()}</td></tr>`).join('')
+        incidents.map(i => `<tr><td>#${i.id}</td><td>${escapeHtml(i.title)}</td><td><span class="severity-${i.severity}">${i.severity}</span></td><td>${i.eventCount}</td><td>${i.lastSeenAt.toLocaleString()}</td></tr>`).join('')
       }</tbody></table>`;
 
     res.send(html);
@@ -175,7 +176,7 @@ dashboardApi.get('/servers', async (_req, res) => {
     const html = servers.length === 0
       ? '<p>No servers registered.</p>'
       : `<table role="grid"><thead><tr><th>Name</th><th>Host</th><th>Enabled</th><th>Last Seen</th></tr></thead><tbody>${
-        servers.map(s => `<tr><td><strong>${s.name}</strong></td><td>${s.host}:${s.sshPort}</td><td>${s.enabled ? '✅' : '❌'}</td><td>${s.lastSeenAt?.toLocaleString() ?? 'never'}</td></tr>`).join('')
+        servers.map(s => `<tr><td><strong>${escapeHtml(s.name)}</strong></td><td>${escapeHtml(s.host)}:${s.sshPort}</td><td>${s.enabled ? '✅' : '❌'}</td><td>${s.lastSeenAt?.toLocaleString() ?? 'never'}</td></tr>`).join('')
       }</tbody></table>`;
 
     res.send(html);
@@ -205,7 +206,7 @@ dashboardApi.get('/cve-alerts', async (_req, res) => {
           a.fixedVersion ? `<button hx-post="/api/dashboard/cve/${a.id}/update?token=${token}" hx-swap="outerHTML" hx-target="closest tr">Update</button>` : '',
           `<button class="secondary" hx-post="/api/dashboard/cve/${a.id}/ignore?token=${token}" hx-swap="outerHTML" hx-target="closest tr">Ignore</button>`,
         ].filter(Boolean).join(' ');
-        return `<tr><td><code>${a.cveId}</code></td><td>${a.packageName} ${a.installedVersion}</td><td><span class="severity-${Number(cvss) >= 9 ? 'critical' : 'high'}">${cvss}</span></td><td>${a.fixedVersion ?? '-'}</td><td>${actions}</td></tr>`;
+        return `<tr><td><code>${escapeHtml(a.cveId)}</code></td><td>${escapeHtml(a.packageName)} ${escapeHtml(a.installedVersion)}</td><td><span class="severity-${Number(cvss) >= 9 ? 'critical' : 'high'}">${cvss}</span></td><td>${escapeHtml(a.fixedVersion ?? '-')}</td><td>${actions}</td></tr>`;
       }).join('')
     }</tbody></table>`;
 
@@ -289,7 +290,7 @@ dashboardApi.get('/events', async (req, res) => {
     }
 
     const html = `<table role="grid"><thead><tr><th>Time</th><th>Type</th><th>Severity</th><th>Source IP</th><th>Server</th></tr></thead><tbody>${
-      events.map(e => `<tr><td>${e.timestamp.toLocaleString()}</td><td>${e.eventType}</td><td><span class="severity-${e.severity}">${e.severity}</span></td><td><code>${e.sourceIp ?? '-'}</code></td><td>#${e.serverId}</td></tr>`).join('')
+      events.map(e => `<tr><td>${e.timestamp.toLocaleString()}</td><td>${escapeHtml(e.eventType)}</td><td><span class="severity-${e.severity}">${e.severity}</span></td><td><code>${escapeHtml(e.sourceIp ?? '-')}</code></td><td>#${e.serverId}</td></tr>`).join('')
     }</tbody></table>`;
 
     res.send(html);
@@ -327,10 +328,10 @@ dashboardApi.get('/fleet-health', async (_req, res) => {
       html += `
         <a href="/dashboard/health/${server.id}?token=${token}" style="text-decoration: none;">
           <div class="card">
-            <strong>${server.name}</strong><br>
+            <strong>${escapeHtml(server.name)}</strong><br>
             <span class="stat-value" style="color: ${color}">${overall}</span>
             <small>/100</small><br>
-            <small>${server.host}</small>
+            <small>${escapeHtml(server.host)}</small>
           </div>
         </a>`;
     }
@@ -379,7 +380,7 @@ dashboardApi.get('/server/:id/metrics', async (req, res) => {
     }
 
     if (failedUnits.length > 0) {
-      html += `<h4>Failed Units</h4><ul>${failedUnits.map(u => `<li><code>${u}</code></li>`).join('')}</ul>`;
+      html += `<h4>Failed Units</h4><ul>${failedUnits.map((u: string) => `<li><code>${escapeHtml(u)}</code></li>`).join('')}</ul>`;
     }
 
     res.send(html);
@@ -434,12 +435,12 @@ dashboardApi.get('/scores', async (_req, res) => {
         .limit(1);
 
       if (!s) {
-        html += `<tr><td>${server.name}</td><td colspan="7"><em>No data</em></td></tr>`;
+        html += `<tr><td>${escapeHtml(server.name)}</td><td colspan="7"><em>No data</em></td></tr>`;
         continue;
       }
 
       const color = s.overallScore >= 80 ? '#27ae60' : s.overallScore >= 60 ? '#f1c40f' : s.overallScore >= 40 ? '#e67e22' : '#e74c3c';
-      html += `<tr><td><strong>${server.name}</strong></td><td style="color:${color};font-weight:bold">${s.overallScore}</td><td>${s.healthScore}</td><td>${s.securityScore}</td><td>${s.qualityScore}</td><td>${s.wasteScore}</td><td>${s.vulnerabilityScore}</td><td>${s.availabilityScore}</td></tr>`;
+      html += `<tr><td><strong>${escapeHtml(server.name)}</strong></td><td style="color:${color};font-weight:bold">${s.overallScore}</td><td>${s.healthScore}</td><td>${s.securityScore}</td><td>${s.qualityScore}</td><td>${s.wasteScore}</td><td>${s.vulnerabilityScore}</td><td>${s.availabilityScore}</td></tr>`;
     }
 
     html += '</tbody></table>';

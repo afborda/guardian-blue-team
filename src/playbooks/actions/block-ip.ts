@@ -5,6 +5,7 @@ import { blockedIps } from '../../database/schema.js';
 import { and, eq } from 'drizzle-orm';
 import type { PlaybookContext } from '../engine.js';
 import { logger } from '../../utils/logger.js';
+import { isValidIp } from '../../utils/sanitize.js';
 
 function parseDuration(duration: string): number {
   const match = duration.match(/^(\d+)(m|h|d)$/);
@@ -19,6 +20,7 @@ function durationToSeconds(duration: string): number {
 }
 
 async function tryFail2ban(target: ReturnType<typeof ServerService.toSSHTarget>, ip: string, duration: string): Promise<boolean> {
+  if (!isValidIp(ip)) return false;
   const checkResult = await SSHCollector.run(target, 'which fail2ban-client', 5_000);
   if (!checkResult.success || !checkResult.stdout.trim()) return false;
 
@@ -32,6 +34,7 @@ async function tryFail2ban(target: ReturnType<typeof ServerService.toSSHTarget>,
 }
 
 async function tryUfw(target: ReturnType<typeof ServerService.toSSHTarget>, ip: string): Promise<boolean> {
+  if (!isValidIp(ip)) return false;
   const result = await SSHCollector.run(target,
     `sudo ufw deny from ${ip} comment 'guardian-block-${Date.now()}'`,
     10_000
@@ -99,6 +102,7 @@ export async function blockIP(ctx: PlaybookContext, params?: Record<string, unkn
 export async function unblockIP(ctx: PlaybookContext, params?: Record<string, unknown>): Promise<{ success: boolean; message: string }> {
   const ip = (params?.ip as string) ?? ctx.sourceIp;
   if (!ip) return { success: false, message: 'No IP specified' };
+  if (!isValidIp(ip)) return { success: false, message: `Invalid IP format: ${ip}` };
 
   const server = await ServerService.getEnabled().then(servers =>
     servers.find(s => s.id === ctx.serverId)

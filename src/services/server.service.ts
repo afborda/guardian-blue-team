@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, count as dbCount } from 'drizzle-orm';
 import { db, dbTrue, dbNow } from '../database/connection.js';
 import { socServers } from '../database/schema.js';
 import { SSHCollector, type SSHTarget } from '../collectors/ssh-collector.js';
@@ -87,6 +87,9 @@ export class ServerService {
     sshKeyPath?: string;
     tags?: string[];
   }): Promise<ServerInfo> {
+    const [{ cnt }] = await db.select({ cnt: dbCount() }).from(socServers);
+    if (cnt >= 100) throw new Error('Max servers reached (100)');
+
     const [row] = await db.insert(socServers).values({
       name: data.name,
       host: data.host,

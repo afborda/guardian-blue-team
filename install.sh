@@ -37,11 +37,11 @@ prompt() {
   if [[ -n "$default" ]]; then
     echo -ne "  ${BOLD}$prompt_text${NC} ${DIM}[$default]${NC}: "
     read -r input
-    eval "$var_name=\"${input:-$default}\""
+    printf -v "$var_name" '%s' "${input:-$default}"
   else
     echo -ne "  ${BOLD}$prompt_text${NC}: "
     read -r input
-    eval "$var_name=\"$input\""
+    printf -v "$var_name" '%s' "$input"
   fi
 }
 
@@ -50,7 +50,7 @@ prompt_secret() {
   echo -ne "  ${BOLD}$prompt_text${NC}: "
   read -rs input
   echo ""
-  eval "$var_name=\"$input\""
+  printf -v "$var_name" '%s' "$input"
 }
 
 TOTAL_STEPS=7

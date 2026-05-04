@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-set -e
+# No set -e: we handle errors explicitly to avoid silent crashes
 
-INSTALLER_VERSION="1.0.5"
+INSTALLER_VERSION="1.0.6"
 
 # ─── Guardian Blue Team — Interactive Installer ─────────────────────────────────
 # Supports: Ubuntu/Debian, Alpine, macOS
@@ -376,30 +376,35 @@ step 4 "SSH key setup"
 
 mkdir -p "${INSTALL_DIR}/keys"
 
-# Check if any guardian key already exists
+# Check if any key already exists in our keys directory
 SSH_KEY_PATH=""
-for f in "${INSTALL_DIR}/keys"/guardian-*_ed25519 "${INSTALL_DIR}/keys/id_ed25519"; do
-  if [[ -f "$f" ]]; then
-    SSH_KEY_PATH="$f"
-    break
-  fi
-done
+if ls "${INSTALL_DIR}/keys/"*ed25519 1>/dev/null 2>&1; then
+  SSH_KEY_PATH=$(ls "${INSTALL_DIR}/keys/"*ed25519 2>/dev/null | grep -v '.pub' | head -1)
+fi
 
-if [[ -n "$SSH_KEY_PATH" ]]; then
+if [[ -n "$SSH_KEY_PATH" && -f "$SSH_KEY_PATH" ]]; then
   success "SSH key already exists: $SSH_KEY_PATH"
 else
-  # Generate unique key name
-  KEY_ID=$(openssl rand -hex 3 2>/dev/null || echo "$RANDOM")
+  # Generate unique key name using openssl
+  KEY_ID=$(openssl rand -hex 3 2>/dev/null)
+  KEY_ID="${KEY_ID:-$(date +%s | tail -c 6)}"
   KEY_ID="${KEY_ID:0:5}"
   SSH_KEY_PATH="${INSTALL_DIR}/keys/guardian-${KEY_ID}_ed25519"
-  ssh-keygen -t ed25519 -f "$SSH_KEY_PATH" -N "" -q -C "guardian-${KEY_ID}@$(hostname)"
-  success "Generated SSH key: $SSH_KEY_PATH"
-  echo ""
-  info "Add this public key to your servers:"
-  echo -e "    ${DIM}$(cat "${SSH_KEY_PATH}.pub")${NC}"
-  echo ""
-  info "You can add this key to servers later via:"
-  echo -e "    ${DIM}ssh-copy-id -i ${SSH_KEY_PATH}.pub user@your-server${NC}"
+  # -N "" = no passphrase, -q = quiet, -f = output file
+  # Use yes to auto-answer any overwrite prompt
+  yes n 2>/dev/null | ssh-keygen -t ed25519 -f "$SSH_KEY_PATH" -N "" -q -C "guardian@$(hostname)" 2>/dev/null || true
+  if [[ -f "$SSH_KEY_PATH" ]]; then
+    success "Generated SSH key: $SSH_KEY_PATH"
+    echo ""
+    info "Add this public key to your servers:"
+    echo -e "    ${DIM}$(cat "${SSH_KEY_PATH}.pub")${NC}"
+    echo ""
+    info "You can add this key to servers later via:"
+    echo -e "    ${DIM}ssh-copy-id -i ${SSH_KEY_PATH}.pub user@your-server${NC}"
+  else
+    warn "Could not generate SSH key — you can create one manually later"
+    SSH_KEY_PATH="${INSTALL_DIR}/keys/id_ed25519"
+  fi
 fi
 
 # ─── Step 5: Configure .env ────────────────────────────────────────────────────

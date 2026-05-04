@@ -101,13 +101,16 @@ Perf    ─┘                  └───────────────
 ```
 Logs SSH → Normalizar → Detectar → Enriquecer → Correlacionar → Playbook → Notificar
   (2min)    (parse)     (regras)    (intel)     (incidentes)    (auto)     (7 canais)
+
+FIM/Cron/SSH Keys → Comparar Baseline → Detectar → Correlacionar → Playbook → Notificar
+       (4h)             (diff no DB)      (regras)   (incidentes)    (auto)     (7 canais)
 ```
 
 ## Funcionalidades
 
 ### Monitoramento de Seguranca (SIEM/SOAR)
 
-**Deteccao de Ameacas (9 regras embutidas):**
+**Deteccao de Ameacas (15 regras embutidas):**
 - Brute force SSH — 20+ tentativas de login falhadas do mesmo IP
 - Port scanning — 5+ portas sondadas em 10 minutos
 - Mineracao de cripto — Detecta xmrig, minerd, cpuminer, kdevtmpfsi, kinsing
@@ -117,13 +120,24 @@ Logs SSH → Normalizar → Detectar → Enriquecer → Correlacionar → Playbo
 - Logins em horario incomum — Acesso entre 00:00-06:00 de IPs nao confiados
 - Movimento lateral — SSH de IP que anteriormente fez brute force
 - Escape de container — 5+ mortes de container em 10 minutos
+- Tampering de arquivos criticos (FIM — /etc/passwd, shadow, sudoers, sshd_config)
+- Comandos sudo suspeitos (curl, wget, nc, base64 -d, chmod 777)
+- Persistencia via cron (novos crons com padrao de reverse shell / download)
+- SSH keys nao autorizadas (novas chaves adicionadas ao authorized_keys)
+- Deteccao de DGA via DNS (dominios com alta entropia Shannon)
+- TLDs DNS suspeitos (.tk, .ml, .ga, .cf, .top, .xyz, .pw, .cc)
 
-**Resposta Automatizada (8 playbooks):**
+**Resposta Automatizada (15 playbooks):**
 - Bloquear IPs maliciosos via UFW (automatico ou com aprovacao humana)
 - Matar processos de mineracao de cripto
 - Pausar/desconectar containers comprometidos
 - Enriquecer IPs com threat intelligence (AbuseIPDB, VirusTotal)
 - Rastrear reincidentes entre servidores
+- Alertar sobre violacoes de integridade de arquivo (requer aprovacao)
+- Flagrar atividade sudo suspeita
+- Detectar mecanismos de persistencia via cron (requer aprovacao)
+- Alertar sobre adicao de SSH keys nao autorizadas (requer aprovacao)
+- Responder a indicadores C2 via DNS (DGA + TLDs suspeitos)
 
 **Monitoramento de CVE:**
 - Escaneia pacotes instalados (Debian, Alpine, npm) contra OSV.dev
@@ -202,6 +216,11 @@ Funciona com 4 provedores (configuravel, com fallback automatico):
 | `/incidents` | Incidentes abertos |
 | `/threat <ip>` | Reputacao do IP + historico local |
 | `/hunt <ip\|user>` | Buscar nos logs por IOC |
+| `/files [server]` | Mudancas de integridade de arquivos |
+| `/sudo [hours]` | Atividade sudo (default 24h) |
+| `/crons [server]` | Cron jobs / mudancas recentes |
+| `/keys [server]` | SSH keys / mudancas recentes |
+| `/dns [server] [hours]` | Queries DNS / anomalias |
 | `/playbook list` | Playbooks disponiveis |
 | `/playbook run <nome> <server> [ip]` | Executar um playbook |
 | `/vulns` | Resumo de vulnerabilidades |
@@ -352,7 +371,12 @@ src/
 │   ├── system-collector.ts   # erros kernel, journal, unidades falhadas
 │   ├── performance-collector.ts  # disk I/O, network throughput
 │   ├── process-collector.ts  # deteccao de processos suspeitos
-│   └── network-collector.ts  # deteccao de flood de conexoes
+│   ├── network-collector.ts  # deteccao de flood de conexoes
+│   ├── fim-collector.ts      # integridade de arquivos (baselines SHA256)
+│   ├── sudo-collector.ts     # auditoria de comandos sudo
+│   ├── cron-collector.ts     # enumeracao de cron jobs
+│   ├── ssh-keys-collector.ts # auditoria de authorized_keys
+│   └── dns-collector.ts      # monitoramento de queries DNS
 ├── pipeline/             # Processamento de eventos
 │   ├── normalizer.ts         # Logs brutos → eventos estruturados
 │   ├── detector.ts           # Deteccao baseada em regras
@@ -373,6 +397,7 @@ src/
 │   └── soc-analyst.service.ts # Consultas em linguagem natural
 ├── workers/              # Jobs em background
 │   ├── event-collector.worker.ts     # Eventos de seguranca (2min)
+│   ├── fim.worker.ts                 # Baselines arquivo/cron/keys (4h)
 │   ├── score-calculator.worker.ts    # Metricas (5min) + Scores (1h)
 │   ├── intelligence.worker.ts        # Anomalias + Tendencias (1h)
 │   ├── metrics-retention.worker.ts   # Limpeza >30d (diario)

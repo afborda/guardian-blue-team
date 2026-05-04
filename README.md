@@ -101,13 +101,16 @@ Perf    ─┘                 └───────────────�
 ```
 SSH Logs → Normalize → Detect → Enrich → Correlate → Playbook → Notify
   (2min)     (parse)   (rules)  (intel)  (incidents)  (auto)    (7ch)
+
+FIM/Cron/SSH Keys → Baseline Compare → Detect → Correlate → Playbook → Notify
+       (4h)            (DB diff)        (rules)  (incidents)   (auto)    (7ch)
 ```
 
 ## Features
 
 ### Security Monitoring (SIEM/SOAR)
 
-**Threat Detection (9 built-in rules):**
+**Threat Detection (15 built-in rules):**
 - SSH brute force (20+ failed attempts from same IP)
 - Port scanning (5+ ports probed in 10 minutes)
 - Crypto mining processes (xmrig, minerd, cpuminer, kdevtmpfsi, kinsing)
@@ -117,13 +120,24 @@ SSH Logs → Normalize → Detect → Enrich → Correlate → Playbook → Noti
 - Unusual hour logins (00:00-06:00 from non-trusted IPs)
 - Lateral movement (SSH from IP that previously brute-forced)
 - Container escape (5+ container deaths in 10 minutes)
+- Critical file tampering (FIM — /etc/passwd, shadow, sudoers, sshd_config)
+- Suspicious sudo commands (curl, wget, nc, base64 -d, chmod 777)
+- Cron persistence (new cron jobs with reverse shell / download patterns)
+- Unauthorized SSH keys (new keys added to authorized_keys)
+- DNS DGA detection (high-entropy domains via Shannon entropy)
+- DNS suspicious TLDs (.tk, .ml, .ga, .cf, .top, .xyz, .pw, .cc)
 
-**Automated Response (8 playbooks):**
+**Automated Response (15 playbooks):**
 - Block malicious IPs via UFW (auto or with human approval)
 - Kill crypto mining processes
 - Pause/disconnect compromised containers
 - Enrich IPs with threat intelligence (AbuseIPDB, VirusTotal)
 - Track repeat offenders across servers
+- Alert on critical file integrity violations (requires approval)
+- Flag suspicious sudo activity
+- Detect cron-based persistence mechanisms (requires approval)
+- Alert on unauthorized SSH key additions (requires approval)
+- Respond to DNS-based C2 indicators (DGA + suspicious TLDs)
 
 **CVE Monitoring:**
 - Scans installed packages (Debian, Alpine, npm) against OSV.dev
@@ -202,6 +216,11 @@ Works with 4 providers (configurable, with automatic fallback):
 | `/incidents` | Open incidents |
 | `/threat <ip>` | IP reputation + local history |
 | `/hunt <ip\|user>` | Search logs by IOC |
+| `/files [server]` | File integrity changes |
+| `/sudo [hours]` | Sudo activity (default 24h) |
+| `/crons [server]` | Cron jobs / recent changes |
+| `/keys [server]` | SSH keys / recent changes |
+| `/dns [server] [hours]` | DNS queries / anomalies |
 | `/playbook list` | Available playbooks |
 | `/playbook run <name> <server> [ip]` | Execute a playbook |
 | `/vulns` | Vulnerability summary |
@@ -352,7 +371,12 @@ src/
 │   ├── system-collector.ts   # kernel errors, journal, failed units
 │   ├── performance-collector.ts  # disk I/O, network throughput
 │   ├── process-collector.ts  # suspicious process detection
-│   └── network-collector.ts  # connection flood detection
+│   ├── network-collector.ts  # connection flood detection
+│   ├── fim-collector.ts      # file integrity (SHA256 baselines)
+│   ├── sudo-collector.ts     # sudo command auditing
+│   ├── cron-collector.ts     # cron job enumeration
+│   ├── ssh-keys-collector.ts # authorized_keys auditing
+│   └── dns-collector.ts      # DNS query monitoring
 ├── pipeline/             # Event processing
 │   ├── normalizer.ts         # Raw logs → structured events
 │   ├── detector.ts           # Rule-based threat detection
@@ -373,6 +397,7 @@ src/
 │   └── soc-analyst.service.ts # Natural language queries
 ├── workers/              # Background jobs
 │   ├── event-collector.worker.ts     # Security events (2min)
+│   ├── fim.worker.ts                 # File/cron/key baselines (4h)
 │   ├── score-calculator.worker.ts    # Metrics (5min) + Scores (1h)
 │   ├── intelligence.worker.ts        # Anomaly + Trends (1h)
 │   ├── metrics-retention.worker.ts   # Cleanup >30d (daily)

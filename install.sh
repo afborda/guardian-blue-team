@@ -3,7 +3,12 @@ set -eo pipefail
 
 # ─── Guardian Blue Team — Interactive Installer ─────────────────────────────────
 # Supports: Ubuntu/Debian, Alpine, macOS
-# Usage: curl -fsSL https://raw.githubusercontent.com/afborda/guardian-blue-team/main/install.sh | bash
+# Usage:
+#   bash <(curl -fsSL https://raw.githubusercontent.com/afborda/guardian-blue-team/main/install.sh)
+#   OR: curl -fsSL ... -o install.sh && bash install.sh
+#
+# Flags:
+#   --uninstall   Remove Guardian and all data
 
 # ─── Colors & Helpers ────────────────────────────────────────────────────────────
 
@@ -32,28 +37,92 @@ warn()    { echo -e "  ${YELLOW}⚠${NC}  $1"; }
 error()   { echo -e "  ${RED}✖${NC}  $1"; }
 step()    { echo -e "\n  ${CYAN}${BOLD}[$1/$TOTAL_STEPS]${NC} ${BOLD}$2${NC}"; }
 
+# Read from /dev/tty so it works even when script is piped via curl
 prompt() {
   local var_name="$1" prompt_text="$2" default="${3:-}"
+  local input=""
   if [[ -n "$default" ]]; then
     echo -ne "  ${BOLD}$prompt_text${NC} ${DIM}[$default]${NC}: "
-    read -r input
+    read -r input </dev/tty 2>/dev/null || input=""
     printf -v "$var_name" '%s' "${input:-$default}"
   else
     echo -ne "  ${BOLD}$prompt_text${NC}: "
-    read -r input
+    read -r input </dev/tty 2>/dev/null || input=""
     printf -v "$var_name" '%s' "$input"
   fi
 }
 
 prompt_secret() {
   local var_name="$1" prompt_text="$2"
+  local input=""
   echo -ne "  ${BOLD}$prompt_text${NC}: "
-  read -rs input
+  read -rs input </dev/tty 2>/dev/null || input=""
   echo ""
   printf -v "$var_name" '%s' "$input"
 }
 
+prompt_yn() {
+  local prompt_text="$1" default="${2:-y}"
+  local input=""
+  echo -ne "  ${BOLD}$prompt_text${NC} ${DIM}[${default}]${NC}: "
+  read -r input </dev/tty 2>/dev/null || input=""
+  input="${input:-$default}"
+  [[ "$input" =~ ^[Yy] ]]
+}
+
 TOTAL_STEPS=7
+
+# ─── Handle --uninstall ────────────────────────────────────────────────────────
+
+if [[ "${1:-}" == "--uninstall" ]]; then
+  banner
+  echo ""
+  INSTALL_DIR="${HOME}/.guardian"
+  if [[ ! -d "$INSTALL_DIR" ]]; then
+    error "Guardian not found at $INSTALL_DIR — nothing to remove."
+    exit 1
+  fi
+
+  echo -e "  ${RED}${BOLD}This will remove:${NC}"
+  echo -e "    ${RED}•${NC} $INSTALL_DIR (config, keys, data)"
+  [[ -f /etc/systemd/system/guardian.service ]] && echo -e "    ${RED}•${NC} systemd service (guardian.service)"
+  docker image inspect ghcr.io/afborda/guardian-blue-team:latest &>/dev/null 2>&1 && echo -e "    ${RED}•${NC} Docker image (ghcr.io/afborda/guardian-blue-team)"
+  echo ""
+
+  if prompt_yn "Are you sure? (y/N)" "n"; then
+    # Stop service
+    if systemctl is-active guardian &>/dev/null 2>&1; then
+      sudo systemctl stop guardian
+      info "Stopped guardian service"
+    fi
+    if [[ -f /etc/systemd/system/guardian.service ]]; then
+      sudo systemctl disable guardian 2>/dev/null || true
+      sudo rm -f /etc/systemd/system/guardian.service
+      sudo systemctl daemon-reload
+      info "Removed systemd service"
+    fi
+    # Stop docker container
+    if docker ps -q --filter name=guardian &>/dev/null 2>&1; then
+      docker stop guardian 2>/dev/null || true
+      docker rm guardian 2>/dev/null || true
+      info "Stopped Docker container"
+    fi
+    # Remove docker image
+    if docker image inspect ghcr.io/afborda/guardian-blue-team:latest &>/dev/null 2>&1; then
+      docker rmi ghcr.io/afborda/guardian-blue-team:latest 2>/dev/null || true
+      info "Removed Docker image"
+    fi
+    # Remove install directory
+    rm -rf "$INSTALL_DIR"
+    success "Guardian completely removed from $INSTALL_DIR"
+    echo ""
+    info "To reinstall: bash <(curl -fsSL https://raw.githubusercontent.com/afborda/guardian-blue-team/main/install.sh)"
+    echo ""
+  else
+    info "Uninstall cancelled."
+  fi
+  exit 0
+fi
 
 # ─── Step 0: Banner ─────────────────────────────────────────────────────────────
 
@@ -89,7 +158,6 @@ step 2 "Checking prerequisites"
 MISSING=()
 WARNINGS=()
 HAS_DOCKER=false
-PREREQ_FAIL=false
 
 # ─── Node.js ────────────────────────────────────────────────────────────────────
 if ! command -v node &>/dev/null; then
@@ -177,11 +245,7 @@ fi
 # ─── Disk space (minimum 500MB free) ────────────────────────────────────────────
 INSTALL_PARENT=$(dirname "${INSTALL_DIR:-$HOME/.guardian}")
 if command -v df &>/dev/null; then
-  if [[ "$OS" == "macos" ]]; then
-    FREE_MB=$(df -m "$INSTALL_PARENT" 2>/dev/null | awk 'NR==2{print $4}')
-  else
-    FREE_MB=$(df -m "$INSTALL_PARENT" 2>/dev/null | awk 'NR==2{print $4}')
-  fi
+  FREE_MB=$(df -m "$INSTALL_PARENT" 2>/dev/null | awk 'NR==2{print $4}')
   if [[ -n "$FREE_MB" && "$FREE_MB" -lt 500 ]]; then
     MISSING+=("Disk space: only ${FREE_MB}MB free (need 500MB+)")
     error "Insufficient disk space: ${FREE_MB}MB free in ${INSTALL_PARENT}"
@@ -303,19 +367,25 @@ success "Directory: $INSTALL_DIR"
 
 step 4 "SSH key setup"
 
-SSH_KEY_PATH="${INSTALL_DIR}/keys/id_ed25519"
+# Unique key name to avoid overwriting user keys
+KEY_ID=$(head -c 3 /dev/urandom | xxd -p | head -c 5)
+SSH_KEY_PATH="${INSTALL_DIR}/keys/guardian-${KEY_ID}_ed25519"
 
-if [[ -f "$SSH_KEY_PATH" ]]; then
+# Reuse existing guardian key if one exists
+EXISTING_KEY=$(find "${INSTALL_DIR}/keys" -name "guardian-*_ed25519" 2>/dev/null | head -1)
+if [[ -n "$EXISTING_KEY" ]]; then
+  SSH_KEY_PATH="$EXISTING_KEY"
   success "SSH key already exists: $SSH_KEY_PATH"
 else
   mkdir -p "${INSTALL_DIR}/keys"
-  ssh-keygen -t ed25519 -f "$SSH_KEY_PATH" -N "" -q
+  ssh-keygen -t ed25519 -f "$SSH_KEY_PATH" -N "" -q -C "guardian-${KEY_ID}@$(hostname)"
   success "Generated SSH key: $SSH_KEY_PATH"
   echo ""
   info "Add this public key to your servers:"
   echo -e "    ${DIM}$(cat "${SSH_KEY_PATH}.pub")${NC}"
   echo ""
-  info "You can add this key to servers later via: ssh-copy-id -i ${SSH_KEY_PATH}.pub user@host"
+  info "You can add this key to servers later via:"
+  echo -e "    ${DIM}ssh-copy-id -i ${SSH_KEY_PATH}.pub user@your-server${NC}"
 fi
 
 # ─── Step 5: Configure .env ────────────────────────────────────────────────────
@@ -329,10 +399,14 @@ info "Telegram Bot (required for alerts):"
 prompt TELEGRAM_TOKEN "Bot token (from @BotFather)" ""
 prompt TELEGRAM_CHAT "Chat ID (from @userinfobot)" ""
 
+if [[ -z "$TELEGRAM_TOKEN" || -z "$TELEGRAM_CHAT" ]]; then
+  warn "Telegram not configured — you can set it later in ${INSTALL_DIR}/.env"
+fi
+
 echo ""
 info "AI Provider (enhances analysis — optional):"
 echo -e "    ${DIM}1) Gemini (free tier)  2) OpenAI  3) Claude  4) Ollama (local)  5) Skip${NC}"
-prompt AI_CHOICE "Choose [1-5]" "1"
+prompt AI_CHOICE "Choose [1-5]" "5"
 
 AI_PROVIDER="auto"
 GEMINI_KEY=""
@@ -344,7 +418,7 @@ case "$AI_CHOICE" in
   2) prompt_secret OPENAI_KEY "OpenAI API key"; AI_PROVIDER="openai" ;;
   3) prompt_secret ANTHROPIC_KEY "Anthropic API key"; AI_PROVIDER="claude" ;;
   4) AI_PROVIDER="ollama" ;;
-  5) AI_PROVIDER="auto" ;;
+  *) AI_PROVIDER="auto" ;;
 esac
 
 echo ""
@@ -369,6 +443,8 @@ echo -e "    ${DIM}Comma-separated IPs. Example: 203.0.113.10,198.51.100.5${NC}"
 prompt TRUSTED_IPS_VAL "Your admin/home IPs (Enter to skip)" ""
 echo -e "    ${DIM}Comma-separated SHA256 fingerprints. Get yours with: ssh-keygen -lf ~/.ssh/id_ed25519.pub${NC}"
 prompt TRUSTED_FP_VAL "Your SSH key fingerprints (Enter to skip)" ""
+
+mkdir -p "${INSTALL_DIR}/data"
 
 cat > "${INSTALL_DIR}/.env" << EOF
 # Guardian Blue Team — Auto-generated $(date -Iseconds)
@@ -408,8 +484,26 @@ fi
 
 if [[ "$DEPLOY_MODE" == "1" ]]; then
   info "Pulling Guardian Docker image..."
-  docker pull ghcr.io/afborda/guardian-blue-team:latest 2>/dev/null || warn "Pull failed — will build locally"
-  success "Docker mode ready. Run: docker compose up -d"
+  docker pull ghcr.io/afborda/guardian-blue-team:latest || warn "Pull failed — will build locally"
+  success "Docker mode ready"
+
+  # Create docker-compose.yml if not exists
+  if [[ ! -f "${INSTALL_DIR}/docker-compose.yml" ]]; then
+    cat > "${INSTALL_DIR}/docker-compose.yml" << 'DCEOF'
+services:
+  guardian:
+    image: ghcr.io/afborda/guardian-blue-team:latest
+    container_name: guardian
+    env_file: .env
+    ports:
+      - "3334:3334"
+    volumes:
+      - ./data:/data
+      - ./keys:/home/node/.ssh:ro
+    restart: unless-stopped
+DCEOF
+    success "Created docker-compose.yml"
+  fi
 else
   if [[ ! -d "${INSTALL_DIR}/app" ]]; then
     info "Cloning Guardian..."
@@ -456,28 +550,31 @@ fi
 step 7 "Add your first server"
 
 echo ""
-prompt SERVER_NAME "Server name (e.g., prod-web-1)" ""
-prompt SERVER_HOST "Server IP/hostname" ""
+info "Configure the first server to monitor (you can add more later via Telegram)."
+prompt SERVER_NAME "Server name (e.g., prod-web-1)" "$(hostname)"
+prompt SERVER_HOST "Server IP/hostname" "127.0.0.1"
 prompt SERVER_PORT "SSH port" "22"
-prompt SERVER_USER "SSH user" "ubuntu"
+prompt SERVER_USER "SSH user" "$(whoami)"
 
-echo ""
-info "Testing SSH connection to ${SERVER_USER}@${SERVER_HOST}:${SERVER_PORT}..."
-if ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -p "$SERVER_PORT" "${SERVER_USER}@${SERVER_HOST}" "echo ok" &>/dev/null; then
-  success "SSH connection successful!"
-else
-  warn "SSH connection failed. Check that the public key is authorized on the server."
-  info "Public key: $(cat "${SSH_KEY_PATH}.pub")"
+# Only test SSH if host is not empty/localhost
+if [[ -n "$SERVER_HOST" && "$SERVER_HOST" != "127.0.0.1" ]]; then
+  echo ""
+  info "Testing SSH connection to ${SERVER_USER}@${SERVER_HOST}:${SERVER_PORT}..."
+  if ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -p "$SERVER_PORT" "${SERVER_USER}@${SERVER_HOST}" "echo ok" &>/dev/null; then
+    success "SSH connection successful!"
+  else
+    warn "SSH connection failed. Add the public key to the server:"
+    echo -e "    ${DIM}ssh-copy-id -i ${SSH_KEY_PATH}.pub ${SERVER_USER}@${SERVER_HOST}${NC}"
+  fi
 fi
 
-# Save server config for first-run
+# Save server config
 cat >> "${INSTALL_DIR}/.env" << EOF
 
 # First server
 HOST_SSH_HOST=${SERVER_HOST}
 HOST_SSH_PORT=${SERVER_PORT}
 HOST_SSH_USER=${SERVER_USER}
-HOST_SSH_KEY_PATH=${SSH_KEY_PATH}
 EOF
 
 # ─── Summary ────────────────────────────────────────────────────────────────────
@@ -489,7 +586,7 @@ echo "  │            ✔  Installation Complete!                 │"
 echo "  └─────────────────────────────────────────────────────┘"
 echo -e "${NC}"
 echo ""
-echo -e "  ${BOLD}Dashboard:${NC}     http://localhost:3334/dashboard?token=${DASHBOARD_TOKEN}"
+echo -e "  ${BOLD}Dashboard:${NC}     http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost'):3334/dashboard?token=${DASHBOARD_TOKEN}"
 echo -e "  ${BOLD}Config:${NC}        ${INSTALL_DIR}/.env"
 echo -e "  ${BOLD}SSH Key:${NC}       ${SSH_KEY_PATH}"
 echo -e "  ${BOLD}Logs:${NC}          journalctl -u guardian -f"
@@ -504,6 +601,7 @@ fi
 echo ""
 echo -e "  ${BOLD}Telegram:${NC}      Send /status to your bot to verify"
 echo -e "  ${BOLD}Add servers:${NC}   Send /add-server via Telegram"
+echo -e "  ${BOLD}Uninstall:${NC}     bash <(curl -fsSL https://raw.githubusercontent.com/afborda/guardian-blue-team/main/install.sh) --uninstall"
 echo ""
 echo -e "  ${DIM}Documentation: https://github.com/afborda/guardian-blue-team${NC}"
 echo ""

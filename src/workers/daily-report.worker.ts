@@ -1,9 +1,11 @@
 import { HostSecurityService } from '../services/host-security.service.js';
 import { ServerService } from '../services/server.service.js';
 import { db, dbDate } from '../database/connection.js';
-import { securityEvents, socIncidents } from '../database/schema.js';
+import { securityEvents, socIncidents, serverScores } from '../database/schema.js';
 import { gte, ne, desc, count, eq, and } from 'drizzle-orm';
 import { NotifierManager } from '../plugins/notifier-manager.js';
+import { AnomalyDetector } from '../intelligence/anomaly-detector.js';
+import { TrendPredictor } from '../intelligence/trend-predictor.js';
 import { logger } from '../utils/logger.js';
 
 export class DailyReportWorker {
@@ -80,6 +82,44 @@ export class DailyReportWorker {
         const a = topAttackers[i];
         if (a.ip) lines.push(`   ${i + 1}. <code>${a.ip}</code> — ${a.cnt} eventos`);
       }
+    }
+
+    // Scores summary
+    const scoreLines: string[] = [];
+    for (const server of servers) {
+      const [score] = await db.select().from(serverScores)
+        .where(eq(serverScores.serverId, server.id))
+        .orderBy(desc(serverScores.periodStart))
+        .limit(1);
+
+      if (score) {
+        const icon = score.overallScore >= 80 ? '🟢' : score.overallScore >= 60 ? '🟡' : score.overallScore >= 40 ? '🟠' : '🔴';
+        scoreLines.push(`   ${icon} ${server.name}: ${score.overallScore}/100 (H:${score.healthScore} S:${score.securityScore} Q:${score.qualityScore})`);
+      }
+    }
+    if (scoreLines.length > 0) {
+      lines.push(``, `📊 <b>Scores:</b>`, ...scoreLines);
+    }
+
+    // Anomalies and trends
+    const anomalyLines: string[] = [];
+    const trendLines: string[] = [];
+    for (const server of servers) {
+      const anomalies = await AnomalyDetector.detect(server.id);
+      for (const a of anomalies.filter(x => x.severity === 'critical')) {
+        anomalyLines.push(`   ⚠️ ${server.name}: ${a.metric} = ${a.currentValue} (${a.deviations}σ)`);
+      }
+      const trends = await TrendPredictor.predict(server.id);
+      for (const t of trends.filter(x => x.daysUntil90 !== null && x.daysUntil90 < 14)) {
+        const resource = t.metric === 'disk' ? `disco ${t.mountpoint}` : 'memória';
+        trendLines.push(`   📈 ${server.name}: ${resource} atinge 90% em ~${t.daysUntil90}d`);
+      }
+    }
+    if (anomalyLines.length > 0) {
+      lines.push(``, `🔍 <b>Anomalias:</b>`, ...anomalyLines);
+    }
+    if (trendLines.length > 0) {
+      lines.push(``, `📈 <b>Tendências:</b>`, ...trendLines);
     }
 
     for (const server of servers) {

@@ -3,7 +3,7 @@ import { DailyReportWorker } from '../workers/daily-report.worker.js';
 import { ServerService } from '../services/server.service.js';
 import { SSHCollector } from '../collectors/ssh-collector.js';
 import { db } from '../database/connection.js';
-import { securityEvents, socIncidents, socServers } from '../database/schema.js';
+import { securityEvents, socIncidents, socServers, serverScores, serverMetrics } from '../database/schema.js';
 import { desc, eq, ne, count } from 'drizzle-orm';
 import { ThreatIntelManager } from '../threat-intel/manager.js';
 import { PlaybookRegistry } from '../playbooks/registry.js';
@@ -36,6 +36,10 @@ export async function handleTelegramCommand(text: string): Promise<string> {
       return await askSOCAnalyst(parts.slice(1).join(' '));
     case '/containers':
       return await getContainers(parts[1]);
+    case '/health':
+      return await getFleetHealth();
+    case '/scores':
+      return await getServerScores(parts[1]);
     case '/scan':
       return '🔍 Use /vulns para verificar vulnerabilidades ou aguarde o CVE Monitor automático.';
     case '/report':
@@ -502,6 +506,9 @@ function formatHelp(): string {
     '',
     '📊 <b>Monitoramento:</b>',
     '  /status — Overview dos servidores',
+    '  /health — Métricas de saúde (CPU, RAM, disco)',
+    '  /scores — Scores de qualidade (6 dimensões)',
+    '  /scores server — Detalhes de um servidor',
     '  /servers — Lista + health check',
     '  /containers — Containers rodando',
     '  /events — Eventos (low+)',
@@ -525,6 +532,100 @@ function formatHelp(): string {
     '  /vulns — Vulnerabilidades',
     '  /ask pergunta — AI analyst',
   ].join('\n');
+}
+
+// ─── /health ───────────────────────────────────────────────────────────────
+
+async function getFleetHealth(): Promise<string> {
+  const servers = await ServerService.getEnabled();
+  if (servers.length === 0) return '⚠️ Nenhum servidor. Use /add-server';
+
+  const lines: string[] = [];
+
+  for (const server of servers) {
+    const [latestScore] = await db.select().from(serverScores)
+      .where(eq(serverScores.serverId, server.id))
+      .orderBy(desc(serverScores.periodStart))
+      .limit(1);
+
+    const [latestMetric] = await db.select().from(serverMetrics)
+      .where(eq(serverMetrics.serverId, server.id))
+      .orderBy(desc(serverMetrics.collectedAt))
+      .limit(1);
+
+    if (!latestMetric) {
+      lines.push(`⚪ <b>${server.name}</b> — sem dados`);
+      continue;
+    }
+
+    const score = latestScore?.overallScore;
+    const icon = score === undefined ? '⚪' : score >= 80 ? '🟢' : score >= 60 ? '🟡' : score >= 40 ? '🟠' : '🔴';
+    const scoreText = score !== undefined ? `Score: ${score}/100` : 'Score: pendente';
+    const memPct = latestMetric.memTotalBytes ? Math.round(((latestMetric.memUsedBytes ?? 0) / latestMetric.memTotalBytes) * 100) : 0;
+    const loadRatio = ((latestMetric.load1 ?? 0) / Math.max(latestMetric.cpuCount ?? 1, 1)).toFixed(1);
+    const disks = (latestMetric.disks as any[]) ?? [];
+    const maxDisk = Math.max(...disks.map(d => d.usedPercent ?? 0), 0);
+
+    lines.push(
+      `${icon} <b>${server.name}</b> — ${scoreText}` +
+      `\n   Load: ${loadRatio} | Mem: ${memPct}% | Disk: ${maxDisk}%`
+    );
+  }
+
+  return `🏥 <b>Fleet Health — ${servers.length} servidores</b>\n\n${lines.join('\n\n')}`;
+}
+
+// ─── /scores ──────────────────────────────────────────────────────────────
+
+async function getServerScores(serverName?: string): Promise<string> {
+  if (serverName) {
+    const server = await ServerService.getByName(serverName);
+    if (!server) return `❌ Servidor "${serverName}" não encontrado.`;
+
+    const [score] = await db.select().from(serverScores)
+      .where(eq(serverScores.serverId, server.id))
+      .orderBy(desc(serverScores.periodStart))
+      .limit(1);
+
+    if (!score) return `⚠️ Nenhum score calculado para "${serverName}" ainda.`;
+
+    const icon = (v: number) => v >= 80 ? '🟢' : v >= 60 ? '🟡' : v >= 40 ? '🟠' : '🔴';
+
+    return [
+      `📊 <b>Scores — ${server.name}</b>`,
+      '',
+      `${icon(score.overallScore)} Overall: <b>${score.overallScore}</b>/100`,
+      `   🏥 Health: ${score.healthScore}`,
+      `   🔒 Security: ${score.securityScore}`,
+      `   ⚙️ Quality: ${score.qualityScore}`,
+      `   💰 Waste: ${score.wasteScore}`,
+      `   🛡️ Vulnerability: ${score.vulnerabilityScore}`,
+      `   ⏱ Availability: ${score.availabilityScore}`,
+      '',
+      `📅 Período: ${new Date(score.periodStart).toLocaleString('pt-BR')}`,
+    ].join('\n');
+  }
+
+  const servers = await ServerService.getEnabled();
+  if (servers.length === 0) return '⚠️ Nenhum servidor. Use /add-server';
+
+  const lines: string[] = [];
+  for (const server of servers) {
+    const [score] = await db.select().from(serverScores)
+      .where(eq(serverScores.serverId, server.id))
+      .orderBy(desc(serverScores.periodStart))
+      .limit(1);
+
+    if (!score) {
+      lines.push(`⚪ ${server.name}: sem dados`);
+      continue;
+    }
+
+    const icon = score.overallScore >= 80 ? '🟢' : score.overallScore >= 60 ? '🟡' : score.overallScore >= 40 ? '🟠' : '🔴';
+    lines.push(`${icon} <b>${server.name}</b>: ${score.overallScore} | H:${score.healthScore} S:${score.securityScore} Q:${score.qualityScore} W:${score.wasteScore} V:${score.vulnerabilityScore} A:${score.availabilityScore}`);
+  }
+
+  return `📊 <b>Scores — ${servers.length} servidores</b>\n\n${lines.join('\n')}`;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

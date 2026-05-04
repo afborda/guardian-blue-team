@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # No set -e: we handle errors explicitly to avoid silent crashes
 
-INSTALLER_VERSION="1.0.7"
+INSTALLER_VERSION="1.1.0"
 
 # ─── Guardian Blue Team — Interactive Installer ─────────────────────────────────
 # Supports: Ubuntu/Debian, Alpine, macOS
@@ -531,8 +531,46 @@ if [[ "$DEPLOY_MODE" == "1" ]]; then
   docker pull ghcr.io/afborda/guardian-blue-team:latest || warn "Pull failed — will build locally"
   success "Docker mode ready"
 
-  # Create docker-compose.yml if not exists
-  if [[ ! -f "${INSTALL_DIR}/docker-compose.yml" ]]; then
+  # Check if Traefik is running
+  TRAEFIK_NETWORK=""
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qi traefik; then
+    # Find the traefik network
+    TRAEFIK_NETWORK=$(docker inspect $(docker ps --format '{{.Names}}' | grep -i traefik | head -1) 2>/dev/null | grep -oP '"NetworkMode":\s*"\K[^"]+' | head -1)
+    if [[ -z "$TRAEFIK_NETWORK" || "$TRAEFIK_NETWORK" == "default" ]]; then
+      TRAEFIK_NETWORK=$(docker network ls --format '{{.Name}}' | grep -iE 'traefik|proxy' | head -1)
+    fi
+  fi
+
+  # Create docker-compose.yml
+  if [[ -n "$TRAEFIK_NETWORK" ]]; then
+    info "Traefik detected (network: ${TRAEFIK_NETWORK})"
+    prompt GUARDIAN_DOMAIN "Domain for Guardian dashboard" "guardian.$(hostname -d 2>/dev/null || echo 'example.com')"
+
+    cat > "${INSTALL_DIR}/docker-compose.yml" << DCEOF
+services:
+  guardian:
+    image: ghcr.io/afborda/guardian-blue-team:latest
+    container_name: guardian
+    env_file: .env
+    volumes:
+      - ./data:/data
+      - ./keys:/home/node/.ssh:ro
+    restart: unless-stopped
+    networks:
+      - ${TRAEFIK_NETWORK}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.guardian.rule=Host(\`${GUARDIAN_DOMAIN}\`)"
+      - "traefik.http.routers.guardian.entrypoints=websecure"
+      - "traefik.http.routers.guardian.tls.certresolver=letsencrypt"
+      - "traefik.http.services.guardian.loadbalancer.server.port=3334"
+
+networks:
+  ${TRAEFIK_NETWORK}:
+    external: true
+DCEOF
+    success "Created docker-compose.yml (Traefik: ${GUARDIAN_DOMAIN})"
+  else
     cat > "${INSTALL_DIR}/docker-compose.yml" << 'DCEOF'
 services:
   guardian:
@@ -548,6 +586,12 @@ services:
 DCEOF
     success "Created docker-compose.yml"
   fi
+
+  # Start Guardian automatically
+  info "Starting Guardian..."
+  cd "${INSTALL_DIR}"
+  docker compose up -d
+  success "Guardian is running!"
 else
   if [[ ! -d "${INSTALL_DIR}/app" ]]; then
     info "Cloning Guardian..."
@@ -584,7 +628,8 @@ WantedBy=multi-user.target
 SVCEOF
       sudo systemctl daemon-reload
       sudo systemctl enable guardian
-      success "Systemd service created (guardian.service)"
+      sudo systemctl start guardian
+      success "Systemd service created and started (guardian.service)"
     fi
   fi
 fi
@@ -626,20 +671,29 @@ EOF
 echo ""
 echo -e "${GREEN}${BOLD}"
 echo "  ┌─────────────────────────────────────────────────────┐"
-echo "  │            ✔  Installation Complete!                 │"
+echo "  │        ✔  Guardian is installed and running!         │"
 echo "  └─────────────────────────────────────────────────────┘"
 echo -e "${NC}"
 echo ""
-echo -e "  ${BOLD}Dashboard:${NC}     http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost'):3334/dashboard?token=${DASHBOARD_TOKEN}"
+
+# Show the right dashboard URL
+if [[ -n "${GUARDIAN_DOMAIN:-}" ]]; then
+  echo -e "  ${BOLD}Dashboard:${NC}     https://${GUARDIAN_DOMAIN}/dashboard?token=${DASHBOARD_TOKEN}"
+else
+  echo -e "  ${BOLD}Dashboard:${NC}     http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost'):3334/dashboard?token=${DASHBOARD_TOKEN}"
+fi
 echo -e "  ${BOLD}Config:${NC}        ${INSTALL_DIR}/.env"
 echo -e "  ${BOLD}SSH Key:${NC}       ${SSH_KEY_PATH}"
-echo -e "  ${BOLD}Logs:${NC}          journalctl -u guardian -f"
 echo ""
 
 if [[ "$DEPLOY_MODE" == "1" ]]; then
-  echo -e "  ${BOLD}Start:${NC}         cd ${INSTALL_DIR} && docker compose up -d"
+  echo -e "  ${BOLD}Logs:${NC}          cd ${INSTALL_DIR} && docker compose logs -f"
+  echo -e "  ${BOLD}Restart:${NC}       cd ${INSTALL_DIR} && docker compose restart"
+  echo -e "  ${BOLD}Stop:${NC}          cd ${INSTALL_DIR} && docker compose down"
 else
-  echo -e "  ${BOLD}Start:${NC}         sudo systemctl start guardian"
+  echo -e "  ${BOLD}Logs:${NC}          journalctl -u guardian -f"
+  echo -e "  ${BOLD}Restart:${NC}       sudo systemctl restart guardian"
+  echo -e "  ${BOLD}Stop:${NC}          sudo systemctl stop guardian"
 fi
 
 echo ""

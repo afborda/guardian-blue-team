@@ -35,8 +35,17 @@ Guardian e um SIEM/SOAR agentless que monitora seus servidores via SSH, detecta 
 
 ## Inicio Rapido
 
+### Instalador Interativo (recomendado)
+
 ```bash
-# Docker em uma linha (SQLite, zero dependencias)
+bash <(curl -fsSL https://raw.githubusercontent.com/afborda/guardian-blue-team/main/install.sh)
+```
+
+O instalador guia voce por: geracao de chave SSH, configuracao do .env, escolha do provedor de IA, e setup do primeiro servidor — tudo com interface colorida no terminal. Todos os prompts tem defaults — basta apertar Enter para aceitar.
+
+### Docker (uma linha, sem instalador)
+
+```bash
 docker run -d --name guardian \
   -e TELEGRAM_BOT_TOKEN=seu_token \
   -e TELEGRAM_CHAT_ID=seu_chat_id \
@@ -46,13 +55,11 @@ docker run -d --name guardian \
   ghcr.io/afborda/guardian-blue-team:latest
 ```
 
-Ou use o instalador interativo:
+### Desinstalar
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/afborda/guardian-blue-team/main/install.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/afborda/guardian-blue-team/main/install.sh) --uninstall
 ```
-
-O instalador guia voce por: geracao de chave SSH, configuracao do .env, escolha do provedor de IA, e setup do primeiro servidor — tudo com interface colorida no terminal.
 
 ## Arquitetura
 
@@ -315,12 +322,12 @@ O instalador (`install.sh`) guia voce pelo setup completo em 7 passos. Tudo que 
 | Passo | O que pergunta | Obrigatorio? | Notas |
 |-------|---------------|--------------|-------|
 | 1 | — | — | Detecta SO e gerenciador de pacotes automaticamente |
-| 2 | — | — | Verifica pre-requisitos (Node.js 20+, npm, SSH client, Docker) |
+| 2 | — | — | Verifica pre-requisitos (Node.js 20+, npm, SSH client, Docker, disco, RAM, rede) |
 | 3 | Diretorio de instalacao | Nao | Padrao: `~/.guardian` |
-| 4 | — | — | Gera par de chaves SSH ed25519; mostra chave publica para adicionar nos servidores |
-| 5 | **Token do Bot Telegram** | Sim | De [@BotFather](https://t.me/BotFather) |
-| 5 | **Chat ID do Telegram** | Sim | De [@userinfobot](https://t.me/userinfobot) |
-| 5 | Escolha do provedor IA (1-5) | Nao | 1=Gemini, 2=OpenAI, 3=Claude, 4=Ollama, 5=Pular |
+| 4 | — | — | Gera chave SSH unica (`guardian-XXXXX_ed25519`); nunca sobrescreve chaves existentes |
+| 5 | Token do Bot Telegram | Nao | De [@BotFather](https://t.me/BotFather) — pode configurar depois no `.env` |
+| 5 | Chat ID do Telegram | Nao | De [@userinfobot](https://t.me/userinfobot) — pode configurar depois no `.env` |
+| 5 | Escolha do provedor IA (1-5) | Nao | 1=Gemini, 2=OpenAI, 3=Claude, 4=Ollama, 5=Pular (padrao) |
 | 5 | Chave API do provedor IA | So se 1-3 | Input secreto (nao exibido) |
 | 5 | Escolha de banco de dados (1-2) | Nao | 1=SQLite (padrao), 2=PostgreSQL |
 | 5 | URL do PostgreSQL | So se 2 | String de conexao |
@@ -328,16 +335,19 @@ O instalador (`install.sh`) guia voce pelo setup completo em 7 passos. Tudo que 
 | 5 | IPs confiaveis | Nao | IPs admin separados por virgula para evitar alertas falsos |
 | 5 | Fingerprints SSH confiaveis | Nao | Valores `SHA256:xxx` separados por virgula (obter via `ssh-keygen -lf ~/.ssh/id_ed25519.pub`) |
 | 6 | Modo de deploy (1-2) | Nao | 1=Docker Compose (se disponivel), 2=Node.js nativo + systemd |
-| 7 | **Nome do servidor** | Sim | Nome amigavel (ex: `prod-web-1`) |
-| 7 | **IP/hostname do servidor** | Sim | Endereco do servidor alvo |
+| 7 | Nome do servidor | Nao | Padrao: hostname atual |
+| 7 | IP/hostname do servidor | Nao | Padrao: `127.0.0.1` |
 | 7 | Porta SSH | Nao | Padrao: `22` |
-| 7 | Usuario SSH | Nao | Padrao: `ubuntu` |
+| 7 | Usuario SSH | Nao | Padrao: usuario atual |
 
 Apos o setup, o instalador:
 - Cria `.env` com todos os valores configurados
-- Testa conectividade SSH com o primeiro servidor
-- Cria servico systemd (modo nativo) ou prepara Docker Compose
+- Gera chave SSH unica (seguro — nunca sobrescreve suas chaves)
+- Testa conectividade SSH com o primeiro servidor (se nao for localhost)
+- Cria servico systemd (modo nativo) ou `docker-compose.yml` (modo Docker)
 - Exibe a URL do dashboard com token auto-gerado
+
+**Desinstalar:** `bash <(curl -fsSL .../install.sh) --uninstall` remove tudo (config, chaves, dados, servico, imagem Docker).
 
 ## Desenvolvimento
 

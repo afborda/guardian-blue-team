@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # No set -e: we handle errors explicitly to avoid silent crashes
 
-INSTALLER_VERSION="1.1.0"
+INSTALLER_VERSION="1.2.0"
 
 # ─── Guardian Blue Team — Interactive Installer ─────────────────────────────────
 # Supports: Ubuntu/Debian, Alpine, macOS
@@ -11,6 +11,11 @@ INSTALLER_VERSION="1.1.0"
 #
 # Flags:
 #   --uninstall   Remove Guardian and all data
+#
+# Non-interactive (env vars):
+#   GUARDIAN_TELEGRAM_TOKEN=xxx GUARDIAN_TELEGRAM_CHAT=xxx \
+#   GUARDIAN_DOMAIN=guardian.example.com \
+#   bash <(curl -fsSL .../install.sh)
 
 # ─── Colors & Helpers ────────────────────────────────────────────────────────────
 
@@ -55,19 +60,6 @@ prompt() {
   fi
 }
 
-prompt_secret() {
-  local var_name="$1" prompt_text="$2"
-  local input=""
-  echo -ne "  ${BOLD}$prompt_text${NC}: "
-  # Try silent read from tty, fall back to visible read
-  if read -rs input </dev/tty 2>/dev/null; then
-    echo ""
-  else
-    read -r input 2>/dev/null || input=""
-  fi
-  printf -v "$var_name" '%s' "$input"
-}
-
 prompt_yn() {
   local prompt_text="$1" default="${2:-y}"
   local input=""
@@ -97,6 +89,12 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   echo ""
 
   if prompt_yn "Are you sure? (y/N)" "n"; then
+    # Stop docker compose
+    if [[ -f "${INSTALL_DIR}/docker-compose.yml" ]]; then
+      cd "$INSTALL_DIR"
+      docker compose down 2>/dev/null || true
+      info "Stopped Docker containers"
+    fi
     # Stop service
     if systemctl is-active guardian &>/dev/null 2>&1; then
       sudo systemctl stop guardian
@@ -107,12 +105,6 @@ if [[ "${1:-}" == "--uninstall" ]]; then
       sudo rm -f /etc/systemd/system/guardian.service
       sudo systemctl daemon-reload
       info "Removed systemd service"
-    fi
-    # Stop docker container
-    if docker ps -q --filter name=guardian &>/dev/null 2>&1; then
-      docker stop guardian 2>/dev/null || true
-      docker rm guardian 2>/dev/null || true
-      info "Stopped Docker container"
     fi
     # Remove docker image
     if docker image inspect ghcr.io/afborda/guardian-blue-team:latest &>/dev/null 2>&1; then
@@ -158,7 +150,7 @@ fi
 
 success "OS: ${OS} | Package manager: ${PKG_MANAGER:-none detected}"
 
-# ─── Step 2: Check Prerequisites ───────────────────────────────────────────────
+# ─── Step 2: Check & Fix Prerequisites ────────────────────────────────────────
 
 step 2 "Checking prerequisites"
 
@@ -166,18 +158,47 @@ MISSING=()
 WARNINGS=()
 HAS_DOCKER=false
 
-# ─── Node.js ────────────────────────────────────────────────────────────────────
-if ! command -v node &>/dev/null; then
-  MISSING+=("Node.js (v20+)")
-  error "Node.js not found"
-else
+# ─── Node.js (auto-install if missing or outdated) ─────────────────────────────
+NODE_OK=false
+if command -v node &>/dev/null; then
   NODE_VERSION=$(node -v | sed 's/v//')
   NODE_MAJOR=$(echo "$NODE_VERSION" | cut -d. -f1)
-  if [[ $NODE_MAJOR -lt 20 ]]; then
-    MISSING+=("Node.js >= 20 (current: v${NODE_VERSION})")
-    error "Node.js v${NODE_VERSION} found but v20+ is required"
-  else
+  if [[ $NODE_MAJOR -ge 20 ]]; then
     success "Node.js v${NODE_VERSION}"
+    NODE_OK=true
+  else
+    warn "Node.js v${NODE_VERSION} found but v20+ is required"
+  fi
+fi
+
+if [[ "$NODE_OK" == "false" ]]; then
+  info "Node.js 20+ not found — attempting to install..."
+  if [[ "$PKG_MANAGER" == "apt" ]]; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x 2>/dev/null | bash - >/dev/null 2>&1
+    apt-get install -y nodejs >/dev/null 2>&1
+  elif [[ "$PKG_MANAGER" == "brew" ]]; then
+    brew install node >/dev/null 2>&1
+  elif [[ "$PKG_MANAGER" == "apk" ]]; then
+    apk add --no-cache nodejs npm >/dev/null 2>&1
+  elif [[ "$PKG_MANAGER" == "yum" ]]; then
+    curl -fsSL https://rpm.nodesource.com/setup_20.x 2>/dev/null | bash - >/dev/null 2>&1
+    yum install -y nodejs >/dev/null 2>&1
+  fi
+
+  # Verify install worked
+  if command -v node &>/dev/null; then
+    NODE_VERSION=$(node -v | sed 's/v//')
+    NODE_MAJOR=$(echo "$NODE_VERSION" | cut -d. -f1)
+    if [[ $NODE_MAJOR -ge 20 ]]; then
+      success "Node.js v${NODE_VERSION} (auto-installed)"
+      NODE_OK=true
+    else
+      MISSING+=("Node.js >= 20 (installed v${NODE_VERSION} but need 20+)")
+      error "Auto-install got wrong version"
+    fi
+  else
+    MISSING+=("Node.js (v20+) — auto-install failed")
+    error "Could not install Node.js automatically"
   fi
 fi
 
@@ -191,8 +212,22 @@ fi
 
 # ─── Git ────────────────────────────────────────────────────────────────────────
 if ! command -v git &>/dev/null; then
-  MISSING+=("git")
-  error "git not found (needed to clone the repository)"
+  info "git not found — installing..."
+  if [[ "$PKG_MANAGER" == "apt" ]]; then
+    apt-get install -y git >/dev/null 2>&1
+  elif [[ "$PKG_MANAGER" == "brew" ]]; then
+    brew install git >/dev/null 2>&1
+  elif [[ "$PKG_MANAGER" == "apk" ]]; then
+    apk add --no-cache git >/dev/null 2>&1
+  elif [[ "$PKG_MANAGER" == "yum" ]]; then
+    yum install -y git >/dev/null 2>&1
+  fi
+  if command -v git &>/dev/null; then
+    success "git $(git --version | awk '{print $3}') (auto-installed)"
+  else
+    MISSING+=("git")
+    error "git not found and auto-install failed"
+  fi
 else
   success "git $(git --version | awk '{print $3}')"
 fi
@@ -213,13 +248,13 @@ else
   success "ssh-keygen available"
 fi
 
-# ─── openssl or /dev/urandom (for token generation) ─────────────────────────────
+# ─── openssl ───────────────────────────────────────────────────────────────────
 if command -v openssl &>/dev/null; then
-  success "openssl available (token generation)"
+  success "openssl available"
 elif [[ -r /dev/urandom ]]; then
-  success "/dev/urandom readable (token generation)"
+  success "/dev/urandom readable"
 else
-  WARNINGS+=("Neither openssl nor /dev/urandom available — dashboard token may need manual setting")
+  WARNINGS+=("No secure random source — dashboard token may need manual setting")
   warn "No secure random source found"
 fi
 
@@ -239,7 +274,7 @@ else
   HAS_DOCKER=false
 fi
 
-# ─── curl or wget (needed for Telegram, threat intel APIs) ──────────────────────
+# ─── curl ───────────────────────────────────────────────────────────────────────
 if command -v curl &>/dev/null; then
   success "curl available"
 elif command -v wget &>/dev/null; then
@@ -249,19 +284,19 @@ else
   warn "No HTTP client (curl/wget) found"
 fi
 
-# ─── Disk space (minimum 500MB free) ────────────────────────────────────────────
+# ─── Disk space ─────────────────────────────────────────────────────────────────
 INSTALL_PARENT=$(dirname "${INSTALL_DIR:-$HOME/.guardian}")
 if command -v df &>/dev/null; then
   FREE_MB=$(df -m "$INSTALL_PARENT" 2>/dev/null | awk 'NR==2{print $4}')
   if [[ -n "$FREE_MB" && "$FREE_MB" -lt 500 ]]; then
     MISSING+=("Disk space: only ${FREE_MB}MB free (need 500MB+)")
-    error "Insufficient disk space: ${FREE_MB}MB free in ${INSTALL_PARENT}"
+    error "Insufficient disk space: ${FREE_MB}MB free"
   elif [[ -n "$FREE_MB" ]]; then
     success "Disk space: ${FREE_MB}MB free"
   fi
 fi
 
-# ─── RAM (minimum 256MB available) ──────────────────────────────────────────────
+# ─── RAM ────────────────────────────────────────────────────────────────────────
 if [[ "$OS" == "macos" ]]; then
   TOTAL_RAM_MB=$(sysctl -n hw.memsize 2>/dev/null | awk '{print int($1/1048576)}')
   if [[ -n "$TOTAL_RAM_MB" && "$TOTAL_RAM_MB" -gt 0 ]]; then
@@ -270,7 +305,7 @@ if [[ "$OS" == "macos" ]]; then
 elif [[ -f /proc/meminfo ]]; then
   AVAIL_RAM_MB=$(grep MemAvailable /proc/meminfo 2>/dev/null | awk '{print int($2/1024)}')
   if [[ -n "$AVAIL_RAM_MB" && "$AVAIL_RAM_MB" -lt 256 ]]; then
-    WARNINGS+=("Low RAM: only ${AVAIL_RAM_MB}MB available (Guardian uses ~50MB but Node.js build needs more)")
+    WARNINGS+=("Low RAM: ${AVAIL_RAM_MB}MB available")
     warn "Low available RAM: ${AVAIL_RAM_MB}MB (recommended: 512MB+)"
   elif [[ -n "$AVAIL_RAM_MB" ]]; then
     success "RAM: ${AVAIL_RAM_MB}MB available"
@@ -283,38 +318,31 @@ if [[ -w "$INSTALL_PARENT_DIR" ]]; then
   success "Write permission: $INSTALL_PARENT_DIR"
 else
   MISSING+=("Write permission to ${INSTALL_PARENT_DIR}")
-  error "Cannot write to ${INSTALL_PARENT_DIR} — run as a user with write access"
+  error "Cannot write to ${INSTALL_PARENT_DIR}"
 fi
 
-# ─── Network connectivity (check github.com + npm registry) ─────────────────────
+# ─── Network ───────────────────────────────────────────────────────────────────
 if command -v curl &>/dev/null; then
   if curl -sf --max-time 5 "https://registry.npmjs.org/" &>/dev/null; then
-    success "Network: npm registry reachable"
-  else
-    WARNINGS+=("Cannot reach npm registry — install may fail if dependencies aren't cached")
-    warn "Cannot reach registry.npmjs.org (offline install may fail)"
-  fi
-  if curl -sf --max-time 5 "https://github.com" &>/dev/null; then
-    success "Network: github.com reachable"
-  else
-    WARNINGS+=("Cannot reach github.com — git clone will fail")
-    warn "Cannot reach github.com"
-  fi
-elif command -v wget &>/dev/null; then
-  if wget -q --timeout=5 --spider "https://registry.npmjs.org/" 2>/dev/null; then
     success "Network: npm registry reachable"
   else
     WARNINGS+=("Cannot reach npm registry")
     warn "Cannot reach registry.npmjs.org"
   fi
+  if curl -sf --max-time 5 "https://github.com" &>/dev/null; then
+    success "Network: github.com reachable"
+  else
+    WARNINGS+=("Cannot reach github.com")
+    warn "Cannot reach github.com"
+  fi
 fi
 
-# ─── systemd (for native service mode) ──────────────────────────────────────────
+# ─── systemd ───────────────────────────────────────────────────────────────────
 if command -v systemctl &>/dev/null; then
-  success "systemd available (for service management)"
+  success "systemd available"
   HAS_SYSTEMD=true
 else
-  info "systemd not available (you'll need to manage the process manually)"
+  info "systemd not available"
   HAS_SYSTEMD=false
 fi
 
@@ -334,24 +362,6 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
   for m in "${MISSING[@]}"; do
     echo -e "    ${RED}✖${NC} $m"
   done
-  echo ""
-  echo -e "  ${BOLD}How to fix:${NC}"
-  echo ""
-  if [[ "$PKG_MANAGER" == "apt" ]]; then
-    echo -e "    ${DIM}# Install Node.js 20+ (via NodeSource):${NC}"
-    echo -e "    ${DIM}curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -${NC}"
-    echo -e "    ${DIM}sudo apt install -y nodejs git openssh-client${NC}"
-  elif [[ "$PKG_MANAGER" == "brew" ]]; then
-    echo -e "    ${DIM}brew install node git openssh${NC}"
-  elif [[ "$PKG_MANAGER" == "apk" ]]; then
-    echo -e "    ${DIM}apk add nodejs npm git openssh-client${NC}"
-  elif [[ "$PKG_MANAGER" == "yum" ]]; then
-    echo -e "    ${DIM}# Install Node.js 20+ (via NodeSource):${NC}"
-    echo -e "    ${DIM}curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -${NC}"
-    echo -e "    ${DIM}sudo yum install -y nodejs git openssh-clients${NC}"
-  else
-    echo -e "    ${DIM}Install Node.js 20+, npm, git, and an SSH client for your OS${NC}"
-  fi
   echo ""
   error "Fix the issues above and re-run this script."
   exit 1
@@ -385,13 +395,11 @@ fi
 if [[ -n "$SSH_KEY_PATH" && -f "$SSH_KEY_PATH" ]]; then
   success "SSH key already exists: $SSH_KEY_PATH"
 else
-  # Generate unique key name using openssl
+  # Generate unique key name
   KEY_ID=$(openssl rand -hex 3 2>/dev/null)
   KEY_ID="${KEY_ID:-$(date +%s | tail -c 6)}"
   KEY_ID="${KEY_ID:0:5}"
   SSH_KEY_PATH="${INSTALL_DIR}/keys/guardian-${KEY_ID}_ed25519"
-  # -N "" = no passphrase, -q = quiet, -f = output file
-  # Use yes to auto-answer any overwrite prompt
   yes n 2>/dev/null | ssh-keygen -t ed25519 -f "$SSH_KEY_PATH" -N "" -q -C "guardian@$(hostname)" 2>/dev/null || true
   if [[ -f "$SSH_KEY_PATH" ]]; then
     success "Generated SSH key: $SSH_KEY_PATH"
@@ -399,7 +407,7 @@ else
     info "Add this public key to your servers:"
     echo -e "    ${DIM}$(cat "${SSH_KEY_PATH}.pub")${NC}"
     echo ""
-    info "You can add this key to servers later via:"
+    info "You can add this key later via:"
     echo -e "    ${DIM}ssh-copy-id -i ${SSH_KEY_PATH}.pub user@your-server${NC}"
   else
     warn "Could not generate SSH key — you can create one manually later"
@@ -413,10 +421,22 @@ step 5 "Environment configuration"
 
 DASHBOARD_TOKEN=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | xxd -p | head -c 32)
 
+# Accept env vars for non-interactive mode
+TELEGRAM_TOKEN="${GUARDIAN_TELEGRAM_TOKEN:-}"
+TELEGRAM_CHAT="${GUARDIAN_TELEGRAM_CHAT:-}"
+
 echo ""
 info "Telegram Bot (required for alerts):"
-prompt TELEGRAM_TOKEN "Bot token (from @BotFather)" ""
-prompt TELEGRAM_CHAT "Chat ID (from @userinfobot)" ""
+if [[ -z "$TELEGRAM_TOKEN" ]]; then
+  prompt TELEGRAM_TOKEN "Bot token (from @BotFather)" ""
+else
+  success "Bot token: (from environment)"
+fi
+if [[ -z "$TELEGRAM_CHAT" ]]; then
+  prompt TELEGRAM_CHAT "Chat ID (from @userinfobot)" ""
+else
+  success "Chat ID: (from environment)"
+fi
 
 if [[ -z "$TELEGRAM_TOKEN" || -z "$TELEGRAM_CHAT" ]]; then
   warn "Telegram not configured — you can set it later in ${INSTALL_DIR}/.env"
@@ -433,9 +453,9 @@ OPENAI_KEY=""
 ANTHROPIC_KEY=""
 
 case "$AI_CHOICE" in
-  1) prompt GEMINI_KEY "Gemini API key (paste here, Enter to skip)" ""; AI_PROVIDER="gemini" ;;
-  2) prompt OPENAI_KEY "OpenAI API key (paste here, Enter to skip)" ""; AI_PROVIDER="openai" ;;
-  3) prompt ANTHROPIC_KEY "Anthropic API key (paste here, Enter to skip)" ""; AI_PROVIDER="claude" ;;
+  1) prompt GEMINI_KEY "Gemini API key (paste, Enter to skip)" ""; AI_PROVIDER="gemini" ;;
+  2) prompt OPENAI_KEY "OpenAI API key (paste, Enter to skip)" ""; AI_PROVIDER="openai" ;;
+  3) prompt ANTHROPIC_KEY "Anthropic API key (paste, Enter to skip)" ""; AI_PROVIDER="claude" ;;
   4) AI_PROVIDER="ollama" ;;
   *) AI_PROVIDER="auto" ;;
 esac
@@ -443,12 +463,17 @@ esac
 echo ""
 info "Database:"
 echo -e "    ${DIM}1) SQLite (zero-config, great for single server)${NC}"
-echo -e "    ${DIM}2) PostgreSQL (recommended for multiple servers)${NC}"
+echo -e "    ${DIM}2) PostgreSQL (recommended for multiple servers — auto-configured)${NC}"
 prompt DB_CHOICE "Choose [1-2]" "1"
 
-DATABASE_URL="sqlite:${INSTALL_DIR}/data/guardian.db"
+DATABASE_URL="sqlite:/data/guardian.db"
+USE_POSTGRES=false
 if [[ "$DB_CHOICE" == "2" ]]; then
-  prompt DATABASE_URL "PostgreSQL URL" "postgres://guardian:secret@localhost:5432/guardian"
+  USE_POSTGRES=true
+  # Generate postgres password
+  PG_PASSWORD=$(openssl rand -hex 12 2>/dev/null || echo "guardian_$(date +%s)")
+  DATABASE_URL="postgres://guardian:${PG_PASSWORD}@guardian-db:5432/guardian"
+  success "PostgreSQL will be auto-configured in Docker Compose"
 fi
 
 echo ""
@@ -459,8 +484,8 @@ echo ""
 info "Security — Trusted entities (optional):"
 info "These prevent false alerts for YOUR OWN logins."
 
-# Detect current SSH client IP (the IP connecting to this server right now)
-CURRENT_CLIENT_IP=$(echo "$SSH_CLIENT" | awk '{print $1}')
+# Detect current SSH client IP
+CURRENT_CLIENT_IP=$(echo "${SSH_CLIENT:-}" | awk '{print $1}')
 if [[ -z "$CURRENT_CLIENT_IP" ]]; then
   CURRENT_CLIENT_IP=$(who am i 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 fi
@@ -469,22 +494,21 @@ if [[ -n "$CURRENT_CLIENT_IP" ]]; then
   info "Your current IP: ${BOLD}${CURRENT_CLIENT_IP}${NC} (detected from SSH session)"
   prompt TRUSTED_IPS_VAL "Trusted IPs (comma-separated, Enter to accept)" "$CURRENT_CLIENT_IP"
 else
-  echo -e "    ${DIM}Comma-separated IPs. Example: 203.0.113.10,198.51.100.5${NC}"
-  echo -e "    ${DIM}Tip: run 'curl ifconfig.me' to find your IP${NC}"
+  echo -e "    ${DIM}Comma-separated IPs. Tip: run 'curl ifconfig.me' to find yours${NC}"
   prompt TRUSTED_IPS_VAL "Your admin/home IPs (Enter to skip)" ""
 fi
 
 # Detect current SSH key fingerprint
 CURRENT_FP=""
-if [[ -n "$SSH_CLIENT" && -f /var/log/auth.log ]]; then
-  CURRENT_FP=$(grep "Accepted publickey" /var/log/auth.log 2>/dev/null | grep "$CURRENT_CLIENT_IP" | tail -1 | grep -oE 'SHA256:[A-Za-z0-9+/=]+' | tail -1)
+if [[ -n "${SSH_CLIENT:-}" && -f /var/log/auth.log ]]; then
+  CURRENT_FP=$(grep "Accepted publickey" /var/log/auth.log 2>/dev/null | grep "${CURRENT_CLIENT_IP:-x}" | tail -1 | grep -oE 'SHA256:[A-Za-z0-9+/=]+' | tail -1)
 fi
 
 if [[ -n "$CURRENT_FP" ]]; then
-  info "Your current key fingerprint: ${BOLD}${CURRENT_FP}${NC}"
+  info "Your SSH key fingerprint: ${BOLD}${CURRENT_FP}${NC}"
   prompt TRUSTED_FP_VAL "Trusted fingerprints (Enter to accept)" "$CURRENT_FP"
 else
-  echo -e "    ${DIM}SSH key fingerprints (SHA256:xxx). Get yours with: ssh-keygen -lf ~/.ssh/id_ed25519.pub${NC}"
+  echo -e "    ${DIM}Get yours: ssh-keygen -lf ~/.ssh/id_ed25519.pub${NC}"
   prompt TRUSTED_FP_VAL "Trusted fingerprints (Enter to skip)" ""
 fi
 
@@ -505,7 +529,7 @@ ANTHROPIC_API_KEY=${ANTHROPIC_KEY}
 OLLAMA_URL=http://localhost:11434
 OLLAMA_MODEL=qwen3:4b
 ABUSEIPDB_API_KEY=${ABUSEIPDB_KEY}
-HOST_SSH_KEY_PATH=${SSH_KEY_PATH}
+HOST_SSH_KEY_PATH=/home/node/.ssh/$(basename "$SSH_KEY_PATH")
 TRUSTED_IPS=${TRUSTED_IPS_VAL}
 TRUSTED_FINGERPRINTS=${TRUSTED_FP_VAL}
 CVE_MONITOR_ENABLED=true
@@ -529,23 +553,30 @@ fi
 if [[ "$DEPLOY_MODE" == "1" ]]; then
   info "Pulling Guardian Docker image..."
   docker pull ghcr.io/afborda/guardian-blue-team:latest || warn "Pull failed — will build locally"
-  success "Docker mode ready"
+  success "Image pulled"
 
-  # Check if Traefik is running
+  # Detect Traefik
   TRAEFIK_NETWORK=""
+  GUARDIAN_DOMAIN="${GUARDIAN_DOMAIN:-}"
+
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qi traefik; then
-    # Find the traefik network
-    TRAEFIK_NETWORK=$(docker inspect $(docker ps --format '{{.Names}}' | grep -i traefik | head -1) 2>/dev/null | grep -oP '"NetworkMode":\s*"\K[^"]+' | head -1)
-    if [[ -z "$TRAEFIK_NETWORK" || "$TRAEFIK_NETWORK" == "default" ]]; then
+    # Find traefik network by inspecting its container networks
+    TRAEFIK_CONTAINER=$(docker ps --format '{{.Names}}' | grep -i traefik | head -1)
+    TRAEFIK_NETWORK=$(docker inspect "$TRAEFIK_CONTAINER" 2>/dev/null | grep -oP '"Name":\s*"\K[^"]+' | grep -iE 'traefik|proxy|public' | head -1)
+    if [[ -z "$TRAEFIK_NETWORK" ]]; then
       TRAEFIK_NETWORK=$(docker network ls --format '{{.Name}}' | grep -iE 'traefik|proxy' | head -1)
     fi
   fi
 
-  # Create docker-compose.yml
   if [[ -n "$TRAEFIK_NETWORK" ]]; then
     info "Traefik detected (network: ${TRAEFIK_NETWORK})"
-    prompt GUARDIAN_DOMAIN "Domain for Guardian dashboard" "guardian.$(hostname -d 2>/dev/null || echo 'example.com')"
+    if [[ -z "$GUARDIAN_DOMAIN" ]]; then
+      prompt GUARDIAN_DOMAIN "Domain for Guardian dashboard" "guardian.$(hostname -d 2>/dev/null || echo 'example.com')"
+    else
+      success "Domain: ${GUARDIAN_DOMAIN} (from environment)"
+    fi
 
+    # Docker compose with Traefik + optional Postgres
     cat > "${INSTALL_DIR}/docker-compose.yml" << DCEOF
 services:
   guardian:
@@ -564,13 +595,51 @@ services:
       - "traefik.http.routers.guardian.entrypoints=websecure"
       - "traefik.http.routers.guardian.tls.certresolver=letsencrypt"
       - "traefik.http.services.guardian.loadbalancer.server.port=3334"
+      - "traefik.docker.network=${TRAEFIK_NETWORK}"
+DCEOF
+
+    # Add postgres if selected
+    if [[ "$USE_POSTGRES" == "true" ]]; then
+      cat >> "${INSTALL_DIR}/docker-compose.yml" << DCEOF
+    depends_on:
+      guardian-db:
+        condition: service_healthy
+
+  guardian-db:
+    image: postgres:16-alpine
+    container_name: guardian-db
+    environment:
+      POSTGRES_DB: guardian
+      POSTGRES_USER: guardian
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - ${TRAEFIK_NETWORK}
+    healthcheck:
+      test: ["CMD-ONLY", "pg_isready", "-U", "guardian"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pg_data:
+
+DCEOF
+    fi
+
+    # Add networks section
+    cat >> "${INSTALL_DIR}/docker-compose.yml" << DCEOF
 
 networks:
   ${TRAEFIK_NETWORK}:
     external: true
 DCEOF
-    success "Created docker-compose.yml (Traefik: ${GUARDIAN_DOMAIN})"
+    success "Created docker-compose.yml (Traefik + ${GUARDIAN_DOMAIN})"
+
   else
+    # No Traefik — plain docker compose
     cat > "${INSTALL_DIR}/docker-compose.yml" << 'DCEOF'
 services:
   guardian:
@@ -584,6 +653,33 @@ services:
       - ./keys:/home/node/.ssh:ro
     restart: unless-stopped
 DCEOF
+
+    if [[ "$USE_POSTGRES" == "true" ]]; then
+      cat >> "${INSTALL_DIR}/docker-compose.yml" << DCEOF
+    depends_on:
+      guardian-db:
+        condition: service_healthy
+
+  guardian-db:
+    image: postgres:16-alpine
+    container_name: guardian-db
+    environment:
+      POSTGRES_DB: guardian
+      POSTGRES_USER: guardian
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-ONLY", "pg_isready", "-U", "guardian"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pg_data:
+DCEOF
+    fi
     success "Created docker-compose.yml"
   fi
 
@@ -591,8 +687,20 @@ DCEOF
   info "Starting Guardian..."
   cd "${INSTALL_DIR}"
   docker compose up -d
-  success "Guardian is running!"
+  if docker compose ps --format '{{.State}}' 2>/dev/null | grep -q "running"; then
+    success "Guardian is running!"
+  else
+    # Wait a moment for startup
+    sleep 3
+    if docker compose ps --format '{{.State}}' 2>/dev/null | grep -q "running"; then
+      success "Guardian is running!"
+    else
+      warn "Container may still be starting — check: docker compose logs -f"
+    fi
+  fi
+
 else
+  # Native Node.js mode
   if [[ ! -d "${INSTALL_DIR}/app" ]]; then
     info "Cloning Guardian..."
     git clone --depth 1 https://github.com/afborda/guardian-blue-team.git "${INSTALL_DIR}/app" 2>/dev/null || {
@@ -603,6 +711,7 @@ else
 
   if [[ -f "${INSTALL_DIR}/app/package.json" ]]; then
     cd "${INSTALL_DIR}/app"
+    info "Installing dependencies..."
     npm ci --production 2>/dev/null || npm install
     npm run build 2>/dev/null || true
     success "Guardian built successfully"
@@ -629,7 +738,7 @@ SVCEOF
       sudo systemctl daemon-reload
       sudo systemctl enable guardian
       sudo systemctl start guardian
-      success "Systemd service created and started (guardian.service)"
+      success "Guardian service created and started!"
     fi
   fi
 fi
@@ -639,13 +748,13 @@ fi
 step 7 "Add your first server"
 
 echo ""
-info "Configure the first server to monitor (you can add more later via Telegram)."
+info "Configure the first server to monitor (add more later via Telegram /add-server)."
 prompt SERVER_NAME "Server name (e.g., prod-web-1)" "$(hostname)"
 prompt SERVER_HOST "Server IP/hostname" "127.0.0.1"
 prompt SERVER_PORT "SSH port" "22"
 prompt SERVER_USER "SSH user" "$(whoami)"
 
-# Only test SSH if host is not empty/localhost
+# Only test SSH if not localhost
 if [[ -n "$SERVER_HOST" && "$SERVER_HOST" != "127.0.0.1" ]]; then
   echo ""
   info "Testing SSH connection to ${SERVER_USER}@${SERVER_HOST}:${SERVER_PORT}..."
@@ -653,7 +762,7 @@ if [[ -n "$SERVER_HOST" && "$SERVER_HOST" != "127.0.0.1" ]]; then
     success "SSH connection successful!"
   else
     warn "SSH connection failed. Add the public key to the server:"
-    echo -e "    ${DIM}ssh-copy-id -i ${SSH_KEY_PATH}.pub ${SERVER_USER}@${SERVER_HOST}${NC}"
+    echo -e "    ${DIM}ssh-copy-id -i ${SSH_KEY_PATH}.pub -p ${SERVER_PORT} ${SERVER_USER}@${SERVER_HOST}${NC}"
   fi
 fi
 
@@ -665,6 +774,12 @@ HOST_SSH_HOST=${SERVER_HOST}
 HOST_SSH_PORT=${SERVER_PORT}
 HOST_SSH_USER=${SERVER_USER}
 EOF
+
+# Restart to pick up server config
+if [[ "$DEPLOY_MODE" == "1" ]]; then
+  cd "${INSTALL_DIR}"
+  docker compose restart guardian >/dev/null 2>&1 || true
+fi
 
 # ─── Summary ────────────────────────────────────────────────────────────────────
 
@@ -680,7 +795,8 @@ echo ""
 if [[ -n "${GUARDIAN_DOMAIN:-}" ]]; then
   echo -e "  ${BOLD}Dashboard:${NC}     https://${GUARDIAN_DOMAIN}/dashboard?token=${DASHBOARD_TOKEN}"
 else
-  echo -e "  ${BOLD}Dashboard:${NC}     http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost'):3334/dashboard?token=${DASHBOARD_TOKEN}"
+  SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+  echo -e "  ${BOLD}Dashboard:${NC}     http://${SERVER_IP:-localhost}:3334/dashboard?token=${DASHBOARD_TOKEN}"
 fi
 echo -e "  ${BOLD}Config:${NC}        ${INSTALL_DIR}/.env"
 echo -e "  ${BOLD}SSH Key:${NC}       ${SSH_KEY_PATH}"

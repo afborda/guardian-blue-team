@@ -141,7 +141,7 @@ export class FIMWorker {
             serverName: target.name,
             source: 'fim',
             timestamp: new Date(),
-            line: `FILE_MODIFIED path=${file.path} old_owner=${baseline.owner} new_owner=${file.owner}`,
+            line: `FILE_OWNER_CHANGED path=${file.path} old_owner=${baseline.owner} new_owner=${file.owner}`,
           });
         }
       }
@@ -169,7 +169,7 @@ export class FIMWorker {
   // ─── Cron Jobs ───────────────────────────────────────────────────────────────
 
   private static cronEntryHash(entry: CronEntry): string {
-    return createHash('sha256').update(`${entry.schedule}${entry.command}`).digest('hex');
+    return createHash('sha256').update(`${entry.user}:${entry.source}:${entry.schedule}${entry.command}`).digest('hex');
   }
 
   private static async checkCronJobs(target: SSHTarget): Promise<void> {

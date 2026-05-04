@@ -68,7 +68,7 @@ const PLAYBOOKS: PlaybookDefinition[] = [
   {
     name: 'connection-flood-response',
     description: 'Responds to high connection floods — enriches IP, blocks if suspicious',
-    trigger: { eventType: 'high_connection_flood' },
+    trigger: { eventType: 'connection_flood' },
     steps: [
       { action: 'enrich-ip' },
       { action: 'check-repeat' },

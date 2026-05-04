@@ -11,7 +11,7 @@ export interface FileHash {
 
 export class FIMCollector {
   static async collect(target: SSHTarget): Promise<FileHash[]> {
-    const paths = CONSTANTS.fim.monitoredPaths.join(' ');
+    const paths = CONSTANTS.fim.monitoredPaths.map(p => `"${p}"`).join(' ');
 
     const command =
       `for f in ${paths}; do ` +

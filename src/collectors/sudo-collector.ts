@@ -5,8 +5,9 @@ import type { RawLogEntry } from './log-collector.js';
 
 export class SudoCollector {
   static async collect(target: SSHTarget, lookbackMinutes: number): Promise<RawLogEntry[]> {
+    const minutes = Math.max(1, Math.floor(Math.abs(lookbackMinutes)));
     const command =
-      `journalctl _COMM=sudo --since '${lookbackMinutes} min ago' --no-pager -o short-iso 2>/dev/null || ` +
+      `journalctl _COMM=sudo --since '${minutes} min ago' --no-pager -o short-iso 2>/dev/null || ` +
       `grep -i sudo /var/log/auth.log | tail -100`;
 
     const result = await SSHCollector.run(target, command, CONSTANTS.collection.sshTimeoutMs);

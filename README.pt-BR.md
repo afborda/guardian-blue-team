@@ -286,6 +286,46 @@ Funciona com 4 provedores (configuravel, com fallback automatico):
 | `HOST_SSH_USER` | `ubuntu` | Usuario SSH padrao |
 | `HOST_SSH_KEY_PATH` | `/home/node/.ssh/id_ed25519` | Caminho para chave SSH privada |
 
+### Seguranca — Entidades Confiaveis
+
+| Variavel | Padrao | Descricao |
+|----------|--------|-----------|
+| `TRUSTED_IPS` | — | IPs separados por virgula que nao disparam alerta `unauthorized_login` (seus IPs admin/casa) |
+| `TRUSTED_FINGERPRINTS` | — | Fingerprints SSH separados por virgula (`SHA256:xxx`) que nao disparam alerta `unauthorized_login` |
+| `DASHBOARD_TOKEN` | — | Token secreto para acessar `/dashboard` (auto-gerado pelo instalador) |
+| `TELEGRAM_WEBHOOK_SECRET` | — | Header secreto para validacao do webhook Telegram (rejeita em producao se ausente) |
+
+## Instalador Interativo
+
+O instalador (`install.sh`) guia voce pelo setup completo em 7 passos. Tudo que ele pergunta:
+
+| Passo | O que pergunta | Obrigatorio? | Notas |
+|-------|---------------|--------------|-------|
+| 1 | — | — | Detecta SO e gerenciador de pacotes automaticamente |
+| 2 | — | — | Verifica pre-requisitos (Node.js 20+, npm, SSH client, Docker) |
+| 3 | Diretorio de instalacao | Nao | Padrao: `~/.guardian` |
+| 4 | — | — | Gera par de chaves SSH ed25519; mostra chave publica para adicionar nos servidores |
+| 5 | **Token do Bot Telegram** | Sim | De [@BotFather](https://t.me/BotFather) |
+| 5 | **Chat ID do Telegram** | Sim | De [@userinfobot](https://t.me/userinfobot) |
+| 5 | Escolha do provedor IA (1-5) | Nao | 1=Gemini, 2=OpenAI, 3=Claude, 4=Ollama, 5=Pular |
+| 5 | Chave API do provedor IA | So se 1-3 | Input secreto (nao exibido) |
+| 5 | Escolha de banco de dados (1-2) | Nao | 1=SQLite (padrao), 2=PostgreSQL |
+| 5 | URL do PostgreSQL | So se 2 | String de conexao |
+| 5 | Chave API AbuseIPDB | Nao | Para threat intelligence (Enter para pular) |
+| 5 | IPs confiaveis | Nao | IPs admin separados por virgula para evitar alertas falsos |
+| 5 | Fingerprints SSH confiaveis | Nao | Valores `SHA256:xxx` separados por virgula (obter via `ssh-keygen -lf ~/.ssh/id_ed25519.pub`) |
+| 6 | Modo de deploy (1-2) | Nao | 1=Docker Compose (se disponivel), 2=Node.js nativo + systemd |
+| 7 | **Nome do servidor** | Sim | Nome amigavel (ex: `prod-web-1`) |
+| 7 | **IP/hostname do servidor** | Sim | Endereco do servidor alvo |
+| 7 | Porta SSH | Nao | Padrao: `22` |
+| 7 | Usuario SSH | Nao | Padrao: `ubuntu` |
+
+Apos o setup, o instalador:
+- Cria `.env` com todos os valores configurados
+- Testa conectividade SSH com o primeiro servidor
+- Cria servico systemd (modo nativo) ou prepara Docker Compose
+- Exibe a URL do dashboard com token auto-gerado
+
 ## Desenvolvimento
 
 ```bash

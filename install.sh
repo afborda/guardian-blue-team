@@ -372,11 +372,11 @@ success "Directory: $INSTALL_DIR"
 step 4 "SSH key setup"
 
 # Unique key name to avoid overwriting user keys
-KEY_ID=$(head -c 3 /dev/urandom | xxd -p | head -c 5)
+KEY_ID=$(openssl rand -hex 3 2>/dev/null | head -c 5 || printf '%05d' $((RANDOM % 100000)))
 SSH_KEY_PATH="${INSTALL_DIR}/keys/guardian-${KEY_ID}_ed25519"
 
-# Reuse existing guardian key if one exists
-EXISTING_KEY=$(find "${INSTALL_DIR}/keys" -name "guardian-*_ed25519" 2>/dev/null | head -1)
+# Reuse existing guardian key if one exists (also check old id_ed25519)
+EXISTING_KEY=$(find "${INSTALL_DIR}/keys" -name "guardian-*_ed25519" -o -name "id_ed25519" 2>/dev/null | head -1)
 if [[ -n "$EXISTING_KEY" ]]; then
   SSH_KEY_PATH="$EXISTING_KEY"
   success "SSH key already exists: $SSH_KEY_PATH"

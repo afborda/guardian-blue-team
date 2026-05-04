@@ -35,8 +35,17 @@ Guardian is an agentless SIEM/SOAR that monitors your servers via SSH, detects t
 
 ## Quick Start
 
+### Interactive Installer (recommended)
+
 ```bash
-# One-line Docker (SQLite, zero dependencies)
+bash <(curl -fsSL https://raw.githubusercontent.com/afborda/guardian-blue-team/main/install.sh)
+```
+
+The installer guides you through SSH key generation, environment configuration, AI provider selection, and first server setup with a beautiful terminal UI. All prompts have sensible defaults — just press Enter to accept them.
+
+### Docker (one-line, no installer)
+
+```bash
 docker run -d --name guardian \
   -e TELEGRAM_BOT_TOKEN=your_token \
   -e TELEGRAM_CHAT_ID=your_chat_id \
@@ -46,13 +55,11 @@ docker run -d --name guardian \
   ghcr.io/afborda/guardian-blue-team:latest
 ```
 
-Or use the interactive installer:
+### Uninstall
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/afborda/guardian-blue-team/main/install.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/afborda/guardian-blue-team/main/install.sh) --uninstall
 ```
-
-The installer guides you through SSH key generation, environment configuration, AI provider selection, and first server setup with a beautiful terminal UI.
 
 ## Architecture
 
@@ -315,12 +322,12 @@ The installer (`install.sh`) walks you through the full setup in 7 steps. Here's
 | Step | What it asks | Required? | Notes |
 |------|-------------|-----------|-------|
 | 1 | — | — | Auto-detects OS and package manager |
-| 2 | — | — | Verifies prerequisites (Node.js 20+, npm, SSH client, Docker) |
+| 2 | — | — | Verifies prerequisites (Node.js 20+, npm, SSH client, Docker, disk, RAM, network) |
 | 3 | Install directory | No | Default: `~/.guardian` |
-| 4 | — | — | Generates an ed25519 SSH key pair; shows public key to add to servers |
-| 5 | **Telegram Bot Token** | Yes | From [@BotFather](https://t.me/BotFather) |
-| 5 | **Telegram Chat ID** | Yes | From [@userinfobot](https://t.me/userinfobot) |
-| 5 | AI Provider choice (1-5) | No | 1=Gemini, 2=OpenAI, 3=Claude, 4=Ollama, 5=Skip |
+| 4 | — | — | Generates a unique ed25519 SSH key (`guardian-XXXXX_ed25519`); never overwrites existing keys |
+| 5 | Telegram Bot Token | No | From [@BotFather](https://t.me/BotFather) — can be set later in `.env` |
+| 5 | Telegram Chat ID | No | From [@userinfobot](https://t.me/userinfobot) — can be set later in `.env` |
+| 5 | AI Provider choice (1-5) | No | 1=Gemini, 2=OpenAI, 3=Claude, 4=Ollama, 5=Skip (default) |
 | 5 | AI API key | Only if 1-3 | Secret input (not echoed) |
 | 5 | Database choice (1-2) | No | 1=SQLite (default), 2=PostgreSQL |
 | 5 | PostgreSQL URL | Only if 2 | Connection string |
@@ -328,16 +335,19 @@ The installer (`install.sh`) walks you through the full setup in 7 steps. Here's
 | 5 | Trusted IPs | No | Comma-separated admin IPs to avoid false alerts |
 | 5 | Trusted SSH fingerprints | No | Comma-separated `SHA256:xxx` values (get via `ssh-keygen -lf ~/.ssh/id_ed25519.pub`) |
 | 6 | Deploy mode (1-2) | No | 1=Docker Compose (if available), 2=Native Node.js + systemd |
-| 7 | **Server name** | Yes | Friendly name (e.g., `prod-web-1`) |
-| 7 | **Server IP/hostname** | Yes | Target server address |
+| 7 | Server name | No | Default: current hostname |
+| 7 | Server IP/hostname | No | Default: `127.0.0.1` |
 | 7 | SSH port | No | Default: `22` |
-| 7 | SSH user | No | Default: `ubuntu` |
+| 7 | SSH user | No | Default: current user |
 
 After setup, the installer:
 - Creates `.env` with all configured values
-- Tests SSH connectivity to the first server
-- Creates a systemd service (native mode) or prepares Docker Compose
+- Generates a unique SSH key (safe — never overwrites your keys)
+- Tests SSH connectivity to the first server (if not localhost)
+- Creates a systemd service (native mode) or `docker-compose.yml` (Docker mode)
 - Prints the dashboard URL with its auto-generated token
+
+**Uninstall:** `bash <(curl -fsSL .../install.sh) --uninstall` removes everything (config, keys, data, service, Docker image).
 
 ## Development
 

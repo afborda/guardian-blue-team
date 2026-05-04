@@ -56,8 +56,12 @@ prompt_secret() {
   local var_name="$1" prompt_text="$2"
   local input=""
   echo -ne "  ${BOLD}$prompt_text${NC}: "
-  read -rs input </dev/tty 2>/dev/null || input=""
-  echo ""
+  # Try silent read from tty, fall back to visible read
+  if read -rs input </dev/tty 2>/dev/null; then
+    echo ""
+  else
+    read -r input 2>/dev/null || input=""
+  fi
   printf -v "$var_name" '%s' "$input"
 }
 
@@ -414,9 +418,9 @@ OPENAI_KEY=""
 ANTHROPIC_KEY=""
 
 case "$AI_CHOICE" in
-  1) prompt_secret GEMINI_KEY "Gemini API key"; AI_PROVIDER="gemini" ;;
-  2) prompt_secret OPENAI_KEY "OpenAI API key"; AI_PROVIDER="openai" ;;
-  3) prompt_secret ANTHROPIC_KEY "Anthropic API key"; AI_PROVIDER="claude" ;;
+  1) prompt GEMINI_KEY "Gemini API key (paste here, Enter to skip)" ""; AI_PROVIDER="gemini" ;;
+  2) prompt OPENAI_KEY "OpenAI API key (paste here, Enter to skip)" ""; AI_PROVIDER="openai" ;;
+  3) prompt ANTHROPIC_KEY "Anthropic API key (paste here, Enter to skip)" ""; AI_PROVIDER="claude" ;;
   4) AI_PROVIDER="ollama" ;;
   *) AI_PROVIDER="auto" ;;
 esac
@@ -434,7 +438,7 @@ fi
 
 echo ""
 info "Threat intelligence (optional):"
-prompt_secret ABUSEIPDB_KEY "AbuseIPDB API key (Enter to skip)"
+prompt ABUSEIPDB_KEY "AbuseIPDB API key (Enter to skip)" ""
 
 echo ""
 info "Security — Trusted entities (optional):"

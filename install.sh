@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # No set -e: we handle errors explicitly to avoid silent crashes
 
-INSTALLER_VERSION="1.2.0"
+INSTALLER_VERSION="1.3.0"
 
 # ─── Guardian Blue Team — Interactive Installer ─────────────────────────────────
 # Supports: Ubuntu/Debian, Alpine, macOS
@@ -110,6 +110,13 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     if docker image inspect ghcr.io/afborda/guardian-blue-team:latest &>/dev/null 2>&1; then
       docker rmi ghcr.io/afborda/guardian-blue-team:latest 2>/dev/null || true
       info "Removed Docker image"
+    fi
+    # Remove guardian SSH key from authorized_keys
+    if [[ -f "${HOME}/.ssh/authorized_keys" ]]; then
+      grep -v "guardian@" "${HOME}/.ssh/authorized_keys" > "${HOME}/.ssh/authorized_keys.tmp" 2>/dev/null || true
+      mv "${HOME}/.ssh/authorized_keys.tmp" "${HOME}/.ssh/authorized_keys" 2>/dev/null || true
+      chmod 600 "${HOME}/.ssh/authorized_keys" 2>/dev/null || true
+      info "Removed guardian SSH key from authorized_keys"
     fi
     # Remove install directory
     rm -rf "$INSTALL_DIR"
@@ -472,7 +479,7 @@ if [[ "$DB_CHOICE" == "2" ]]; then
   USE_POSTGRES=true
   # Generate postgres password
   PG_PASSWORD=$(openssl rand -hex 12 2>/dev/null || echo "guardian_$(date +%s)")
-  DATABASE_URL="postgres://guardian:${PG_PASSWORD}@guardian-db:5432/guardian"
+  DATABASE_URL="postgres://guardian:${PG_PASSWORD}@localhost:5432/guardian"
   success "PostgreSQL will be auto-configured in Docker Compose"
 fi
 
@@ -555,12 +562,39 @@ if [[ "$DEPLOY_MODE" == "1" ]]; then
   docker pull ghcr.io/afborda/guardian-blue-team:latest || warn "Pull failed — will build locally"
   success "Image pulled"
 
+  # ─── Fix SSH key permissions for container (node uid=1000) ───────────────────
+  # The container runs as 'node' (uid 1000), so keys must be owned by that uid.
+  # Root (the typical installer user) can still read these for SSH testing in Step 7.
+  info "Setting SSH key permissions for container..."
+  chown -R 1000:1000 "${INSTALL_DIR}/keys" 2>/dev/null || sudo chown -R 1000:1000 "${INSTALL_DIR}/keys" 2>/dev/null || true
+  chmod 700 "${INSTALL_DIR}/keys" 2>/dev/null || true
+  chmod 600 "${INSTALL_DIR}/keys/"* 2>/dev/null || true
+  success "SSH key permissions fixed (uid=1000)"
+
+  # ─── Auto-add guardian public key to host authorized_keys ────────────────────
+  if [[ -f "${SSH_KEY_PATH}.pub" ]]; then
+    GUARDIAN_PUBKEY=$(cat "${SSH_KEY_PATH}.pub")
+    AUTHORIZED_KEYS="${HOME}/.ssh/authorized_keys"
+    mkdir -p "${HOME}/.ssh"
+    chmod 700 "${HOME}/.ssh"
+    if ! grep -qF "$GUARDIAN_PUBKEY" "$AUTHORIZED_KEYS" 2>/dev/null; then
+      echo "$GUARDIAN_PUBKEY" >> "$AUTHORIZED_KEYS"
+      chmod 600 "$AUTHORIZED_KEYS"
+      success "Guardian SSH key added to ${AUTHORIZED_KEYS}"
+    else
+      success "Guardian SSH key already in authorized_keys"
+    fi
+  fi
+
+  # ─── Detect SSH port ──────────────────────────────────────────────────────────
+  HOST_SSH_PORT=$(grep -E '^\s*Port\s+' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1)
+  HOST_SSH_PORT="${HOST_SSH_PORT:-22}"
+
   # Detect Traefik
   TRAEFIK_NETWORK=""
   GUARDIAN_DOMAIN="${GUARDIAN_DOMAIN:-}"
 
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qi traefik; then
-    # Find traefik network by inspecting its container networks
     TRAEFIK_CONTAINER=$(docker ps --format '{{.Names}}' | grep -i traefik | head -1)
     TRAEFIK_NETWORK=$(docker inspect "$TRAEFIK_CONTAINER" 2>/dev/null | grep -oP '"Name":\s*"\K[^"]+' | grep -iE 'traefik|proxy|public' | head -1)
     if [[ -z "$TRAEFIK_NETWORK" ]]; then
@@ -576,81 +610,113 @@ if [[ "$DEPLOY_MODE" == "1" ]]; then
       success "Domain: ${GUARDIAN_DOMAIN} (from environment)"
     fi
 
-    # Docker compose with Traefik + optional Postgres
+    # Guardian uses host network (SSH to 127.0.0.1 works directly)
+    # A proxy sidecar joins the Traefik network for HTTPS routing
     cat > "${INSTALL_DIR}/docker-compose.yml" << DCEOF
 services:
   guardian:
     image: ghcr.io/afborda/guardian-blue-team:latest
     container_name: guardian
+    network_mode: host
     env_file: .env
     volumes:
       - ./data:/data
-      - ./keys:/home/node/.ssh:ro
+      - ./keys:/home/node/.ssh
+    restart: unless-stopped
+DCEOF
+
+    # Add postgres if selected (also host network for localhost access)
+    if [[ "$USE_POSTGRES" == "true" ]]; then
+      cat >> "${INSTALL_DIR}/docker-compose.yml" << DCEOF
+    depends_on:
+      guardian-db:
+        condition: service_healthy
+
+  guardian-db:
+    image: postgres:16-alpine
+    container_name: guardian-db
+    network_mode: host
+    environment:
+      POSTGRES_DB: guardian
+      POSTGRES_USER: guardian
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "guardian"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+DCEOF
+    fi
+
+    # Add Traefik proxy sidecar — bridges host network to Traefik's Docker network
+    cat >> "${INSTALL_DIR}/docker-compose.yml" << DCEOF
+  guardian-proxy:
+    image: nginx:alpine
+    container_name: guardian-proxy
     restart: unless-stopped
     networks:
       - ${TRAEFIK_NETWORK}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./nginx-proxy.conf:/etc/nginx/conf.d/default.conf:ro
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.guardian.rule=Host(\`${GUARDIAN_DOMAIN}\`)"
       - "traefik.http.routers.guardian.entrypoints=websecure"
       - "traefik.http.routers.guardian.tls.certresolver=letsencrypt"
-      - "traefik.http.services.guardian.loadbalancer.server.port=3334"
+      - "traefik.http.services.guardian.loadbalancer.server.port=80"
       - "traefik.docker.network=${TRAEFIK_NETWORK}"
+
 DCEOF
 
-    # Add postgres if selected
+    # Add volumes and networks
     if [[ "$USE_POSTGRES" == "true" ]]; then
       cat >> "${INSTALL_DIR}/docker-compose.yml" << DCEOF
-    depends_on:
-      guardian-db:
-        condition: service_healthy
-
-  guardian-db:
-    image: postgres:16-alpine
-    container_name: guardian-db
-    environment:
-      POSTGRES_DB: guardian
-      POSTGRES_USER: guardian
-      POSTGRES_PASSWORD: ${PG_PASSWORD}
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-    restart: unless-stopped
-    networks:
-      - ${TRAEFIK_NETWORK}
-    healthcheck:
-      test: ["CMD-ONLY", "pg_isready", "-U", "guardian"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
 volumes:
   pg_data:
 
 DCEOF
     fi
 
-    # Add networks section
     cat >> "${INSTALL_DIR}/docker-compose.yml" << DCEOF
-
 networks:
   ${TRAEFIK_NETWORK}:
     external: true
 DCEOF
-    success "Created docker-compose.yml (Traefik + ${GUARDIAN_DOMAIN})"
+
+    # Create nginx proxy config
+    cat > "${INSTALL_DIR}/nginx-proxy.conf" << 'NGEOF'
+server {
+    listen 80;
+    location / {
+        proxy_pass http://host.docker.internal:3334;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+NGEOF
+
+    success "Created docker-compose.yml (host network + Traefik proxy)"
 
   else
-    # No Traefik — plain docker compose
+    # No Traefik — Guardian with host network, direct port access
     cat > "${INSTALL_DIR}/docker-compose.yml" << 'DCEOF'
 services:
   guardian:
     image: ghcr.io/afborda/guardian-blue-team:latest
     container_name: guardian
+    network_mode: host
     env_file: .env
-    ports:
-      - "3334:3334"
     volumes:
       - ./data:/data
-      - ./keys:/home/node/.ssh:ro
+      - ./keys:/home/node/.ssh
     restart: unless-stopped
 DCEOF
 
@@ -663,6 +729,7 @@ DCEOF
   guardian-db:
     image: postgres:16-alpine
     container_name: guardian-db
+    network_mode: host
     environment:
       POSTGRES_DB: guardian
       POSTGRES_USER: guardian
@@ -671,7 +738,7 @@ DCEOF
       - pg_data:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-ONLY", "pg_isready", "-U", "guardian"]
+      test: ["CMD", "pg_isready", "-U", "guardian"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -680,7 +747,7 @@ volumes:
   pg_data:
 DCEOF
     fi
-    success "Created docker-compose.yml"
+    success "Created docker-compose.yml (host network)"
   fi
 
   # Start Guardian automatically
@@ -690,7 +757,6 @@ DCEOF
   if docker compose ps --format '{{.State}}' 2>/dev/null | grep -q "running"; then
     success "Guardian is running!"
   else
-    # Wait a moment for startup
     sleep 3
     if docker compose ps --format '{{.State}}' 2>/dev/null | grep -q "running"; then
       success "Guardian is running!"
@@ -749,20 +815,28 @@ step 7 "Add your first server"
 
 echo ""
 info "Configure the first server to monitor (add more later via Telegram /add-server)."
+info "Since Guardian runs with host networking, 127.0.0.1 monitors THIS machine."
 prompt SERVER_NAME "Server name (e.g., prod-web-1)" "$(hostname)"
 prompt SERVER_HOST "Server IP/hostname" "127.0.0.1"
-prompt SERVER_PORT "SSH port" "22"
+
+# Detect SSH port from sshd_config
+DETECTED_SSH_PORT=$(grep -E '^\s*Port\s+' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1)
+DETECTED_SSH_PORT="${DETECTED_SSH_PORT:-22}"
+prompt SERVER_PORT "SSH port" "$DETECTED_SSH_PORT"
 prompt SERVER_USER "SSH user" "$(whoami)"
 
-# Only test SSH if not localhost
-if [[ -n "$SERVER_HOST" && "$SERVER_HOST" != "127.0.0.1" ]]; then
-  echo ""
-  info "Testing SSH connection to ${SERVER_USER}@${SERVER_HOST}:${SERVER_PORT}..."
-  if ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -p "$SERVER_PORT" "${SERVER_USER}@${SERVER_HOST}" "echo ok" &>/dev/null; then
-    success "SSH connection successful!"
+# Test SSH connection (works for both localhost and remote)
+echo ""
+info "Testing SSH connection to ${SERVER_USER}@${SERVER_HOST}:${SERVER_PORT}..."
+if ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -p "$SERVER_PORT" "${SERVER_USER}@${SERVER_HOST}" "echo ok" &>/dev/null; then
+  success "SSH connection successful! Guardian can collect data from this server."
+else
+  warn "SSH connection failed."
+  if [[ "$SERVER_HOST" == "127.0.0.1" || "$SERVER_HOST" == "localhost" ]]; then
+    info "The guardian SSH key should already be in authorized_keys."
+    info "If it's not working, check that sshd allows publickey auth."
   else
-    warn "SSH connection failed. Add the public key to the server:"
-    echo -e "    ${DIM}ssh-copy-id -i ${SSH_KEY_PATH}.pub -p ${SERVER_PORT} ${SERVER_USER}@${SERVER_HOST}${NC}"
+    echo -e "    ${DIM}Add the key: ssh-copy-id -i ${SSH_KEY_PATH}.pub -p ${SERVER_PORT} ${SERVER_USER}@${SERVER_HOST}${NC}"
   fi
 fi
 

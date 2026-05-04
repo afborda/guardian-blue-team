@@ -211,7 +211,6 @@ const DETECTION_RULES: DetectionRule[] = [
       if (current.eventType !== 'dns_query') return false;
       const domain = current.metadata?.domain as string;
       if (!domain || domain.length < CONSTANTS.dns.minDgaLength) return false;
-      // Import shannonEntropy inline to avoid circular deps
       const len = domain.length;
       const freq = new Map<string, number>();
       for (const ch of domain) freq.set(ch, (freq.get(ch) || 0) + 1);

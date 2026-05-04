@@ -235,6 +235,24 @@ export class EventNormalizer {
       };
     }
 
+    const ownerMatch = line.match(/^FILE_OWNER_CHANGED\s+path=(\S+)\s+old_owner=(\S+)\s+new_owner=(\S+)/);
+    if (ownerMatch) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'fim',
+        category: 'integrity',
+        severity: 'high',
+        eventType: 'file_modified',
+        sourceIp: null,
+        destinationPort: null,
+        userName: null,
+        processName: null,
+        rawLog: line,
+        metadata: { filePath: ownerMatch[1], oldOwner: ownerMatch[2], newOwner: ownerMatch[3] },
+      };
+    }
+
     return null;
   }
 

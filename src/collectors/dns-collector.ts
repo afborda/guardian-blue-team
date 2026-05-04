@@ -5,8 +5,9 @@ import type { RawLogEntry } from './log-collector.js';
 
 export class DNSCollector {
   static async collect(target: SSHTarget, lookbackMinutes: number): Promise<RawLogEntry[]> {
+    const minutes = Math.max(1, Math.floor(Math.abs(lookbackMinutes)));
     const command =
-      `journalctl -u systemd-resolved --since '${lookbackMinutes} min ago' --no-pager 2>/dev/null | grep -i 'query\\[' || ` +
+      `journalctl -u systemd-resolved --since '${minutes} min ago' --no-pager 2>/dev/null | grep -i 'query\\[' || ` +
       `grep -i 'query' /var/log/syslog 2>/dev/null | tail -200`;
 
     const result = await SSHCollector.run(target, command, CONSTANTS.collection.sshTimeoutMs);
@@ -41,27 +42,4 @@ export class DNSCollector {
 
     return new Date();
   }
-}
-
-/**
- * Calculate Shannon entropy of a string.
- * Useful for detecting DGA (Domain Generation Algorithm) domains
- * which tend to have high entropy compared to legitimate domains.
- */
-export function shannonEntropy(str: string): number {
-  const len = str.length;
-  if (len === 0) return 0;
-
-  const freq = new Map<string, number>();
-  for (const ch of str) {
-    freq.set(ch, (freq.get(ch) || 0) + 1);
-  }
-
-  let entropy = 0;
-  for (const count of freq.values()) {
-    const p = count / len;
-    entropy -= p * Math.log2(p);
-  }
-
-  return entropy;
 }

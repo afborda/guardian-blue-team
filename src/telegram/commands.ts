@@ -738,7 +738,7 @@ async function getCronJobs(serverName?: string): Promise<string> {
 
   const recentChanges = await db.select()
     .from(securityEvents)
-    .where(inArray(securityEvents.eventType, ['cron_added', 'cron_removed', 'cron_modified', 'cron_persistence']))
+    .where(inArray(securityEvents.eventType, ['cron_added', 'cron_removed', 'cron_persistence']))
     .orderBy(desc(securityEvents.timestamp))
     .limit(15);
 
@@ -799,11 +799,14 @@ async function getSSHKeys(serverName?: string): Promise<string> {
 // ─── /dns ──────────────────────────────────────────────────────────────────
 
 async function getDNSActivity(serverName?: string, hoursStr?: string): Promise<string> {
-  const hours = parseInt(hoursStr || serverName || '24') || 24;
+  // If first arg is a number, treat it as hours (not server name)
+  const firstArgIsHours = serverName && !isNaN(parseInt(serverName)) && !hoursStr;
+  const actualServerName = firstArgIsHours ? undefined : serverName;
+  const hours = parseInt((firstArgIsHours ? serverName : hoursStr) || '24') || 24;
   const since = new Date(Date.now() - hours * 60 * 60 * 1000);
 
-  const serverFilter = serverName && isNaN(parseInt(serverName))
-    ? eq(securityEvents.serverId, (await ServerService.getByName(serverName))?.id ?? -1)
+  const serverFilter = actualServerName
+    ? eq(securityEvents.serverId, (await ServerService.getByName(actualServerName))?.id ?? -1)
     : undefined;
 
   const whereClause = serverFilter
@@ -841,8 +844,8 @@ async function getDNSActivity(serverName?: string, hoursStr?: string): Promise<s
       })
     : [`ℹ️ ${events.length} queries DNS — nenhuma anomalia detectada`];
 
-  const title = serverName && isNaN(parseInt(serverName))
-    ? `🌐 <b>DNS — ${serverName} (${hours}h)</b>`
+  const title = actualServerName
+    ? `🌐 <b>DNS — ${actualServerName} (${hours}h)</b>`
     : `🌐 <b>DNS — últimas ${hours}h</b>`;
 
   return `${title}\n\n${lines.join('\n')}\n\n📊 ${events.length} queries | ⚠️ ${anomalies.length} anomalias`;

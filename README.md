@@ -1,21 +1,15 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/Guardian-Blue%20Team-0066cc?style=for-the-badge&logo=shield&logoColor=white" alt="Guardian Blue Team">
-</p>
-
-<h1 align="center">Guardian Blue Team</h1>
-
-<p align="center">
-  <strong>Lightweight SIEM/SOAR + Infrastructure Observability for the rest of us</strong>
-</p>
-
-<p align="center">
-  <a href="README.pt-BR.md">Leia em Portugues</a>
+  <img src="docs/guardian-overview.png" alt="Guardian Blue Team — Architecture Overview" width="100%">
 </p>
 
 <p align="center">
   <a href="https://github.com/afborda/guardian-blue-team/actions/workflows/ci.yml"><img src="https://github.com/afborda/guardian-blue-team/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License: AGPL-3.0"></a>
   <a href="https://ghcr.io/afborda/guardian-blue-team"><img src="https://img.shields.io/badge/Docker-ghcr.io-blue" alt="Docker"></a>
+</p>
+
+<p align="center">
+  <a href="README.pt-BR.md">Leia em Portugues</a>
 </p>
 
 ---

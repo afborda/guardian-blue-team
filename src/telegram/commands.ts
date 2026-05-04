@@ -2,9 +2,11 @@ import { logger } from '../utils/logger.js';
 import { DailyReportWorker } from '../workers/daily-report.worker.js';
 import { ServerService } from '../services/server.service.js';
 import { SSHCollector } from '../collectors/ssh-collector.js';
+import { CronCollector } from '../collectors/cron-collector.js';
+import { SSHKeysCollector } from '../collectors/ssh-keys-collector.js';
 import { db } from '../database/connection.js';
 import { securityEvents, socIncidents, socServers, serverScores, serverMetrics } from '../database/schema.js';
-import { desc, eq, ne, count } from 'drizzle-orm';
+import { desc, eq, ne, count, and, gte, inArray } from 'drizzle-orm';
 import { ThreatIntelManager } from '../threat-intel/manager.js';
 import { PlaybookRegistry } from '../playbooks/registry.js';
 import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
@@ -43,6 +45,16 @@ export async function handleTelegramCommand(text: string): Promise<string> {
       return await getServerScores(parts[1]);
     case '/scan':
       return '🔍 Use /vulns para verificar vulnerabilidades ou aguarde o CVE Monitor automático.';
+    case '/files':
+      return await getFileChanges(parts[1]);
+    case '/sudo':
+      return await getSudoActivity(parts[1]);
+    case '/crons':
+      return await getCronJobs(parts[1]);
+    case '/keys':
+      return await getSSHKeys(parts[1]);
+    case '/dns':
+      return await getDNSActivity(parts[1], parts[2]);
     case '/report':
       if (parts[1] === 'full') return await getFullReport();
       DailyReportWorker.sendReport().catch(err =>
@@ -524,6 +536,13 @@ function formatHelp(): string {
     '  /threat ip — Investigar IP',
     '  /hunt ip|user — Buscar nos logs',
     '',
+    '🛡️ <b>Blue Team:</b>',
+    '  /files [server] — Mudanças em arquivos',
+    '  /sudo [hours] — Atividade sudo (default 24h)',
+    '  /crons [server] — Cron jobs / mudanças',
+    '  /keys [server] — SSH keys / mudanças',
+    '  /dns [server] [hours] — DNS / anomalias',
+    '',
     '⚡ <b>Ações:</b>',
     '  /playbook list — Playbooks disponíveis',
     '  /playbook run name server [ip]',
@@ -631,6 +650,202 @@ async function getServerScores(serverName?: string): Promise<string> {
   }
 
   return `📊 <b>Scores — ${servers.length} servidores</b>\n\n${lines.join('\n')}`;
+}
+
+// ─── /files ────────────────────────────────────────────────────────────────
+
+async function getFileChanges(serverName?: string): Promise<string> {
+  const whereClause = serverName
+    ? and(
+        inArray(securityEvents.eventType, ['file_modified', 'file_created', 'file_deleted', 'file_permissions_changed', 'critical_file_tampering']),
+        eq(securityEvents.serverId, (await ServerService.getByName(serverName))?.id ?? -1)
+      )
+    : inArray(securityEvents.eventType, ['file_modified', 'file_created', 'file_deleted', 'file_permissions_changed', 'critical_file_tampering']);
+
+  const events = await db.select()
+    .from(securityEvents)
+    .where(whereClause)
+    .orderBy(desc(securityEvents.timestamp))
+    .limit(20);
+
+  if (events.length === 0) return '✅ Nenhuma mudança de arquivo detectada.';
+
+  const serverNames = await getServerNameMap();
+  const severityIcon: Record<string, string> = { critical: '🔴', high: '🟠', medium: '🟡', low: '🔵', info: '⚪' };
+
+  const lines = events.map(e => {
+    const icon = severityIcon[e.severity] ?? '⚪';
+    const time = e.timestamp.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const server = serverNames.get(e.serverId!) ?? '?';
+    const meta = e.metadata as Record<string, any> | null;
+    const path = meta?.filePath ?? '';
+    return `${icon} ${time} <b>${e.eventType}</b>\n   📁 ${path} [${server}]`;
+  });
+
+  const title = serverName ? `📁 <b>File Changes — ${serverName}</b>` : '📁 <b>File Changes</b>';
+  return `${title}\n\n${lines.join('\n\n')}`;
+}
+
+// ─── /sudo ─────────────────────────────────────────────────────────────────
+
+async function getSudoActivity(hoursStr?: string): Promise<string> {
+  const hours = parseInt(hoursStr || '24') || 24;
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+
+  const events = await db.select()
+    .from(securityEvents)
+    .where(and(
+      inArray(securityEvents.eventType, ['sudo_command', 'sudo_failed', 'sudo_suspicious']),
+      gte(securityEvents.timestamp, since)
+    ))
+    .orderBy(desc(securityEvents.timestamp))
+    .limit(25);
+
+  if (events.length === 0) return `✅ Nenhuma atividade sudo nas últimas ${hours}h.`;
+
+  const serverNames = await getServerNameMap();
+  const severityIcon: Record<string, string> = { critical: '🔴', high: '🟠', medium: '🟡', low: '🔵', info: '⚪' };
+
+  const lines = events.map(e => {
+    const icon = severityIcon[e.severity] ?? '⚪';
+    const time = e.timestamp.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const server = serverNames.get(e.serverId!) ?? '?';
+    const meta = e.metadata as Record<string, any> | null;
+    const cmd = meta?.command ? ` <code>${(meta.command as string).slice(0, 50)}</code>` : '';
+    const user = e.userName ? ` (${e.userName})` : '';
+    return `${icon} ${time}${user}${cmd} [${server}]`;
+  });
+
+  return `🔐 <b>Sudo — últimas ${hours}h</b> (${events.length})\n\n${lines.join('\n')}`;
+}
+
+// ─── /crons ────────────────────────────────────────────────────────────────
+
+async function getCronJobs(serverName?: string): Promise<string> {
+  if (serverName) {
+    const server = await ServerService.getByName(serverName);
+    if (!server) return `❌ Servidor "${serverName}" não encontrado.`;
+    const target = ServerService.toSSHTarget(server);
+    const crons = await CronCollector.collect(target);
+    if (crons.length === 0) return `✅ Nenhum cron encontrado em ${serverName}.`;
+
+    const lines = crons.slice(0, 20).map(c =>
+      `👤 ${c.user} | <code>${c.schedule}</code>\n   ${c.command.slice(0, 80)}`
+    );
+    const more = crons.length > 20 ? `\n... +${crons.length - 20} mais` : '';
+    return `⏰ <b>Crons — ${serverName}</b> (${crons.length})\n\n${lines.join('\n\n')}${more}`;
+  }
+
+  const recentChanges = await db.select()
+    .from(securityEvents)
+    .where(inArray(securityEvents.eventType, ['cron_added', 'cron_removed', 'cron_modified', 'cron_persistence']))
+    .orderBy(desc(securityEvents.timestamp))
+    .limit(15);
+
+  if (recentChanges.length === 0) return '✅ Nenhuma mudança de cron detectada.\nUse /crons <server> para listar crons atuais.';
+
+  const serverNames = await getServerNameMap();
+  const severityIcon: Record<string, string> = { critical: '🔴', high: '🟠', medium: '🟡', low: '🔵', info: '⚪' };
+
+  const lines = recentChanges.map(e => {
+    const icon = severityIcon[e.severity] ?? '⚪';
+    const time = e.timestamp.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const server = serverNames.get(e.serverId!) ?? '?';
+    return `${icon} ${time} <b>${e.eventType}</b> [${server}]`;
+  });
+
+  return `⏰ <b>Cron Changes</b>\n\n${lines.join('\n')}\n\n💡 /crons <server> para listar crons atuais`;
+}
+
+// ─── /keys ─────────────────────────────────────────────────────────────────
+
+async function getSSHKeys(serverName?: string): Promise<string> {
+  if (serverName) {
+    const server = await ServerService.getByName(serverName);
+    if (!server) return `❌ Servidor "${serverName}" não encontrado.`;
+    const target = ServerService.toSSHTarget(server);
+    const keys = await SSHKeysCollector.collect(target);
+    if (keys.length === 0) return `✅ Nenhuma SSH key encontrada em ${serverName}.`;
+
+    const lines = keys.map(k =>
+      `👤 ${k.user} | ${k.keyType}\n   🔑 <code>${k.fingerprint.slice(0, 30)}</code> ${k.comment}`
+    );
+    return `🔑 <b>SSH Keys — ${serverName}</b> (${keys.length})\n\n${lines.join('\n\n')}`;
+  }
+
+  const recentChanges = await db.select()
+    .from(securityEvents)
+    .where(inArray(securityEvents.eventType, ['ssh_key_added', 'ssh_key_removed', 'unauthorized_ssh_key']))
+    .orderBy(desc(securityEvents.timestamp))
+    .limit(15);
+
+  if (recentChanges.length === 0) return '✅ Nenhuma mudança de SSH key detectada.\nUse /keys <server> para listar keys atuais.';
+
+  const serverNames = await getServerNameMap();
+  const severityIcon: Record<string, string> = { critical: '🔴', high: '🟠', medium: '🟡', low: '🔵', info: '⚪' };
+
+  const lines = recentChanges.map(e => {
+    const icon = severityIcon[e.severity] ?? '⚪';
+    const time = e.timestamp.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const server = serverNames.get(e.serverId!) ?? '?';
+    const meta = e.metadata as Record<string, any> | null;
+    const fp = meta?.fingerprint ? ` <code>${(meta.fingerprint as string).slice(0, 20)}</code>` : '';
+    return `${icon} ${time} <b>${e.eventType}</b>${fp} [${server}]`;
+  });
+
+  return `🔑 <b>SSH Key Changes</b>\n\n${lines.join('\n')}\n\n💡 /keys <server> para listar keys atuais`;
+}
+
+// ─── /dns ──────────────────────────────────────────────────────────────────
+
+async function getDNSActivity(serverName?: string, hoursStr?: string): Promise<string> {
+  const hours = parseInt(hoursStr || serverName || '24') || 24;
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+
+  const serverFilter = serverName && isNaN(parseInt(serverName))
+    ? eq(securityEvents.serverId, (await ServerService.getByName(serverName))?.id ?? -1)
+    : undefined;
+
+  const whereClause = serverFilter
+    ? and(
+        inArray(securityEvents.eventType, ['dns_query', 'dns_dga', 'dns_suspicious_tld']),
+        gte(securityEvents.timestamp, since),
+        serverFilter
+      )
+    : and(
+        inArray(securityEvents.eventType, ['dns_query', 'dns_dga', 'dns_suspicious_tld']),
+        gte(securityEvents.timestamp, since)
+      );
+
+  const events = await db.select()
+    .from(securityEvents)
+    .where(whereClause)
+    .orderBy(desc(securityEvents.timestamp))
+    .limit(25);
+
+  const anomalies = events.filter(e => e.eventType === 'dns_dga' || e.eventType === 'dns_suspicious_tld');
+
+  if (events.length === 0) return `✅ Nenhuma atividade DNS suspeita nas últimas ${hours}h.`;
+
+  const serverNames = await getServerNameMap();
+  const severityIcon: Record<string, string> = { critical: '🔴', high: '🟠', medium: '🟡', low: '🔵', info: '⚪' };
+
+  const lines = anomalies.length > 0
+    ? anomalies.slice(0, 20).map(e => {
+        const icon = severityIcon[e.severity] ?? '⚪';
+        const time = e.timestamp.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+        const server = serverNames.get(e.serverId!) ?? '?';
+        const meta = e.metadata as Record<string, any> | null;
+        const domain = meta?.domain ? ` <code>${(meta.domain as string).slice(0, 50)}</code>` : '';
+        return `${icon} ${time} <b>${e.eventType}</b>${domain} [${server}]`;
+      })
+    : [`ℹ️ ${events.length} queries DNS — nenhuma anomalia detectada`];
+
+  const title = serverName && isNaN(parseInt(serverName))
+    ? `🌐 <b>DNS — ${serverName} (${hours}h)</b>`
+    : `🌐 <b>DNS — últimas ${hours}h</b>`;
+
+  return `${title}\n\n${lines.join('\n')}\n\n📊 ${events.length} queries | ⚠️ ${anomalies.length} anomalias`;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

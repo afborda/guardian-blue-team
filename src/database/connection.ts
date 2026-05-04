@@ -201,6 +201,45 @@ async function createPostgresTables(pool: Pool): Promise<void> {
         score_details JSONB DEFAULT '{}'
       );
       CREATE UNIQUE INDEX IF NOT EXISTS server_scores_server_period_idx ON server_scores(server_id, period_start, period_type);
+
+      CREATE TABLE IF NOT EXISTS file_baselines (
+        id SERIAL PRIMARY KEY,
+        server_id INTEGER NOT NULL,
+        file_path VARCHAR(512) NOT NULL,
+        sha256 VARCHAR(64) NOT NULL,
+        permissions VARCHAR(10),
+        owner VARCHAR(64),
+        last_seen_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        UNIQUE(server_id, file_path)
+      );
+      CREATE INDEX IF NOT EXISTS file_baselines_server_idx ON file_baselines(server_id);
+
+      CREATE TABLE IF NOT EXISTS cron_baselines (
+        id SERIAL PRIMARY KEY,
+        server_id INTEGER NOT NULL,
+        username VARCHAR(64) NOT NULL,
+        schedule VARCHAR(128),
+        command TEXT NOT NULL,
+        source VARCHAR(64) NOT NULL,
+        sha256 VARCHAR(64) NOT NULL,
+        first_seen_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        last_seen_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        UNIQUE(server_id, username, sha256)
+      );
+      CREATE INDEX IF NOT EXISTS cron_baselines_server_idx ON cron_baselines(server_id);
+
+      CREATE TABLE IF NOT EXISTS ssh_key_baselines (
+        id SERIAL PRIMARY KEY,
+        server_id INTEGER NOT NULL,
+        username VARCHAR(64) NOT NULL,
+        key_type VARCHAR(32) NOT NULL,
+        fingerprint VARCHAR(128) NOT NULL,
+        comment VARCHAR(256),
+        first_seen_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        last_seen_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        UNIQUE(server_id, username, fingerprint)
+      );
+      CREATE INDEX IF NOT EXISTS ssh_key_baselines_server_idx ON ssh_key_baselines(server_id);
     `);
   } finally {
     client.release();
@@ -403,6 +442,45 @@ function createSqliteTables(sqlite: { exec: (sql: string) => void }): void {
       score_details TEXT DEFAULT '{}'
     );
     CREATE UNIQUE INDEX IF NOT EXISTS server_scores_server_period_idx ON server_scores(server_id, period_start, period_type);
+
+    CREATE TABLE IF NOT EXISTS file_baselines (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      server_id INTEGER NOT NULL,
+      file_path VARCHAR(512) NOT NULL,
+      sha256 VARCHAR(64) NOT NULL,
+      permissions VARCHAR(10),
+      owner VARCHAR(64),
+      last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(server_id, file_path)
+    );
+    CREATE INDEX IF NOT EXISTS file_baselines_server_idx ON file_baselines(server_id);
+
+    CREATE TABLE IF NOT EXISTS cron_baselines (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      server_id INTEGER NOT NULL,
+      username VARCHAR(64) NOT NULL,
+      schedule VARCHAR(128),
+      command TEXT NOT NULL,
+      source VARCHAR(64) NOT NULL,
+      sha256 VARCHAR(64) NOT NULL,
+      first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(server_id, username, sha256)
+    );
+    CREATE INDEX IF NOT EXISTS cron_baselines_server_idx ON cron_baselines(server_id);
+
+    CREATE TABLE IF NOT EXISTS ssh_key_baselines (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      server_id INTEGER NOT NULL,
+      username VARCHAR(64) NOT NULL,
+      key_type VARCHAR(32) NOT NULL,
+      fingerprint VARCHAR(128) NOT NULL,
+      comment VARCHAR(256),
+      first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(server_id, username, fingerprint)
+    );
+    CREATE INDEX IF NOT EXISTS ssh_key_baselines_server_idx ON ssh_key_baselines(server_id);
   `);
 }
 

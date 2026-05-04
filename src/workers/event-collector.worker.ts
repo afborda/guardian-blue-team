@@ -2,6 +2,8 @@ import { ServerService } from '../services/server.service.js';
 import { LogCollector } from '../collectors/log-collector.js';
 import { ProcessCollector } from '../collectors/process-collector.js';
 import { NetworkCollector } from '../collectors/network-collector.js';
+import { SudoCollector } from '../collectors/sudo-collector.js';
+import { DNSCollector } from '../collectors/dns-collector.js';
 import { EventNormalizer } from '../pipeline/normalizer.js';
 import { EventEnricher } from '../pipeline/enricher.js';
 import { EventDetector } from '../pipeline/detector.js';
@@ -50,15 +52,17 @@ export class EventCollectorWorker {
       for (const server of servers) {
         const target = ServerService.toSSHTarget(server);
 
-        const [authLogs, ufwLogs, dockerEvents, suspiciousProcs, networkAnomaly] = await Promise.all([
+        const [authLogs, ufwLogs, dockerEvents, suspiciousProcs, networkAnomaly, sudoLogs, dnsLogs] = await Promise.all([
           LogCollector.collectAuthLogs(target, 3),
           LogCollector.collectUfwLogs(target, 3),
           LogCollector.collectDockerEvents(target, 3),
           ProcessCollector.detectSuspiciousProcesses(target),
           NetworkCollector.detectSuspiciousConnections(target),
+          SudoCollector.collect(target, 3),
+          DNSCollector.collect(target, 3),
         ]);
 
-        const rawLogs = [...authLogs, ...ufwLogs, ...dockerEvents, ...suspiciousProcs, ...networkAnomaly];
+        const rawLogs = [...authLogs, ...ufwLogs, ...dockerEvents, ...suspiciousProcs, ...networkAnomaly, ...sudoLogs, ...dnsLogs];
         if (rawLogs.length === 0) continue;
 
         let normalized = EventNormalizer.normalizeBatch(rawLogs);

@@ -161,6 +161,79 @@ const DETECTION_RULES: DetectionRule[] = [
     severity: 'medium',
     eventType: 'unusual_hour_login',
   },
+  {
+    name: 'critical_file_modified',
+    description: 'Critical system file was modified',
+    condition: (_events, current) => {
+      if (current.eventType !== 'file_modified' && current.eventType !== 'file_permissions_changed') return false;
+      const path = current.metadata?.filePath as string;
+      if (!path) return false;
+      return CONSTANTS.fim.criticalPaths.some(p => path.includes(p));
+    },
+    severity: 'critical',
+    eventType: 'critical_file_tampering',
+  },
+  {
+    name: 'sudo_suspicious_command',
+    description: 'Suspicious command executed via sudo',
+    condition: (_events, current) => {
+      if (current.eventType !== 'sudo_command') return false;
+      const cmd = (current.metadata?.command as string) || current.rawLog;
+      return CONSTANTS.sudo.suspiciousCommands.test(cmd);
+    },
+    severity: 'high',
+    eventType: 'sudo_suspicious',
+  },
+  {
+    name: 'suspicious_cron_added',
+    description: 'Cron job with suspicious command was added',
+    condition: (_events, current) => {
+      if (current.eventType !== 'cron_added') return false;
+      const cmd = (current.metadata?.command as string) || current.rawLog;
+      return CONSTANTS.cron.suspiciousPatterns.test(cmd);
+    },
+    severity: 'high',
+    eventType: 'cron_persistence',
+  },
+  {
+    name: 'unauthorized_ssh_key',
+    description: 'New SSH key added to authorized_keys',
+    condition: (_events, current) => {
+      return current.eventType === 'ssh_key_added';
+    },
+    severity: 'high',
+    eventType: 'unauthorized_ssh_key',
+  },
+  {
+    name: 'dns_dga_detected',
+    description: 'Domain with high entropy detected (possible DGA)',
+    condition: (_events, current) => {
+      if (current.eventType !== 'dns_query') return false;
+      const domain = current.metadata?.domain as string;
+      if (!domain || domain.length < CONSTANTS.dns.minDgaLength) return false;
+      // Import shannonEntropy inline to avoid circular deps
+      const len = domain.length;
+      const freq = new Map<string, number>();
+      for (const ch of domain) freq.set(ch, (freq.get(ch) || 0) + 1);
+      let entropy = 0;
+      for (const count of freq.values()) { const p = count / len; entropy -= p * Math.log2(p); }
+      return entropy > CONSTANTS.dns.entropyThreshold;
+    },
+    severity: 'high',
+    eventType: 'dns_dga',
+  },
+  {
+    name: 'dns_suspicious_tld',
+    description: 'DNS query to suspicious TLD',
+    condition: (_events, current) => {
+      if (current.eventType !== 'dns_query') return false;
+      const domain = current.metadata?.domain as string;
+      if (!domain) return false;
+      return CONSTANTS.dns.suspiciousTlds.some(tld => domain.endsWith(tld));
+    },
+    severity: 'medium',
+    eventType: 'dns_suspicious_tld',
+  },
 ];
 
 export class EventDetector {

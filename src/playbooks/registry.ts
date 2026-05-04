@@ -104,6 +104,60 @@ const PLAYBOOKS: PlaybookDefinition[] = [
     ],
     requiresApproval: false,
   },
+  {
+    name: 'file-integrity-response',
+    description: 'Responds to file integrity changes — notifies, requires approval if critical system file',
+    trigger: { eventType: 'critical_file_tampering' },
+    steps: [
+      { action: 'notify', params: { severity: 'critical', message: '🚨 CRITICAL FILE MODIFIED — investigate immediately' } },
+    ],
+    requiresApproval: true,
+  },
+  {
+    name: 'sudo-suspicious-response',
+    description: 'Responds to suspicious sudo commands — enriches context, notifies',
+    trigger: { eventType: 'sudo_suspicious' },
+    steps: [
+      { action: 'notify', params: { severity: 'high', message: '⚠️ Suspicious sudo command detected' } },
+    ],
+    requiresApproval: false,
+  },
+  {
+    name: 'cron-persistence-response',
+    description: 'Responds to suspicious cron job additions — notifies, requires approval to investigate',
+    trigger: { eventType: 'cron_persistence' },
+    steps: [
+      { action: 'notify', params: { severity: 'high', message: '⚠️ Suspicious cron job added — possible persistence mechanism' } },
+    ],
+    requiresApproval: true,
+  },
+  {
+    name: 'ssh-key-response',
+    description: 'Responds to unauthorized SSH key additions — notifies, requires approval',
+    trigger: { eventType: 'unauthorized_ssh_key' },
+    steps: [
+      { action: 'notify', params: { severity: 'high', message: '⚠️ New SSH key added to authorized_keys' } },
+    ],
+    requiresApproval: true,
+  },
+  {
+    name: 'dns-c2-response',
+    description: 'Responds to DNS-based C2 indicators (DGA domains, suspicious TLDs)',
+    trigger: { eventType: 'dns_dga' },
+    steps: [
+      { action: 'notify', params: { severity: 'high', message: '⚠️ Possible C2 communication — DGA domain detected' } },
+    ],
+    requiresApproval: false,
+  },
+  {
+    name: 'dns-suspicious-tld-response',
+    description: 'Alerts on DNS queries to suspicious TLDs',
+    trigger: { eventType: 'dns_suspicious_tld' },
+    steps: [
+      { action: 'notify', params: { severity: 'medium' } },
+    ],
+    requiresApproval: false,
+  },
 ];
 
 export class PlaybookRegistry {

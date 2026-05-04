@@ -64,6 +64,16 @@ export class EventNormalizer {
         return this.normalizeUfw(entry);
       case 'docker':
         return this.normalizeDocker(entry);
+      case 'fim':
+        return this.normalizeFim(entry);
+      case 'sudo':
+        return this.normalizeSudo(entry);
+      case 'cron':
+        return this.normalizeCron(entry);
+      case 'dns':
+        return this.normalizeDns(entry);
+      case 'ssh-keys':
+        return this.normalizeSshKeys(entry);
       default:
         return null;
     }
@@ -148,5 +158,224 @@ export class EventNormalizer {
       rawLog: entry.line,
       metadata: { containerAction: action, containerType: type },
     };
+  }
+
+  private static normalizeFim(entry: RawLogEntry): NormalizedEvent | null {
+    const line = entry.line;
+
+    const modifiedMatch = line.match(/^FILE_MODIFIED\s+path=(\S+)\s+old_sha256=(\S+)\s+new_sha256=(\S+)/);
+    if (modifiedMatch) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'fim',
+        category: 'integrity',
+        severity: 'high',
+        eventType: 'file_modified',
+        sourceIp: null,
+        destinationPort: null,
+        userName: null,
+        processName: null,
+        rawLog: line,
+        metadata: { filePath: modifiedMatch[1], oldSha256: modifiedMatch[2], newSha256: modifiedMatch[3] },
+      };
+    }
+
+    const createdMatch = line.match(/^FILE_CREATED\s+path=(\S+)\s+sha256=(\S+)/);
+    if (createdMatch) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'fim',
+        category: 'integrity',
+        severity: 'medium',
+        eventType: 'file_created',
+        sourceIp: null,
+        destinationPort: null,
+        userName: null,
+        processName: null,
+        rawLog: line,
+        metadata: { filePath: createdMatch[1], sha256: createdMatch[2] },
+      };
+    }
+
+    const deletedMatch = line.match(/^FILE_DELETED\s+path=(\S+)/);
+    if (deletedMatch) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'fim',
+        category: 'integrity',
+        severity: 'high',
+        eventType: 'file_deleted',
+        sourceIp: null,
+        destinationPort: null,
+        userName: null,
+        processName: null,
+        rawLog: line,
+        metadata: { filePath: deletedMatch[1] },
+      };
+    }
+
+    const permsMatch = line.match(/^FILE_PERMISSIONS_CHANGED\s+path=(\S+)\s+old_permissions=(\S+)\s+new_permissions=(\S+)/);
+    if (permsMatch) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'fim',
+        category: 'integrity',
+        severity: 'high',
+        eventType: 'file_permissions_changed',
+        sourceIp: null,
+        destinationPort: null,
+        userName: null,
+        processName: null,
+        rawLog: line,
+        metadata: { filePath: permsMatch[1], oldPermissions: permsMatch[2], newPermissions: permsMatch[3] },
+      };
+    }
+
+    return null;
+  }
+
+  private static normalizeSudo(entry: RawLogEntry): NormalizedEvent | null {
+    const line = entry.line;
+
+    // Match journalctl format: 2024-01-15T10:30:45+0000 server sudo[1234]: user : TTY=... ; USER=... ; COMMAND=...
+    // Match auth.log format: Jan 15 10:30:45 server sudo:  user : TTY=... ; USER=... ; COMMAND=...
+    const sudoMatch = line.match(/sudo[\[:\d\]]*\s*:?\s*(\S+)\s*:\s*TTY=(\S+)\s*;\s*PWD=(\S+)\s*;\s*USER=(\S+)\s*;\s*COMMAND=(.*)/);
+    if (sudoMatch) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'sudo',
+        category: 'authentication',
+        severity: 'medium',
+        eventType: 'sudo_command',
+        sourceIp: null,
+        destinationPort: null,
+        userName: sudoMatch[1],
+        processName: 'sudo',
+        rawLog: line,
+        metadata: {
+          tty: sudoMatch[2],
+          pwd: sudoMatch[3],
+          targetUser: sudoMatch[4],
+          command: sudoMatch[5].trim(),
+        },
+      };
+    }
+
+    return null;
+  }
+
+  private static normalizeCron(entry: RawLogEntry): NormalizedEvent | null {
+    const line = entry.line;
+
+    const addedMatch = line.match(/^CRON_ADDED\s+user=(\S+)\s+schedule="([^"]+)"\s+command="([^"]+)"/);
+    if (addedMatch) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'cron',
+        category: 'persistence',
+        severity: 'medium',
+        eventType: 'cron_added',
+        sourceIp: null,
+        destinationPort: null,
+        userName: addedMatch[1],
+        processName: 'cron',
+        rawLog: line,
+        metadata: { schedule: addedMatch[2], command: addedMatch[3] },
+      };
+    }
+
+    const removedMatch = line.match(/^CRON_REMOVED\s+user=(\S+)\s+schedule="([^"]+)"\s+command="([^"]+)"/);
+    if (removedMatch) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'cron',
+        category: 'persistence',
+        severity: 'low',
+        eventType: 'cron_removed',
+        sourceIp: null,
+        destinationPort: null,
+        userName: removedMatch[1],
+        processName: 'cron',
+        rawLog: line,
+        metadata: { schedule: removedMatch[2], command: removedMatch[3] },
+      };
+    }
+
+    return null;
+  }
+
+  private static normalizeDns(entry: RawLogEntry): NormalizedEvent | null {
+    const line = entry.line;
+
+    // Match: systemd-resolved[123]: query[A] domain from IP
+    // Match: dnsmasq[456]: query[AAAA] domain from IP
+    const dnsMatch = line.match(/(?:systemd-resolved|dnsmasq)\[\d+\]:\s*query\[(\w+)\]\s+(\S+)\s+from\s+([\d.]+)/);
+    if (dnsMatch) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'dns',
+        category: 'network',
+        severity: 'info',
+        eventType: 'dns_query',
+        sourceIp: dnsMatch[3],
+        destinationPort: 53,
+        userName: null,
+        processName: null,
+        rawLog: line,
+        metadata: { queryType: dnsMatch[1], domain: dnsMatch[2], clientIp: dnsMatch[3] },
+      };
+    }
+
+    return null;
+  }
+
+  private static normalizeSshKeys(entry: RawLogEntry): NormalizedEvent | null {
+    const line = entry.line;
+
+    const addedMatch = line.match(/^SSH_KEY_ADDED\s+user=(\S+)\s+type=(\S+)\s+fingerprint=(\S+)\s+comment="([^"]*)"/);
+    if (addedMatch) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'ssh-keys',
+        category: 'credential',
+        severity: 'high',
+        eventType: 'ssh_key_added',
+        sourceIp: null,
+        destinationPort: null,
+        userName: addedMatch[1],
+        processName: null,
+        rawLog: line,
+        metadata: { keyType: addedMatch[2], fingerprint: addedMatch[3], comment: addedMatch[4] },
+      };
+    }
+
+    const removedMatch = line.match(/^SSH_KEY_REMOVED\s+user=(\S+)\s+type=(\S+)\s+fingerprint=(\S+)\s+comment="([^"]*)"/);
+    if (removedMatch) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'ssh-keys',
+        category: 'credential',
+        severity: 'medium',
+        eventType: 'ssh_key_removed',
+        sourceIp: null,
+        destinationPort: null,
+        userName: removedMatch[1],
+        processName: null,
+        rawLog: line,
+        metadata: { keyType: removedMatch[2], fingerprint: removedMatch[3], comment: removedMatch[4] },
+      };
+    }
+
+    return null;
   }
 }

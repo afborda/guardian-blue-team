@@ -96,6 +96,37 @@ export const CONSTANTS = {
   // Set via TRUSTED_FINGERPRINTS env var (comma-separated SHA256:xxx values).
   trustedFingerprints: (process.env.TRUSTED_FINGERPRINTS || '').split(',').map(s => s.trim()).filter(Boolean) as string[],
 
+  // ─── File Integrity Monitoring (FIM) ──────────────────────────────────────
+  fim: {
+    intervalMs: 4 * 60 * 60 * 1000, // 4 hours
+    monitoredPaths: [
+      '/etc/passwd', '/etc/shadow', '/etc/group', '/etc/sudoers',
+      '/etc/ssh/sshd_config', '/etc/crontab', '/etc/hosts',
+      '/etc/resolv.conf', '/etc/ld.so.preload',
+      '/root/.ssh/authorized_keys', '/root/.bashrc',
+    ],
+    criticalPaths: ['/etc/passwd', '/etc/shadow', '/etc/sudoers', '/etc/ssh/sshd_config'],
+  },
+
+  // ─── Sudo Auditing ────────────────────────────────────────────────────────
+  sudo: {
+    suspiciousCommands: /curl|wget|nc |ncat|dd |chmod\s+[67]77|bash\s+-[ic]|python[23]?\s+-c|perl\s+-e|base64\s+-d|mkfifo|socat/i,
+  },
+
+  // ─── Cron Monitoring ──────────────────────────────────────────────────────
+  cron: {
+    suspiciousPatterns: /curl|wget|nc |bash\s+-[ic]|python|perl|base64|\/tmp\/|\/dev\/shm\/|socat|mkfifo/i,
+  },
+
+  // ─── DNS Monitoring (C2 Detection) ────────────────────────────────────────
+  dns: {
+    entropyThreshold: 3.5,
+    beaconThreshold: 5,
+    beaconWindowMs: 10 * 60 * 1000, // 10 minutes
+    suspiciousTlds: ['.tk', '.ml', '.ga', '.cf', '.top', '.xyz', '.pw', '.cc', '.buzz', '.surf'],
+    minDgaLength: 20,
+  },
+
   // ─── Crypto Mining Detection ───────────────────────────────────────────────
   // Patterns that indicate crypto mining processes
   cryptoMiningPatterns: /xmrig|minerd|cpuminer|cryptonight|kdevtmpfsi|kinsing/i,

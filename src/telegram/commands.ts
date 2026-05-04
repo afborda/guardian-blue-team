@@ -10,6 +10,7 @@ import { PlaybookRegistry } from '../playbooks/registry.js';
 import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
 import { VulnScanner } from '../vuln-scanner/scanner.js';
 import { SOCAnalystService } from '../services/soc-analyst.service.js';
+import { isValidHostname, isValidIp, isValidSshUser, isValidKeyPath, isValidServerName } from '../utils/sanitize.js';
 
 export async function handleTelegramCommand(text: string): Promise<string> {
   const parts = text.split(/\s+/);
@@ -478,7 +479,11 @@ async function addServer(args: string[]): Promise<string> {
   const [name, host, portStr, user, keyPath] = args;
   const sshPort = portStr ? parseInt(portStr) : 22;
 
+  if (!isValidServerName(name)) return '❌ Nome inválido (use a-z, 0-9, -, _, . — max 64 chars).';
+  if (!isValidHostname(host) && !isValidIp(host)) return '❌ Hostname/IP inválido.';
   if (isNaN(sshPort) || sshPort < 1 || sshPort > 65535) return '❌ Porta SSH inválida.';
+  if (user && !isValidSshUser(user)) return '❌ Usuário SSH inválido (a-z, 0-9, _, - — max 32 chars).';
+  if (keyPath && !isValidKeyPath(keyPath)) return '❌ Caminho de chave SSH inválido (path absoluto, sem ..).';
 
   const existing = await ServerService.getByName(name);
   if (existing) return `❌ Servidor "${name}" já existe.`;

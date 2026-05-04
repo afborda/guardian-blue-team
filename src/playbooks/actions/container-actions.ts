@@ -2,11 +2,15 @@ import { SSHCollector } from '../../collectors/ssh-collector.js';
 import { ServerService } from '../../services/server.service.js';
 import type { PlaybookContext } from '../engine.js';
 import { logger } from '../../utils/logger.js';
+import { isValidContainerName } from '../../utils/sanitize.js';
 
 export async function pauseContainer(ctx: PlaybookContext, params?: Record<string, unknown>): Promise<{ success: boolean; message: string }> {
   const container = (params?.container as string) ?? (ctx.variables['containerName'] as string);
   if (!container) {
     return { success: false, message: 'No container name specified' };
+  }
+  if (!isValidContainerName(container)) {
+    return { success: false, message: 'Invalid container name: contains unsafe characters' };
   }
 
   const server = await ServerService.getEnabled().then(servers =>
@@ -29,6 +33,9 @@ export async function disconnectContainer(ctx: PlaybookContext, params?: Record<
   const container = (params?.container as string) ?? (ctx.variables['containerName'] as string);
   if (!container) {
     return { success: false, message: 'No container name specified' };
+  }
+  if (!isValidContainerName(container)) {
+    return { success: false, message: 'Invalid container name: contains unsafe characters' };
   }
 
   const server = await ServerService.getEnabled().then(servers =>

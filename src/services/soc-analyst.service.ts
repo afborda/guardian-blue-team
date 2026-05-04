@@ -6,7 +6,7 @@ import { logger } from '../utils/logger.js';
 
 export class SOCAnalystService {
   private static get geminiUrl(): string {
-    return `https://generativelanguage.googleapis.com/v1beta/models/${config.ai.geminiModel}:generateContent?key=${config.ai.geminiApiKey}`;
+    return `https://generativelanguage.googleapis.com/v1beta/models/${config.ai.geminiModel}:generateContent`;
   }
 
   static isAvailable(): boolean {
@@ -153,7 +153,7 @@ Answer in Portuguese (BR). Be concise and data-driven. If you don't have enough 
     try {
       const response = await fetch(this.geminiUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': config.ai.geminiApiKey! },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {

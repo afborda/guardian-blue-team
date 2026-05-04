@@ -5,6 +5,7 @@ import { SSHCollector } from '../collectors/ssh-collector.js';
 import { ServerService } from '../services/server.service.js';
 import { logger } from '../utils/logger.js';
 import { CONSTANTS } from '../config/constants.js';
+import { isValidIp } from '../utils/sanitize.js';
 
 export class BlockCleanupWorker {
   private static intervalId: NodeJS.Timeout | null = null;
@@ -41,6 +42,12 @@ export class BlockCleanupWorker {
       }
 
       const target = ServerService.toSSHTarget(server);
+
+      if (!isValidIp(block.ip)) {
+        logger.warn({ ip: block.ip, blockId: block.id }, 'Skipping invalid IP in block cleanup');
+        continue;
+      }
+
       const result = await SSHCollector.run(target, `sudo ufw delete deny from ${block.ip}`, 10_000);
 
       if (result.success) {

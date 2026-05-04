@@ -2,11 +2,15 @@ import { SSHCollector } from '../../collectors/ssh-collector.js';
 import { ServerService } from '../../services/server.service.js';
 import type { PlaybookContext } from '../engine.js';
 import { logger } from '../../utils/logger.js';
+import { isValidProcessPattern } from '../../utils/sanitize.js';
 
 export async function killProcess(ctx: PlaybookContext, params?: Record<string, unknown>): Promise<{ success: boolean; message: string }> {
   const processName = (params?.processName as string) ?? (ctx.variables['processName'] as string);
   if (!processName) {
     return { success: false, message: 'No process name specified' };
+  }
+  if (!isValidProcessPattern(processName)) {
+    return { success: false, message: 'Invalid process name: contains unsafe characters' };
   }
 
   const server = await ServerService.getEnabled().then(servers =>

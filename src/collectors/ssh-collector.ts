@@ -22,8 +22,8 @@ export interface SSHResult {
 export class SSHCollector {
   private static buildArgs(target: SSHTarget): string[] {
     const args = [
-      '-o', 'StrictHostKeyChecking=no',
-      '-o', 'UserKnownHostsFile=/dev/null',
+      '-o', 'StrictHostKeyChecking=accept-new',
+      '-o', `UserKnownHostsFile=${process.env.SSH_KNOWN_HOSTS || '/data/known_hosts'}`,
       '-o', 'ConnectTimeout=10',
       '-o', 'LogLevel=ERROR',
       '-o', 'BatchMode=yes',

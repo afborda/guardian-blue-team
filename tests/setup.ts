@@ -1,5 +1,7 @@
 import { vi } from 'vitest';
 
+process.env.TRUSTED_IPS = '203.0.113.10';
+
 vi.mock('../src/config/environment.js', () => ({
   config: {
     server: { port: 3334, nodeEnv: 'test' },

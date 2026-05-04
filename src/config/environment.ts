@@ -49,9 +49,13 @@ const envSchema = z.object({
 
   // Host Security SSH (legacy, used as default when no servers registered)
   HOST_SSH_HOST: z.string().default('127.0.0.1'),
-  HOST_SSH_PORT: z.string().transform(Number).default('49222'),
+  HOST_SSH_PORT: z.string().transform(Number).default('22'),
   HOST_SSH_USER: z.string().default('ubuntu'),
   HOST_SSH_KEY_PATH: z.string().optional(),
+
+  // Security — Trusted entities
+  TRUSTED_IPS: z.string().default(''),
+  TRUSTED_FINGERPRINTS: z.string().default(''),
 
   // Threat Intelligence
   ABUSEIPDB_API_KEY: z.string().optional(),
@@ -115,6 +119,11 @@ export const config = {
     sshPort: env.HOST_SSH_PORT,
     sshUser: env.HOST_SSH_USER,
     sshKeyPath: env.HOST_SSH_KEY_PATH || null,
+  },
+
+  security: {
+    trustedIps: env.TRUSTED_IPS.split(',').map(s => s.trim()).filter(Boolean),
+    trustedFingerprints: env.TRUSTED_FINGERPRINTS.split(',').map(s => s.trim()).filter(Boolean),
   },
 
   threatIntel: {

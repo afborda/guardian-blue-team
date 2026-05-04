@@ -16,7 +16,7 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=traefik-public"
-      - "traefik.http.routers.guardian.rule=Host(`${GUARDIAN_DOMAIN:-guardian.example.com}`)"
+      - "traefik.http.routers.guardian.rule=Host(`${GUARDIAN_DOMAIN:-guardian.localhost}`)"
       - "traefik.http.routers.guardian.entrypoints=websecure"
       - "traefik.http.routers.guardian.tls.certresolver=letsencrypt"
       - "traefik.http.services.guardian.loadbalancer.server.port=3334"

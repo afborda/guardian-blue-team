@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 # ─── Guardian Blue Team — Interactive Installer ─────────────────────────────────
 # Supports: Ubuntu/Debian, Alpine, macOS
@@ -315,8 +315,7 @@ else
   info "Add this public key to your servers:"
   echo -e "    ${DIM}$(cat "${SSH_KEY_PATH}.pub")${NC}"
   echo ""
-  warn "Press Enter after you've added the key to at least one server..."
-  read -r
+  info "You can add this key to servers later via: ssh-copy-id -i ${SSH_KEY_PATH}.pub user@host"
 fi
 
 # ─── Step 5: Configure .env ────────────────────────────────────────────────────

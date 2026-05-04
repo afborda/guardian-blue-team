@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # No set -e: we handle errors explicitly to avoid silent crashes
 
-INSTALLER_VERSION="1.0.6"
+INSTALLER_VERSION="1.0.7"
 
 # ─── Guardian Blue Team — Interactive Installer ─────────────────────────────────
 # Supports: Ubuntu/Debian, Alpine, macOS
@@ -457,11 +457,36 @@ prompt ABUSEIPDB_KEY "AbuseIPDB API key (Enter to skip)" ""
 
 echo ""
 info "Security — Trusted entities (optional):"
-info "These prevent false alerts for known-good connections."
-echo -e "    ${DIM}Comma-separated IPs. Example: 203.0.113.10,198.51.100.5${NC}"
-prompt TRUSTED_IPS_VAL "Your admin/home IPs (Enter to skip)" ""
-echo -e "    ${DIM}Comma-separated SHA256 fingerprints. Get yours with: ssh-keygen -lf ~/.ssh/id_ed25519.pub${NC}"
-prompt TRUSTED_FP_VAL "Your SSH key fingerprints (Enter to skip)" ""
+info "These prevent false alerts for YOUR OWN logins."
+
+# Detect current SSH client IP (the IP connecting to this server right now)
+CURRENT_CLIENT_IP=$(echo "$SSH_CLIENT" | awk '{print $1}')
+if [[ -z "$CURRENT_CLIENT_IP" ]]; then
+  CURRENT_CLIENT_IP=$(who am i 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+fi
+
+if [[ -n "$CURRENT_CLIENT_IP" ]]; then
+  info "Your current IP: ${BOLD}${CURRENT_CLIENT_IP}${NC} (detected from SSH session)"
+  prompt TRUSTED_IPS_VAL "Trusted IPs (comma-separated, Enter to accept)" "$CURRENT_CLIENT_IP"
+else
+  echo -e "    ${DIM}Comma-separated IPs. Example: 203.0.113.10,198.51.100.5${NC}"
+  echo -e "    ${DIM}Tip: run 'curl ifconfig.me' to find your IP${NC}"
+  prompt TRUSTED_IPS_VAL "Your admin/home IPs (Enter to skip)" ""
+fi
+
+# Detect current SSH key fingerprint
+CURRENT_FP=""
+if [[ -n "$SSH_CLIENT" && -f /var/log/auth.log ]]; then
+  CURRENT_FP=$(grep "Accepted publickey" /var/log/auth.log 2>/dev/null | grep "$CURRENT_CLIENT_IP" | tail -1 | grep -oE 'SHA256:[A-Za-z0-9+/=]+' | tail -1)
+fi
+
+if [[ -n "$CURRENT_FP" ]]; then
+  info "Your current key fingerprint: ${BOLD}${CURRENT_FP}${NC}"
+  prompt TRUSTED_FP_VAL "Trusted fingerprints (Enter to accept)" "$CURRENT_FP"
+else
+  echo -e "    ${DIM}SSH key fingerprints (SHA256:xxx). Get yours with: ssh-keygen -lf ~/.ssh/id_ed25519.pub${NC}"
+  prompt TRUSTED_FP_VAL "Trusted fingerprints (Enter to skip)" ""
+fi
 
 mkdir -p "${INSTALL_DIR}/data"
 

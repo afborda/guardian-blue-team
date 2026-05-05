@@ -20,7 +20,7 @@ const envSchema = z.object({
 
   // AI — Gemini
   GEMINI_API_KEY: z.string().optional(),
-  GEMINI_MODEL: z.string().default('gemini-2.0-flash-001'),
+  GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
 
   // AI — OpenAI
   OPENAI_API_KEY: z.string().optional(),

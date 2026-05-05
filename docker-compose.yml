@@ -20,12 +20,6 @@ services:
       - "traefik.http.routers.guardian.entrypoints=websecure"
       - "traefik.http.routers.guardian.tls.certresolver=letsencrypt"
       - "traefik.http.services.guardian.loadbalancer.server.port=3334"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3334/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
 
   guardian-db:
     image: postgres:16-alpine

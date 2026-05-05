@@ -256,7 +256,7 @@ Funciona com 4 provedores (configuravel, com fallback automatico):
 |----------|--------|-----------|
 | `AI_PROVIDER` | `auto` | `gemini`, `openai`, `claude`, `ollama`, ou `auto` |
 | `GEMINI_API_KEY` | — | Chave Google AI Studio |
-| `GEMINI_MODEL` | `gemini-2.0-flash-001` | Modelo Gemini |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Modelo Gemini |
 | `OPENAI_API_KEY` | — | Chave OpenAI |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Modelo OpenAI |
 | `ANTHROPIC_API_KEY` | — | Chave Anthropic |

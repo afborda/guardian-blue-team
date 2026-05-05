@@ -130,6 +130,47 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   exit 0
 fi
 
+# ─── Handle --upgrade ──────────────────────────────────────────────────────────
+
+if [[ "${1:-}" == "--upgrade" ]]; then
+  banner
+  INSTALL_DIR="${HOME}/.guardian"
+  if [[ ! -d "$INSTALL_DIR" ]]; then
+    error "Guardian not found at $INSTALL_DIR — install first."
+    exit 1
+  fi
+
+  info "Upgrading Guardian..."
+  cd "$INSTALL_DIR"
+
+  # Pull latest image or code
+  if docker compose pull 2>/dev/null; then
+    success "Latest image pulled"
+  else
+    if [[ -d .git ]]; then
+      git pull --ff-only 2>/dev/null && success "Code updated" || warn "Git pull failed"
+    fi
+  fi
+
+  # Rebuild and restart
+  docker compose up -d --build 2>/dev/null || docker compose up -d
+
+  # Wait for health
+  info "Waiting for Guardian to start..."
+  ATTEMPTS=0
+  while [[ $ATTEMPTS -lt 12 ]]; do
+    if wget -qO- http://localhost:3334/health 2>/dev/null | grep -q '"status":"ok"'; then
+      success "Guardian upgraded and healthy!"
+      exit 0
+    fi
+    ATTEMPTS=$((ATTEMPTS + 1))
+    sleep 5
+  done
+
+  warn "Guardian may still be starting. Check: docker compose logs -f"
+  exit 0
+fi
+
 # ─── Step 0: Banner ─────────────────────────────────────────────────────────────
 
 banner
@@ -754,14 +795,35 @@ DCEOF
   info "Starting Guardian..."
   cd "${INSTALL_DIR}"
   docker compose up -d
-  if docker compose ps --format '{{.State}}' 2>/dev/null | grep -q "running"; then
-    success "Guardian is running!"
-  else
-    sleep 3
-    if docker compose ps --format '{{.State}}' 2>/dev/null | grep -q "running"; then
-      success "Guardian is running!"
+
+  # ─── Post-install validation ──────────────────────────────────────────────────
+  echo ""
+  info "Validating installation..."
+
+  ATTEMPTS=0
+  MAX_ATTEMPTS=12
+  while [[ $ATTEMPTS -lt $MAX_ATTEMPTS ]]; do
+    if wget -qO- http://localhost:3334/health 2>/dev/null | grep -q '"status":"ok"'; then
+      success "Guardian is healthy!"
+      break
+    fi
+    ATTEMPTS=$((ATTEMPTS + 1))
+    sleep 5
+  done
+
+  if [[ $ATTEMPTS -ge $MAX_ATTEMPTS ]]; then
+    warn "Guardian is still starting. Check logs: docker compose logs -f"
+  fi
+
+  # Test Telegram
+  if [[ -n "${TELEGRAM_TOKEN:-}" ]]; then
+    info "Testing Telegram bot..."
+    TELEGRAM_RESP=$(wget -qO- --post-data="chat_id=${TELEGRAM_CHAT_ID}&text=%F0%9F%9B%A1%EF%B8%8F+Guardian+installed+on+$(hostname)%21&parse_mode=HTML" \
+      "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" 2>/dev/null || echo "")
+    if echo "$TELEGRAM_RESP" | grep -q '"ok":true'; then
+      success "Telegram notification sent! Check your chat."
     else
-      warn "Container may still be starting — check: docker compose logs -f"
+      warn "Could not send Telegram test message. Verify your token and chat ID."
     fi
   fi
 

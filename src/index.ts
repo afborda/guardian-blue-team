@@ -65,10 +65,6 @@ app.post('/webhook/telegram', async (req, res) => {
       res.status(401).json({ error: 'unauthorized' });
       return;
     }
-  } else if (process.env.NODE_ENV === 'production') {
-    logger.warn('TELEGRAM_WEBHOOK_SECRET not set — rejecting webhook in production');
-    res.status(503).json({ error: 'webhook secret required in production' });
-    return;
   }
 
   const update = req.body;
@@ -91,8 +87,13 @@ app.post('/webhook/telegram', async (req, res) => {
       }
 
       if (text.startsWith('/')) {
-        const response = await handleTelegramCommand(text);
-        await sendTelegramMessage(chatId, response);
+        try {
+          const response = await handleTelegramCommand(text);
+          await sendTelegramMessage(chatId, response);
+        } catch (cmdErr) {
+          logger.error({ err: cmdErr, command: text.split(/\s+/)[0] }, 'Command execution failed');
+          await sendTelegramMessage(chatId, '❌ Erro interno ao processar o comando. Verifique os logs.');
+        }
       }
     }
   } catch (error) {
@@ -101,12 +102,49 @@ app.post('/webhook/telegram', async (req, res) => {
 });
 
 async function sendTelegramMessage(chatId: number | string, text: string): Promise<void> {
+  const MAX_LENGTH = 4000;
+
   try {
-    await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
-    });
+    if (text.length <= MAX_LENGTH) {
+      const res = await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
+      });
+      if (!res.ok) {
+        const err = await res.text().catch(() => '');
+        logger.warn({ status: res.status, err, textLength: text.length }, 'Telegram sendMessage failed');
+        if (res.status === 400 && err.includes('parse')) {
+          await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, text }),
+          });
+        }
+      }
+      return;
+    }
+
+    const chunks: string[] = [];
+    let remaining = text;
+    while (remaining.length > 0) {
+      if (remaining.length <= MAX_LENGTH) {
+        chunks.push(remaining);
+        break;
+      }
+      let splitAt = remaining.lastIndexOf('\n', MAX_LENGTH);
+      if (splitAt < MAX_LENGTH * 0.5) splitAt = MAX_LENGTH;
+      chunks.push(remaining.slice(0, splitAt));
+      remaining = remaining.slice(splitAt);
+    }
+
+    for (const chunk of chunks) {
+      await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text: chunk, parse_mode: 'HTML' }),
+      });
+    }
   } catch (error) {
     logger.error({ err: error }, 'Failed to send Telegram response');
   }

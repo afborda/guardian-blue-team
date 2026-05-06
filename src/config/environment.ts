@@ -7,6 +7,9 @@ const envSchema = z.object({
   // Database
   DATABASE_URL: z.string().optional(),
 
+  // Dashboard
+  DASHBOARD_TOKEN: z.string().optional(),
+
   // Notifications
   NOTIFIERS: z.string().default('telegram'),
 
@@ -73,6 +76,10 @@ export const config = {
   server: {
     port: env.PORT,
     nodeEnv: env.NODE_ENV,
+  },
+
+  dashboard: {
+    token: env.DASHBOARD_TOKEN || null,
   },
 
   database: {

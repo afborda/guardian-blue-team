@@ -1,18 +1,17 @@
 import { type Request, type Response, type NextFunction } from 'express';
+import { config } from '../config/environment.js';
 import { safeCompare } from '../utils/sanitize.js';
 
-const DASHBOARD_TOKEN = process.env.DASHBOARD_TOKEN || null;
-
 export function dashboardAuth(req: Request, res: Response, next: NextFunction): void {
-  if (!DASHBOARD_TOKEN) {
-    res.status(503).json({ error: 'Dashboard disabled' });
+  if (!config.dashboard.token) {
+    res.status(503).json({ error: 'Dashboard disabled — set DASHBOARD_TOKEN' });
     return;
   }
 
   const token = req.query.token as string
     || req.headers.authorization?.replace('Bearer ', '');
 
-  if (!token || !safeCompare(token, DASHBOARD_TOKEN)) {
+  if (!token || !safeCompare(token, config.dashboard.token)) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }

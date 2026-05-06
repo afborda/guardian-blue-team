@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { db, dbFalse, dbNow } from '../database/connection.js';
 import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts, serverMetrics, serverScores } from '../database/schema.js';
 import { eq, count, desc } from 'drizzle-orm';
+import { config } from '../config/environment.js';
 import { layout } from './views/layout.js';
 import { overviewPage } from './views/overview.js';
 import { logger } from '../utils/logger.js';
@@ -45,7 +46,7 @@ dashboardPages.get('/', async (_req, res) => {
 });
 
 dashboardPages.get('/incidents', (_req, res) => {
-  const token = process.env.DASHBOARD_TOKEN || '';
+  const token = config.dashboard.token || '';
   const content = `
     <h2>Incidents</h2>
     <div hx-get="/api/dashboard/incidents?token=${token}" hx-trigger="load" hx-swap="innerHTML">
@@ -56,7 +57,7 @@ dashboardPages.get('/incidents', (_req, res) => {
 });
 
 dashboardPages.get('/servers', (_req, res) => {
-  const token = process.env.DASHBOARD_TOKEN || '';
+  const token = config.dashboard.token || '';
   const content = `
     <h2>Servers</h2>
     <div hx-get="/api/dashboard/servers?token=${token}" hx-trigger="load" hx-swap="innerHTML">
@@ -67,7 +68,7 @@ dashboardPages.get('/servers', (_req, res) => {
 });
 
 dashboardPages.get('/cve', (_req, res) => {
-  const token = process.env.DASHBOARD_TOKEN || '';
+  const token = config.dashboard.token || '';
   const content = `
     <h2>CVE Alerts</h2>
     <div id="cve-list" hx-get="/api/dashboard/cve-alerts?token=${token}" hx-trigger="load" hx-swap="innerHTML">
@@ -78,7 +79,7 @@ dashboardPages.get('/cve', (_req, res) => {
 });
 
 dashboardPages.get('/blocks', (_req, res) => {
-  const token = process.env.DASHBOARD_TOKEN || '';
+  const token = config.dashboard.token || '';
   const content = `
     <h2>Active IP Blocks</h2>
     <div id="blocks-list" hx-get="/api/dashboard/blocks?token=${token}" hx-trigger="load" hx-swap="innerHTML">
@@ -89,7 +90,7 @@ dashboardPages.get('/blocks', (_req, res) => {
 });
 
 dashboardPages.get('/logs', (_req, res) => {
-  const token = process.env.DASHBOARD_TOKEN || '';
+  const token = config.dashboard.token || '';
   const content = `
     <h2>Security Events</h2>
     <div hx-get="/api/dashboard/events?token=${token}" hx-trigger="load" hx-swap="innerHTML">
@@ -100,7 +101,7 @@ dashboardPages.get('/logs', (_req, res) => {
 });
 
 dashboardPages.get('/health', (_req, res) => {
-  const token = process.env.DASHBOARD_TOKEN || '';
+  const token = config.dashboard.token || '';
   const content = `
     <h2>Fleet Health</h2>
     <div hx-get="/api/dashboard/fleet-health?token=${token}" hx-trigger="load" hx-swap="innerHTML">
@@ -111,7 +112,7 @@ dashboardPages.get('/health', (_req, res) => {
 });
 
 dashboardPages.get('/health/:id', (req, res) => {
-  const token = process.env.DASHBOARD_TOKEN || '';
+  const token = config.dashboard.token || '';
   const id = req.params.id;
   const content = `
     <h2>Server Detail</h2>
@@ -127,7 +128,7 @@ dashboardPages.get('/health/:id', (req, res) => {
 });
 
 dashboardPages.get('/scores', (_req, res) => {
-  const token = process.env.DASHBOARD_TOKEN || '';
+  const token = config.dashboard.token || '';
   const content = `
     <h2>Server Scores</h2>
     <div hx-get="/api/dashboard/scores?token=${token}" hx-trigger="load" hx-swap="innerHTML">
@@ -302,7 +303,7 @@ dashboardApi.get('/cve-alerts', async (_req, res) => {
       return;
     }
 
-    const token = process.env.DASHBOARD_TOKEN || '';
+    const token = config.dashboard.token || '';
     const html = `<table><thead><tr><th>CVE</th><th>Package</th><th>CVSS</th><th>Fix Available</th><th>Actions</th></tr></thead><tbody>${
       alerts.map(a => {
         const cvss = a.cvssScore ? (a.cvssScore / 10).toFixed(1) : '?';
@@ -364,7 +365,7 @@ dashboardApi.get('/blocks', async (_req, res) => {
       return;
     }
 
-    const token = process.env.DASHBOARD_TOKEN || '';
+    const token = config.dashboard.token || '';
     const html = `<table><thead><tr><th>IP</th><th>Server</th><th>Reason</th><th>Blocked At</th><th>Expires</th><th>Actions</th></tr></thead><tbody>${
       blocks.map(b => `<tr>
         <td><span class="ip-tag">${escapeHtml(b.ip)}</span></td>
@@ -436,7 +437,7 @@ dashboardApi.get('/fleet-health', async (_req, res) => {
       return;
     }
 
-    const token = process.env.DASHBOARD_TOKEN || '';
+    const token = config.dashboard.token || '';
     let html = '<div class="kpi-grid">';
 
     for (const server of servers) {

@@ -4,6 +4,7 @@ import { handleLoginVerification } from './login-verification.js';
 import { handleCVECallback } from './cve-actions.js';
 import { config } from '../config/environment.js';
 import { logger } from '../utils/logger.js';
+import { pendingDiscoveries } from './commands.js';
 
 interface PendingApproval {
   playbookName: string;
@@ -44,6 +45,32 @@ export async function handleTelegramCallback(callbackQuery: {
 
   if (callbackQuery.data.startsWith('cve_')) {
     await handleCVECallback(callbackQuery);
+    return;
+  }
+
+  if (callbackQuery.data.startsWith('discovery_approve_')) {
+    const serverId = parseInt(callbackQuery.data.replace('discovery_approve_', ''));
+    const pending = pendingDiscoveries.get(serverId);
+    if (!pending) {
+      await answerCallback(callbackQuery.id, 'Discovery expirado');
+      return;
+    }
+    pendingDiscoveries.delete(serverId);
+    await answerCallback(callbackQuery.id, `Discovery aprovado para ${pending.serverName}`);
+    if (callbackQuery.message) {
+      await editMessage(callbackQuery.message,
+        `✅ Discovery aprovado — <b>${pending.serverName}</b> monitoramento configurado.`);
+    }
+    return;
+  }
+
+  if (callbackQuery.data.startsWith('discovery_cancel_')) {
+    const serverId = parseInt(callbackQuery.data.replace('discovery_cancel_', ''));
+    pendingDiscoveries.delete(serverId);
+    await answerCallback(callbackQuery.id, 'Discovery cancelado');
+    if (callbackQuery.message) {
+      await editMessage(callbackQuery.message, '❌ Discovery cancelado.');
+    }
     return;
   }
 

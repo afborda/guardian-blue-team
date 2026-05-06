@@ -2,6 +2,8 @@ import { PlaybookRegistry } from '../playbooks/registry.js';
 import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
 import { handleLoginVerification } from './login-verification.js';
 import { handleCVECallback } from './cve-actions.js';
+import { IncidentMemoryService } from '../services/incident-memory.service.js';
+import { FalsePositiveFilter } from '../intelligence/false-positive-filter.js';
 import { config } from '../config/environment.js';
 import { logger } from '../utils/logger.js';
 import { pendingDiscoveries } from './commands.js';
@@ -70,6 +72,28 @@ export async function handleTelegramCallback(callbackQuery: {
     await answerCallback(callbackQuery.id, 'Discovery cancelado');
     if (callbackQuery.message) {
       await editMessage(callbackQuery.message, '❌ Discovery cancelado.');
+    }
+    return;
+  }
+
+  if (callbackQuery.data.startsWith('incident_fp_')) {
+    const incidentId = parseInt(callbackQuery.data.replace('incident_fp_', ''));
+    await handleIncidentFeedback(incidentId, 'false_positive', callbackQuery);
+    return;
+  }
+
+  if (callbackQuery.data.startsWith('incident_confirm_')) {
+    const incidentId = parseInt(callbackQuery.data.replace('incident_confirm_', ''));
+    await handleIncidentFeedback(incidentId, 'resolved', callbackQuery);
+    return;
+  }
+
+  if (callbackQuery.data.startsWith('incident_monitor_')) {
+    const incidentId = parseInt(callbackQuery.data.replace('incident_monitor_', ''));
+    await answerCallback(callbackQuery.id, 'Monitorando...');
+    if (callbackQuery.message) {
+      await editMessage(callbackQuery.message,
+        `👁️ Incidente #${incidentId} sendo monitorado. Receberá updates se evoluir.`);
     }
     return;
   }
@@ -156,6 +180,46 @@ async function handlePlaybookApproval(
   PlaybookEngine.execute(playbook, { ...pending.ctx, triggeredBy: `approval:${operator}` }).catch(err =>
     logger.error({ err, playbook: pending.playbookName }, 'Approved playbook execution failed')
   );
+}
+
+async function handleIncidentFeedback(
+  incidentId: number,
+  outcome: 'false_positive' | 'resolved',
+  callbackQuery: { id: string; message?: { message_id: number; chat: { id: number } }; from?: { first_name?: string } }
+): Promise<void> {
+  const operator = callbackQuery.from?.first_name ?? 'unknown';
+  const resolution = outcome === 'false_positive'
+    ? `Marcado como falso positivo por ${operator}`
+    : `Confirmado como ameaça real por ${operator}`;
+
+  try {
+    await IncidentMemoryService.store(incidentId, resolution, outcome);
+    FalsePositiveFilter.invalidateCache();
+
+    const emoji = outcome === 'false_positive' ? '🏷️' : '✅';
+    const label = outcome === 'false_positive' ? 'FALSO POSITIVO' : 'AMEAÇA CONFIRMADA';
+
+    await answerCallback(callbackQuery.id, label);
+    if (callbackQuery.message) {
+      await editMessage(callbackQuery.message,
+        `${emoji} Incidente #${incidentId} — <b>${label}</b>\nPor: ${operator}\n\n💡 Guardian aprendeu com este feedback.`);
+    }
+
+    logger.info({ incidentId, outcome, operator }, 'Incident feedback received via Telegram');
+  } catch (err) {
+    logger.error({ err, incidentId }, 'Failed to process incident feedback');
+    await answerCallback(callbackQuery.id, 'Erro ao processar feedback');
+  }
+}
+
+export function buildIncidentFeedbackKeyboard(incidentId: number) {
+  return {
+    inline_keyboard: [[
+      { text: '🏷️ Falso Positivo', callback_data: `incident_fp_${incidentId}` },
+      { text: '✅ Confirmar', callback_data: `incident_confirm_${incidentId}` },
+      { text: '👁️ Monitorar', callback_data: `incident_monitor_${incidentId}` },
+    ]],
+  };
 }
 
 async function answerCallback(callbackId: string, text: string): Promise<void> {

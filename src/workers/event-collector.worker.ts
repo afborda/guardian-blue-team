@@ -17,6 +17,7 @@ import { EventIngestor } from '../pipeline/ingestor.js';
 import { PlaybookRegistry } from '../playbooks/registry.js';
 import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
 import { requestPlaybookApproval } from '../telegram/callbacks.js';
+import { addWebPendingApproval } from '../dashboard/routes.js';
 import { requestLoginVerification } from '../telegram/login-verification.js';
 import { config } from '../config/environment.js';
 import { CONSTANTS } from '../config/constants.js';
@@ -141,6 +142,7 @@ export class EventCollectorWorker {
 
         if (playbook.requiresApproval) {
           requestPlaybookApproval(playbook.name, ctx);
+          addWebPendingApproval(playbook.name, ctx);
           continue;
         }
 

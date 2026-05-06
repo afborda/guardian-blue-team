@@ -1,3 +1,6 @@
+import { existsSync, readdirSync } from 'fs';
+import { join, resolve } from 'path';
+import { pathToFileURL } from 'url';
 import type { NotifierPlugin } from './types.js';
 import { logger } from '../utils/logger.js';
 
@@ -39,8 +42,49 @@ export class PluginManager {
       }
     }
 
+    await this.loadExternalPlugins();
+
     this.initialized = true;
     logger.info({ count: this.notifiers.length }, 'Plugin system ready');
+  }
+
+  private static async loadExternalPlugins(): Promise<void> {
+    const pluginsDir = resolve(process.cwd(), 'plugins');
+    if (!existsSync(pluginsDir)) return;
+
+    const entries = readdirSync(pluginsDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      if (!entry.name.endsWith('.js') && !entry.name.endsWith('.mjs')) continue;
+
+      const filePath = join(pluginsDir, entry.name);
+
+      try {
+        const moduleUrl = pathToFileURL(filePath).href;
+        const mod = await import(moduleUrl);
+
+        if (mod.default && typeof mod.default === 'function') {
+          const plugin: NotifierPlugin = mod.default();
+
+          if (!plugin.name || typeof plugin.send !== 'function') {
+            logger.warn({ file: entry.name }, 'External plugin missing required fields (name, send)');
+            continue;
+          }
+
+          if (plugin.init) await plugin.init();
+
+          if (plugin.enabled) {
+            this.notifiers.push(plugin);
+            logger.info({ notifier: plugin.name, file: entry.name }, 'External notifier plugin loaded');
+          }
+        } else {
+          logger.warn({ file: entry.name }, 'External plugin must export default function returning NotifierPlugin');
+        }
+      } catch (err) {
+        logger.error({ err, file: entry.name }, 'Failed to load external plugin');
+      }
+    }
   }
 
   static getNotifiers(): NotifierPlugin[] {

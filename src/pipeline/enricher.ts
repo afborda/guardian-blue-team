@@ -1,6 +1,8 @@
 import type { NormalizedEvent } from './normalizer.js';
 import { ThreatIntelManager } from '../threat-intel/manager.js';
 import { SSHBehaviorProfiler } from '../intelligence/ssh-behavior.js';
+import { FalsePositiveFilter } from '../intelligence/false-positive-filter.js';
+import { logger } from '../utils/logger.js';
 
 export class EventEnricher {
   static async enrich(events: NormalizedEvent[]): Promise<NormalizedEvent[]> {
@@ -27,6 +29,31 @@ export class EventEnricher {
 
     for (const event of events) {
       let enriched = event;
+
+      // False positive suppression based on learned patterns
+      if (event.severity !== 'info') {
+        const fpCheck = await FalsePositiveFilter.shouldSuppress(
+          event.eventType,
+          event.sourceIp ?? undefined,
+          event.userName ?? undefined,
+        );
+        if (fpCheck.suppress) {
+          enriched = {
+            ...enriched,
+            severity: 'info',
+            metadata: {
+              ...enriched.metadata,
+              suppressed: true,
+              suppressionReason: fpCheck.reason,
+              suppressionConfidence: fpCheck.confidence,
+              originalSeverity: event.severity,
+            },
+          };
+          logger.debug({ eventType: event.eventType, ip: event.sourceIp, reason: fpCheck.reason }, 'Event suppressed by FP filter');
+          enrichedEvents.push(enriched);
+          continue;
+        }
+      }
 
       // Threat intel enrichment
       if (event.sourceIp) {

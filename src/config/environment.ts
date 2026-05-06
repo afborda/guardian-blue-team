@@ -9,6 +9,7 @@ const envSchema = z.object({
 
   // Dashboard
   DASHBOARD_TOKEN: z.string().optional(),
+  DASHBOARD_USERS: z.string().optional(),
 
   // Notifications
   NOTIFIERS: z.string().default('telegram'),
@@ -73,6 +74,22 @@ const envSchema = z.object({
   CVE_MONITOR_INTERVAL_HOURS: z.string().transform(Number).default('6'),
 });
 
+export interface DashboardUser {
+  username: string;
+  token: string;
+  role: 'admin' | 'operator' | 'viewer';
+}
+
+function parseDashboardUsers(raw?: string): DashboardUser[] {
+  if (!raw) return [];
+  return raw.split(';').map(entry => {
+    const [username, token, role] = entry.split(':');
+    if (!username || !token) return null;
+    const validRole = ['admin', 'operator', 'viewer'].includes(role) ? role as DashboardUser['role'] : 'viewer';
+    return { username: username.trim(), token: token.trim(), role: validRole };
+  }).filter((u): u is DashboardUser => u !== null);
+}
+
 const env = envSchema.parse(process.env);
 
 export const config = {
@@ -83,6 +100,7 @@ export const config = {
 
   dashboard: {
     token: env.DASHBOARD_TOKEN || null,
+    users: parseDashboardUsers(env.DASHBOARD_USERS),
   },
 
   database: {

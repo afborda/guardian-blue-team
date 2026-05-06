@@ -8,6 +8,10 @@ import { overviewPage } from './views/overview.js';
 import { logger } from '../utils/logger.js';
 import { escapeHtml } from '../utils/sanitize.js';
 import { ThreatIntelManager } from '../threat-intel/manager.js';
+import { PlaybookRegistry } from '../playbooks/registry.js';
+import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
+import { IncidentMemoryService } from '../services/incident-memory.service.js';
+import { FalsePositiveFilter } from '../intelligence/false-positive-filter.js';
 
 export const dashboardPages = Router();
 export const dashboardApi = Router();
@@ -186,6 +190,23 @@ dashboardPages.get('/apis', (_req, res) => {
     </div>
   `;
   res.send(layout('API Status', content));
+});
+
+dashboardPages.get('/approvals', (_req, res) => {
+  const token = config.dashboard.token || '';
+  const content = `
+    <h2>Pending Approvals</h2>
+    <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:1rem;">Playbooks requiring manual approval before execution.</p>
+    <div id="approvals-list" hx-get="/api/dashboard/pending-approvals?token=${token}" hx-trigger="load, every 10s" hx-swap="innerHTML">
+      <p aria-busy="true">Loading...</p>
+    </div>
+    <h2 style="margin-top:2rem;">Recent Incidents (Feedback)</h2>
+    <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:1rem;">Mark incidents as false positives to improve detection accuracy.</p>
+    <div id="feedback-list" hx-get="/api/dashboard/incidents-feedback?token=${token}" hx-trigger="load" hx-swap="innerHTML">
+      <p aria-busy="true">Loading...</p>
+    </div>
+  `;
+  res.send(layout('Approvals', content));
 });
 
 // ─── API Routes (HTML fragments for HTMX) ─────────────────────────────────
@@ -954,3 +975,166 @@ function severityRank(s: string): number {
   const ranks: Record<string, number> = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
   return ranks[s] ?? 0;
 }
+
+// ─── Approvals API ──────────────────────────────────────────────────────────
+
+interface WebPendingApproval {
+  id: string;
+  playbookName: string;
+  serverName: string;
+  sourceIp?: string;
+  incidentId?: number;
+  createdAt: number;
+}
+
+const webPendingApprovals = new Map<string, WebPendingApproval & { ctx: PlaybookContext }>();
+
+export function addWebPendingApproval(playbookName: string, ctx: PlaybookContext): string {
+  const id = `web_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  webPendingApprovals.set(id, {
+    id,
+    playbookName,
+    serverName: ctx.serverName,
+    sourceIp: ctx.sourceIp,
+    incidentId: ctx.incidentId,
+    createdAt: Date.now(),
+    ctx,
+  });
+
+  setTimeout(() => { webPendingApprovals.delete(id); }, 30 * 60 * 1000);
+  return id;
+}
+
+dashboardApi.get('/pending-approvals', async (_req, res) => {
+  try {
+    const approvals = [...webPendingApprovals.values()].map(a => ({
+      id: a.id,
+      playbookName: a.playbookName,
+      serverName: a.serverName,
+      sourceIp: a.sourceIp,
+      incidentId: a.incidentId,
+      age: Math.round((Date.now() - a.createdAt) / 60_000),
+    }));
+
+    if (approvals.length === 0) {
+      res.send('<p style="color:var(--success);">No pending approvals.</p>');
+      return;
+    }
+
+    const token = config.dashboard.token || '';
+    const html = `<table><thead><tr><th>Playbook</th><th>Server</th><th>IP</th><th>Age</th><th>Actions</th></tr></thead><tbody>${
+      approvals.map(a => `<tr id="approval-${a.id}">
+        <td><strong>${escapeHtml(a.playbookName)}</strong></td>
+        <td>${escapeHtml(a.serverName)}</td>
+        <td>${a.sourceIp ? `<span class="ip-tag">${escapeHtml(a.sourceIp)}</span>` : '—'}</td>
+        <td style="color:var(--text-dim)">${a.age}min ago</td>
+        <td>
+          <button class="success" hx-post="/api/dashboard/approvals/${a.id}/approve?token=${token}" hx-target="#approval-${a.id}" hx-swap="outerHTML">Approve</button>
+          <button class="danger" hx-post="/api/dashboard/approvals/${a.id}/reject?token=${token}" hx-target="#approval-${a.id}" hx-swap="outerHTML">Reject</button>
+        </td>
+      </tr>`).join('')
+    }</tbody></table>`;
+
+    res.send(html);
+  } catch (err) {
+    logger.error({ err }, 'Pending approvals API error');
+    res.status(500).send('<p class="severity-critical">Error</p>');
+  }
+});
+
+dashboardApi.post('/approvals/:id/approve', async (req, res) => {
+  try {
+    const pending = webPendingApprovals.get(req.params.id);
+    if (!pending) {
+      res.send('<tr><td colspan="5" style="color:var(--text-dim)">Approval expired or already processed</td></tr>');
+      return;
+    }
+
+    webPendingApprovals.delete(req.params.id);
+    const playbook = PlaybookRegistry.getByName(pending.playbookName);
+
+    if (playbook) {
+      PlaybookEngine.execute(playbook, { ...pending.ctx, triggeredBy: 'dashboard:approval' }).catch(err =>
+        logger.error({ err, playbook: pending.playbookName }, 'Dashboard-approved playbook failed')
+      );
+    }
+
+    res.send(`<tr><td colspan="5" style="color:var(--success);">Approved: ${escapeHtml(pending.playbookName)} — executing</td></tr>`);
+  } catch (err) {
+    logger.error({ err }, 'Approval approve error');
+    res.status(500).send('<tr><td colspan="5" class="severity-critical">Error</td></tr>');
+  }
+});
+
+dashboardApi.post('/approvals/:id/reject', async (req, res) => {
+  try {
+    const pending = webPendingApprovals.get(req.params.id);
+    webPendingApprovals.delete(req.params.id);
+    const name = pending?.playbookName ?? 'unknown';
+    res.send(`<tr><td colspan="5" style="color:var(--text-dim);">Rejected: ${escapeHtml(name)}</td></tr>`);
+  } catch (err) {
+    logger.error({ err }, 'Approval reject error');
+    res.status(500).send('<tr><td colspan="5" class="severity-critical">Error</td></tr>');
+  }
+});
+
+// ─── Incident Feedback API ──────────────────────────────────────────────────
+
+dashboardApi.get('/incidents-feedback', async (_req, res) => {
+  try {
+    const incidents = await db.select()
+      .from(socIncidents)
+      .where(eq(socIncidents.status, 'open'))
+      .orderBy(desc(socIncidents.lastSeenAt))
+      .limit(20);
+
+    if (incidents.length === 0) {
+      res.send('<p style="color:var(--text-dim)">No open incidents.</p>');
+      return;
+    }
+
+    const token = config.dashboard.token || '';
+    const html = `<table><thead><tr><th>ID</th><th>Title</th><th>Severity</th><th>Events</th><th>Feedback</th></tr></thead><tbody>${
+      incidents.map(i => `<tr id="incident-fb-${i.id}">
+        <td><code>#${i.id}</code></td>
+        <td>${escapeHtml(i.title)}</td>
+        <td><span class="severity-${i.severity}">${i.severity}</span></td>
+        <td>${i.eventCount}</td>
+        <td>
+          <button class="success" hx-post="/api/dashboard/incidents/${i.id}/confirm?token=${token}" hx-target="#incident-fb-${i.id}" hx-swap="outerHTML" style="font-size:0.72rem;">Confirm</button>
+          <button style="font-size:0.72rem;background:var(--text-dim);" hx-post="/api/dashboard/incidents/${i.id}/false-positive?token=${token}" hx-target="#incident-fb-${i.id}" hx-swap="outerHTML">False Positive</button>
+        </td>
+      </tr>`).join('')
+    }</tbody></table>`;
+
+    res.send(html);
+  } catch (err) {
+    logger.error({ err }, 'Incidents feedback API error');
+    res.status(500).send('<p class="severity-critical">Error</p>');
+  }
+});
+
+dashboardApi.post('/incidents/:id/confirm', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    await IncidentMemoryService.store(id, 'Confirmed as threat via dashboard', 'resolved');
+    await db.update(socIncidents).set({ status: 'resolved', resolvedAt: dbNow() }).where(eq(socIncidents.id, id));
+    res.send(`<tr><td colspan="5" style="color:var(--success);">Incident #${id} confirmed & resolved</td></tr>`);
+  } catch (err) {
+    logger.error({ err }, 'Incident confirm error');
+    res.status(500).send(`<tr><td colspan="5" class="severity-critical">Error</td></tr>`);
+  }
+});
+
+dashboardApi.post('/incidents/:id/false-positive', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    await IncidentMemoryService.store(id, 'Marked as false positive via dashboard', 'false_positive');
+    await db.update(socIncidents).set({ status: 'resolved', resolvedAt: dbNow() }).where(eq(socIncidents.id, id));
+    FalsePositiveFilter.invalidateCache();
+    res.send(`<tr><td colspan="5" style="color:var(--text-dim);">Incident #${id} — false positive (learned)</td></tr>`);
+  } catch (err) {
+    logger.error({ err }, 'Incident FP error');
+    res.status(500).send(`<tr><td colspan="5" class="severity-critical">Error</td></tr>`);
+  }
+});

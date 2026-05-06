@@ -2,6 +2,7 @@ import { db } from '../database/connection.js';
 import { incidentMemory, socIncidents } from '../database/schema.js';
 import { eq, desc } from 'drizzle-orm';
 import { logger } from '../utils/logger.js';
+import { FalsePositiveFilter } from '../intelligence/false-positive-filter.js';
 
 export interface IncidentCase {
   id: number;
@@ -26,6 +27,7 @@ export class IncidentMemoryService {
       await db.update(incidentMemory)
         .set({ resolution, outcome, rootCause: rootCause ?? null, falsePositive: outcome === 'false_positive' })
         .where(eq(incidentMemory.incidentId, incidentId));
+      FalsePositiveFilter.invalidateCache();
       return;
     }
 
@@ -47,6 +49,7 @@ export class IncidentMemoryService {
     });
 
     logger.info({ incidentId, category: incident.category, outcome }, 'Incident stored in memory');
+    FalsePositiveFilter.invalidateCache();
   }
 
   static async findSimilar(category: string, sourceIps: string[], limit = 5): Promise<IncidentCase[]> {

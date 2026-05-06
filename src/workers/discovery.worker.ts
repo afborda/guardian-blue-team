@@ -47,6 +47,8 @@ export class DiscoveryWorker {
           if (changes.length > 0) {
             await notifyChanges(server.name, changes);
           }
+
+          await proposeAutoEnrollment(server.name, result.analysis);
         } catch (err) {
           logger.warn({ err, server: server.name }, 'Re-discovery: error scanning server');
         }
@@ -62,6 +64,7 @@ export class DiscoveryWorker {
 }
 
 const lastKnownState = new Map<string, { services: string[]; ports: number[]; architecture: string }>();
+const knownContainers = new Map<string, Set<string>>();
 
 function detectChanges(serverName: string, analysis: DiscoveryResult): string[] {
   const previous = lastKnownState.get(serverName);
@@ -91,6 +94,43 @@ function detectChanges(serverName: string, analysis: DiscoveryResult): string[] 
   }
 
   return changes;
+}
+
+async function proposeAutoEnrollment(serverName: string, analysis: DiscoveryResult): Promise<void> {
+  const newServices = analysis.monitoringProfile.services;
+  const known = knownContainers.get(serverName) ?? new Set<string>();
+
+  const brandNew = newServices.filter(s => !known.has(s));
+  if (brandNew.length === 0) return;
+
+  for (const svc of brandNew) {
+    known.add(svc);
+  }
+  knownContainers.set(serverName, known);
+
+  if (knownContainers.get(serverName)?.size === newServices.length && brandNew.length === newServices.length) {
+    return;
+  }
+
+  const text = [
+    `🆕 <b>Auto-Discovery: new services found</b>`,
+    `🖥️ Server: <b>${serverName}</b>`,
+    '',
+    `New services detected:`,
+    ...brandNew.map(s => `  • ${s}`),
+    '',
+    `These are now automatically monitored.`,
+    `Log paths: ${analysis.monitoringProfile.logPaths.join(', ') || 'default'}`,
+    `Critical ports: ${analysis.monitoringProfile.criticalPorts.join(', ') || 'none'}`,
+  ].join('\n');
+
+  await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: config.telegram.chatId, text, parse_mode: 'HTML' }),
+  }).catch(err => logger.warn({ err }, 'Auto-enrollment notification failed'));
+
+  logger.info({ serverName, newServices: brandNew }, 'Auto-enrolled new services in monitoring');
 }
 
 async function notifyChanges(serverName: string, changes: string[]): Promise<void> {

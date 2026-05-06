@@ -114,7 +114,9 @@ function startHeartbeat(): void {
   heartbeatInterval = setInterval(async () => {
     try {
       await fetch(config.health.uptimeKumaPushUrl!, { method: 'GET' });
-    } catch { /* non-critical */ }
+    } catch (err) {
+      logger.debug({ err }, 'Heartbeat push failed');
+    }
   }, 60_000);
 
   logger.info('Heartbeat started (push every 60s)');
@@ -137,6 +139,9 @@ async function start(): Promise<void> {
   registerBuiltinPlugins();
   await PluginManager.loadNotifiers(config.notifiers);
 
+  PlaybookRegistry.init();
+  ThreatIntelManager.start();
+
   app.listen(config.server.port, () => {
     logger.info(`Guardian listening on :${config.server.port}`);
   });
@@ -149,8 +154,6 @@ async function start(): Promise<void> {
   DailyReportWorker.start();
   VulnScannerWorker.start();
   BlockCleanupWorker.start();
-  ThreatIntelManager.start();
-  PlaybookRegistry.init();
   DiscoveryWorker.start();
   startHeartbeat();
 

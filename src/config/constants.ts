@@ -67,6 +67,8 @@ export const CONSTANTS = {
     rateLimitWindowMs: 60_000, // 1 minute
     // How long playbook approval requests stay valid
     approvalExpiryMs: 30 * 60 * 1000, // 30 minutes
+    // Max time a playbook can run before being killed
+    playbookTimeoutMs: 60_000, // 1 minute
   },
 
   // ─── Workers ───────────────────────────────────────────────────────────────

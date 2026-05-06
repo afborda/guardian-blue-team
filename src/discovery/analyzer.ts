@@ -3,54 +3,24 @@ import { logger } from '../utils/logger.js';
 import { discoveryResultSchema, type DiscoveryResult, type ServerSnapshot } from './types.js';
 import { generateFallbackConfig } from './templates.js';
 
-const SYSTEM_PROMPT = `You are an expert DevOps engineer specializing in server security infrastructure.
-Analyze the server snapshot and generate the optimal configuration for Guardian Blue Team SIEM.
-
-Rules:
-1. If Traefik detected → configure Guardian as service in same Docker network with Traefik labels
-2. If Nginx detected → Guardian listens on 127.0.0.1:3334, generate upstream block
-3. If SSH on non-standard port → set HOST_SSH_PORT accordingly
-4. If fail2ban active → include its jails in monitoring profile
-5. If Docker present → mount /var/run/docker.sock read-only
-6. Adapt to available tools (Alpine uses wget, Ubuntu/Debian has curl)
-7. Generate .env with all detected values filled (never include secrets/passwords)
-8. Generate docker-compose.yml adapted to the found architecture
-9. If no Docker on server → generate systemd unit file instead of docker-compose
-10. Set monitoringProfile with detected services, log paths, and critical ports
-
-IMPORTANT: Respond with valid JSON only. No markdown, no code fences, no explanation outside JSON.
-Match this exact schema:
-{
-  "summary": "string describing server",
-  "architecture": "traefik-docker" | "nginx-standalone" | "nginx-docker" | "caddy" | "haproxy" | "bare-metal" | "unknown",
-  "confidence": 0-100,
-  "env": { "KEY": "value", ... },
-  "dockerCompose": "yaml string or omit",
-  "systemdUnit": "unit file string or omit",
-  "proxyConfig": "nginx/caddy block or omit",
-  "warnings": ["string", ...],
-  "recommendations": ["string", ...],
-  "monitoringProfile": {
-    "services": ["name", ...],
-    "logPaths": ["/var/log/...", ...],
-    "criticalPorts": [443, ...],
-    "customChecks": ["command", ...]
-  }
-}`;
+const SYSTEM_PROMPT = `You configure Guardian SIEM. Respond ONLY with compact JSON, no markdown.
+Schema: {"summary":"<1 sentence>","architecture":"traefik-docker"|"nginx-standalone"|"nginx-docker"|"caddy"|"haproxy"|"bare-metal"|"unknown","confidence":0-100,"env":{"HOST_SSH_PORT":"N","HOST_SSH_USER":"x","AI_PROVIDER":"auto","DATABASE_URL":"postgres://guardian:pwd@guardian-db:5432/guardian"},"warnings":["short warning"],"recommendations":["short rec"],"monitoringProfile":{"services":["name"],"logPaths":["/path"],"criticalPorts":[N],"customChecks":[]}}
+Rules: Traefik+Docker→traefik-docker. Nginx+Docker→nginx-docker. Nginx alone→nginx-standalone. No proxy+Docker→bare-metal with docker. No proxy+no docker→bare-metal. Only include env keys that differ from defaults. Keep warnings/recommendations under 3 items each.`;
 
 export async function analyzeSnapshot(snapshot: ServerSnapshot): Promise<DiscoveryResult> {
-  const sanitized = sanitizeForAI(snapshot);
-  const prompt = `Analyze this server snapshot and generate Guardian SIEM configuration:\n\n${JSON.stringify(sanitized, null, 2)}`;
+  const compact = buildCompactInput(snapshot);
+  const prompt = `Server scan:\n${compact}\n\nGenerate Guardian config JSON.`;
 
   const response = await AIProvider.chat(prompt, SYSTEM_PROMPT);
 
   if (response?.text) {
     try {
-      const cleaned = response.text.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
-      const parsed = JSON.parse(cleaned);
-      const validated = discoveryResultSchema.parse(parsed);
-      logger.info({ provider: response.provider, confidence: validated.confidence }, 'Discovery AI analysis complete');
-      return validated;
+      const parsed = parseAIResponse(response.text);
+      if (parsed) {
+        const validated = discoveryResultSchema.parse(fillDefaults(parsed));
+        logger.info({ provider: response.provider, confidence: validated.confidence }, 'Discovery AI analysis complete');
+        return validated;
+      }
     } catch (err) {
       logger.warn({ err }, 'Discovery AI response failed validation, using fallback');
     }
@@ -60,14 +30,111 @@ export async function analyzeSnapshot(snapshot: ServerSnapshot): Promise<Discove
   return generateFallbackConfig(snapshot);
 }
 
-function sanitizeForAI(snapshot: ServerSnapshot): object {
-  const safe = JSON.parse(JSON.stringify(snapshot));
-  if (safe.probes?.system?.data?.recentAuthLogs) {
-    safe.probes.system.data.recentAuthLogs = safe.probes.system.data.recentAuthLogs
-      .map((l: string) => l.replace(/key fingerprint is \S+/g, 'key fingerprint is [REDACTED]'));
+function buildCompactInput(snapshot: ServerSnapshot): string {
+  const { network, proxy, docker, security, system } = snapshot.probes;
+  const lines: string[] = [];
+
+  // OS (1 line)
+  if (system.success) {
+    lines.push(`OS: ${system.data.os.name || system.data.os.id} ${system.data.os.version} | Kernel: ${system.data.kernel} | CPU: ${system.data.cpu.cores}c | RAM: ${system.data.memoryMb.total}MB`);
   }
-  if (safe.probes?.security?.data?.firewall?.rules) {
-    safe.probes.security.data.firewall.rules = safe.probes.security.data.firewall.rules.slice(0, 800);
+
+  // Network — only ports < 10000 (1-2 lines)
+  if (network.success) {
+    const importantPorts = network.data.listeningPorts
+      .filter(p => p.port < 10000)
+      .map(p => `${p.port}/${p.process}`)
+      .slice(0, 15);
+    lines.push(`Ports: ${importantPorts.join(', ') || 'none detected'}`);
+    if (network.data.sshPort) lines.push(`SSH: port ${network.data.sshPort}`);
   }
-  return safe;
+
+  // Proxy (1 line)
+  if (proxy.success) {
+    if (proxy.data.detected !== 'none') {
+      lines.push(`Proxy: ${proxy.data.detected} v${proxy.data.version || '?'} | Domains: ${proxy.data.domains.slice(0, 5).join(', ') || 'none'}`);
+    } else {
+      lines.push('Proxy: none');
+    }
+  }
+
+  // Docker (1-2 lines)
+  if (docker.success) {
+    if (docker.data.installed) {
+      const containers = docker.data.containers.map(c => c.name).slice(0, 10).join(', ');
+      lines.push(`Docker: ${docker.data.runtime} v${docker.data.version} | Containers: ${containers || 'none running'}`);
+      if (docker.data.networks.length > 0) {
+        lines.push(`Networks: ${docker.data.networks.filter(n => !['bridge', 'host', 'none'].includes(n)).slice(0, 5).join(', ')}`);
+      }
+    } else {
+      lines.push('Docker: not installed');
+    }
+  }
+
+  // Security (2-3 lines)
+  if (security.success) {
+    const s = security.data;
+    lines.push(`SSH config: Port=${s.sshConfig.port} PermitRoot=${s.sshConfig.permitRoot} PwdAuth=${s.sshConfig.passwordAuth}`);
+    lines.push(`Firewall: ${s.firewall.tool} | fail2ban: ${s.fail2ban.active ? 'active (' + s.fail2ban.jails.join(',') + ')' : 'inactive'} | MAC: ${s.mac.type}`);
+  }
+
+  // Services (1 line — only interesting ones)
+  if (system.success && system.data.services.length > 0) {
+    const interesting = system.data.services
+      .map(s => s.name)
+      .filter(n => !['getty', 'systemd-', 'dbus', 'cron', 'rsyslog', 'snapd', 'unattended'].some(skip => n.includes(skip)))
+      .slice(0, 12);
+    if (interesting.length > 0) lines.push(`Services: ${interesting.join(', ')}`);
+  }
+
+  return lines.join('\n');
+}
+
+function parseAIResponse(text: string): Record<string, unknown> | null {
+  let cleaned = text.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+
+  // Try direct parse
+  try { return JSON.parse(cleaned); } catch {}
+
+  // Try to repair truncated JSON by closing open structures
+  let repaired = cleaned;
+  if (!repaired.endsWith('}')) {
+    // Find last complete value and close
+    const lastComplete = repaired.lastIndexOf('",');
+    if (lastComplete > 0) {
+      repaired = repaired.slice(0, lastComplete + 1);
+    }
+    // Close open arrays and objects
+    const opens = (repaired.match(/[\[{]/g) || []).length;
+    const closes = (repaired.match(/[\]}]/g) || []).length;
+    for (let i = 0; i < opens - closes; i++) {
+      const lastOpen = Math.max(repaired.lastIndexOf('['), repaired.lastIndexOf('{'));
+      if (lastOpen >= 0) {
+        repaired += repaired[lastOpen] === '[' ? ']' : '}';
+      }
+    }
+  }
+  try { return JSON.parse(repaired); } catch {}
+
+  return null;
+}
+
+function fillDefaults(parsed: Record<string, unknown>): Record<string, unknown> {
+  return {
+    summary: parsed.summary || '',
+    architecture: parsed.architecture || 'unknown',
+    confidence: parsed.confidence ?? 70,
+    env: parsed.env || {},
+    dockerCompose: parsed.dockerCompose,
+    systemdUnit: parsed.systemdUnit,
+    proxyConfig: parsed.proxyConfig,
+    warnings: Array.isArray(parsed.warnings) ? parsed.warnings : [],
+    recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations : [],
+    monitoringProfile: {
+      services: (parsed.monitoringProfile as any)?.services || [],
+      logPaths: (parsed.monitoringProfile as any)?.logPaths || ['/var/log/auth.log', '/var/log/syslog'],
+      criticalPorts: (parsed.monitoringProfile as any)?.criticalPorts || [],
+      customChecks: (parsed.monitoringProfile as any)?.customChecks || [],
+    },
+  };
 }

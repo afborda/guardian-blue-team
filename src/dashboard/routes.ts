@@ -34,6 +34,10 @@ dashboardPages.get('/', async (_req, res) => {
       ? Math.round(allScores.reduce((sum, s) => sum + s.overall, 0) / allScores.length)
       : 0;
 
+    const serverList = await db.select({ name: socServers.name, lastSeen: socServers.lastSeenAt })
+      .from(socServers)
+      .where(eq(socServers.enabled, true));
+
     const content = overviewPage({
       servers: serversCount.cnt,
       openIncidents: openCount.cnt,
@@ -41,6 +45,7 @@ dashboardPages.get('/', async (_req, res) => {
       pendingCves: cveCount.cnt,
       eventsToday: eventsCount.cnt,
       overallScore,
+      serverList: serverList.map(s => ({ name: s.name, lastSeen: s.lastSeen })),
     });
 
     res.send(layout('Overview', content));

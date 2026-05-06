@@ -1,5 +1,10 @@
 import { config } from '../../config/environment.js';
 
+interface ServerInfo {
+  name: string;
+  lastSeen: Date | null;
+}
+
 interface OverviewStats {
   servers: number;
   openIncidents: number;
@@ -7,6 +12,7 @@ interface OverviewStats {
   pendingCves: number;
   eventsToday: number;
   overallScore?: number;
+  serverList?: ServerInfo[];
   recentThreats?: Array<{ type: string; ip?: string; server: string; time: string }>;
   recentActions?: Array<{ action: string; target: string; time: string }>;
 }
@@ -64,9 +70,13 @@ export function overviewPage(stats: OverviewStats): string {
         </div>
         <div class="terminal">
           <div><span class="prompt">guardian</span> <span class="dim">collecting metrics...</span></div>
-          <div><span class="prompt">&#10003;</span> <span class="ok">hetzner-fsn1</span> <span class="dim">load=1.2 mem=67% disk=45%</span></div>
-          <div><span class="prompt">&#10003;</span> <span class="ok">ovh-db-1</span> <span class="dim">load=0.3 mem=42% disk=28%</span></div>
-          <div><span class="prompt">&#10003;</span> <span class="ok">ovh-web-1</span> <span class="dim">load=4.8 mem=91% disk=82%</span></div>
+          ${(stats.serverList ?? []).map(s => {
+            const isOnline = s.lastSeen && (Date.now() - new Date(s.lastSeen).getTime() < 10 * 60 * 1000);
+            const icon = isOnline ? '&#10003;' : '&#10007;';
+            const cls = isOnline ? 'ok' : 'dim';
+            return `<div><span class="prompt">${icon}</span> <span class="${cls}">${s.name}</span></div>`;
+          }).join('\n          ')}
+          ${(stats.serverList ?? []).length === 0 ? '<div><span class="dim">No servers configured</span></div>' : ''}
           <div style="margin-top: 0.5rem; border-top: 1px solid rgba(34,197,94,0.15); padding-top: 0.5rem;">
             <span class="dim">&#9656; logs</span> &middot; <span class="dim">&#9656; metrics</span> &middot; <span class="dim">&#9656; system</span>
           </div>

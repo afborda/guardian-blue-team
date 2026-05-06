@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db, dbFalse, dbNow } from '../database/connection.js';
-import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts, serverMetrics, serverScores } from '../database/schema.js';
+import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts, serverMetrics, serverScores, behaviorProfiles } from '../database/schema.js';
 import { eq, count, desc, and, gte, ne, sql } from 'drizzle-orm';
 import { config } from '../config/environment.js';
 import { layout } from './views/layout.js';
@@ -195,6 +195,20 @@ dashboardPages.get('/apis', (_req, res) => {
     </div>
   `;
   res.send(layout('API Status', content));
+});
+
+dashboardPages.get('/intelligence', (_req, res) => {
+  const token = config.dashboard.token || '';
+  const content = `
+    <h2>Intelligence & Learning</h2>
+    <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:1.5rem;">
+      How Guardian learns, when it updates, and what data feeds each system.
+    </p>
+    <div hx-get="/api/dashboard/intelligence?token=${token}" hx-trigger="load" hx-swap="innerHTML">
+      <p aria-busy="true">Loading intelligence status...</p>
+    </div>
+  `;
+  res.send(layout('Intelligence', content));
 });
 
 dashboardPages.get('/approvals', (_req, res) => {
@@ -1141,5 +1155,174 @@ dashboardApi.post('/incidents/:id/false-positive', async (req, res) => {
   } catch (err) {
     logger.error({ err }, 'Incident FP error');
     res.status(500).send(`<tr><td colspan="5" class="severity-critical">Error</td></tr>`);
+  }
+});
+
+dashboardApi.get('/intelligence', async (_req, res) => {
+  try {
+    const [profileCount] = await db.select({ cnt: count() }).from(behaviorProfiles);
+    const sshProfiles = await db.select({
+      subjectId: behaviorProfiles.subjectId,
+      sampleCount: behaviorProfiles.sampleCount,
+      lastUpdated: behaviorProfiles.lastUpdatedAt,
+    }).from(behaviorProfiles).where(eq(behaviorProfiles.profileType, 'ssh_user'));
+
+    const containerProfiles = await db.select({
+      subjectId: behaviorProfiles.subjectId,
+      sampleCount: behaviorProfiles.sampleCount,
+      lastUpdated: behaviorProfiles.lastUpdatedAt,
+    }).from(behaviorProfiles).where(eq(behaviorProfiles.profileType, 'container'));
+
+    const memoryStats = await IncidentMemoryService.getStats();
+
+    const [latestMetric] = await db.select({ at: serverMetrics.collectedAt }).from(serverMetrics).orderBy(desc(serverMetrics.collectedAt)).limit(1);
+    const [latestEvent] = await db.select({ at: securityEvents.timestamp }).from(securityEvents).orderBy(desc(securityEvents.timestamp)).limit(1);
+    const [latestScore] = await db.select({ at: serverScores.periodEnd }).from(serverScores).orderBy(desc(serverScores.periodStart)).limit(1);
+
+    const fmtTime = (d: Date | null | undefined) => d ? new Date(d).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : 'Nunca';
+    const fmtAgo = (d: Date | null | undefined) => {
+      if (!d) return '—';
+      const mins = Math.floor((Date.now() - new Date(d).getTime()) / 60_000);
+      if (mins < 1) return 'agora';
+      if (mins < 60) return `${mins}min atrás`;
+      return `${Math.floor(mins / 60)}h ${mins % 60}min atrás`;
+    };
+
+    const html = `
+    <div style="display:grid;gap:1.5rem;">
+
+      <!-- Data Freshness -->
+      <div class="card">
+        <div class="card-header"><span class="dot dot-green"></span> Frequência de Coleta & Última Atualização</div>
+        <table style="width:100%;font-size:0.82rem;">
+          <thead><tr><th>Sistema</th><th>Intervalo</th><th>Última Execução</th><th>Atualizado</th></tr></thead>
+          <tbody>
+            <tr><td>Coleta de Eventos (SSH/Docker/UFW)</td><td>2 minutos</td><td>${fmtTime(latestEvent?.at)}</td><td>${fmtAgo(latestEvent?.at)}</td></tr>
+            <tr><td>Métricas (CPU/RAM/Disco)</td><td>5 minutos</td><td>${fmtTime(latestMetric?.at)}</td><td>${fmtAgo(latestMetric?.at)}</td></tr>
+            <tr><td>Scores de Segurança</td><td>1 hora</td><td>${fmtTime(latestScore?.at)}</td><td>${fmtAgo(latestScore?.at)}</td></tr>
+            <tr><td>ML — Perfis Comportamentais</td><td>1 hora</td><td>${fmtTime(sshProfiles[0]?.lastUpdated)}</td><td>${fmtAgo(sshProfiles[0]?.lastUpdated)}</td></tr>
+            <tr><td>FIM — Baselines de Arquivo</td><td>4 horas</td><td colspan="2">Verifica alterações em arquivos críticos</td></tr>
+            <tr><td>CVE Scanner</td><td>6 horas</td><td colspan="2">Verifica vulnerabilidades em pacotes</td></tr>
+            <tr><td>Vuln Scanner Completo</td><td>Semanal (sáb 09:00)</td><td colspan="2">Scan profundo de vulnerabilidades</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- ML Behavioral -->
+      <div class="card">
+        <div class="card-header"><span class="dot dot-cyan"></span> ML — Perfis Comportamentais</div>
+        <p style="color:var(--text-muted);font-size:0.78rem;margin:0.5rem 0;">
+          Guardian aprende o comportamento "normal" de cada usuário SSH e container.
+          Quando algo foge do padrão (login em horário incomum, IP desconhecido, container usando mais recursos que o normal), gera um score de anomalia.
+          <strong>Não é deep learning</strong> — é profiling estatístico incremental (média + desvio padrão) que melhora a cada hora.
+        </p>
+        <h4 style="margin:1rem 0 0.5rem;font-size:0.85rem;">Perfis SSH (${sshProfiles.length} usuários)</h4>
+        ${sshProfiles.length > 0 ? `
+        <table style="width:100%;font-size:0.8rem;">
+          <thead><tr><th>Usuário</th><th>Amostras</th><th>Status</th><th>Última Atualização</th></tr></thead>
+          <tbody>
+            ${sshProfiles.map(p => `<tr>
+              <td><code>${escapeHtml(p.subjectId)}</code></td>
+              <td>${p.sampleCount}</td>
+              <td>${p.sampleCount >= 30 ? '<span style="color:var(--success)">Maduro</span>' : p.sampleCount >= 5 ? '<span style="color:var(--warning)">Aprendendo</span>' : '<span style="color:var(--text-dim)">Coletando</span>'}</td>
+              <td>${fmtAgo(p.lastUpdated)}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>` : '<p style="color:var(--text-dim);font-size:0.8rem;">Nenhum perfil SSH ainda. O primeiro será criado após 10 min de operação.</p>'}
+
+        <h4 style="margin:1rem 0 0.5rem;font-size:0.85rem;">Perfis de Container (${containerProfiles.length})</h4>
+        ${containerProfiles.length > 0 ? `
+        <table style="width:100%;font-size:0.8rem;">
+          <thead><tr><th>Container</th><th>Amostras</th><th>Status</th><th>Última Atualização</th></tr></thead>
+          <tbody>
+            ${containerProfiles.map(p => `<tr>
+              <td><code>${escapeHtml(p.subjectId)}</code></td>
+              <td>${p.sampleCount}</td>
+              <td>${p.sampleCount >= 5 ? '<span style="color:var(--success)">Ativo</span>' : '<span style="color:var(--text-dim)">Coletando</span>'}</td>
+              <td>${fmtAgo(p.lastUpdated)}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>` : '<p style="color:var(--text-dim);font-size:0.8rem;">Nenhum perfil de container ainda. Será criado no próximo ciclo (1h).</p>'}
+
+        <div style="margin-top:1rem;padding:0.75rem;background:rgba(0,212,255,0.05);border:1px solid rgba(0,212,255,0.15);border-radius:6px;font-size:0.78rem;">
+          <strong>Como funciona o treinamento:</strong><br>
+          1. A cada 1h, o IntelligenceWorker coleta dados dos últimos 30 dias<br>
+          2. Calcula perfis: horários típicos de login, IPs conhecidos, fingerprints SSH<br>
+          3. Para containers: CPU média, memória típica, frequência de restarts<br>
+          4. Mínimo 5 amostras para começar a detectar anomalias, 30+ para perfil maduro<br>
+          5. Score de anomalia (0-1): usa desvio padrão — quanto mais fora do padrão, maior o score
+        </div>
+      </div>
+
+      <!-- RAG Memory -->
+      <div class="card">
+        <div class="card-header"><span class="dot dot-blue"></span> RAG — Memória de Incidentes</div>
+        <p style="color:var(--text-muted);font-size:0.78rem;margin:0.5rem 0;">
+          Quando um incidente é resolvido (confirmado ou marcado como falso positivo),
+          Guardian salva na memória: o que aconteceu, como foi resolvido, e se era legítimo.
+          Na próxima vez que algo similar acontece, a AI consulta essa memória para dar contexto melhor.
+        </p>
+        <table style="width:100%;font-size:0.82rem;">
+          <tbody>
+            <tr><td>Total de memórias</td><td><strong>${memoryStats.total}</strong></td></tr>
+            <tr><td>Taxa de falso positivo</td><td><strong>${memoryStats.falsePositiveRate}%</strong></td></tr>
+            <tr><td>Categorias aprendidas</td><td><strong>${Object.keys(memoryStats.byCategory).join(', ') || 'Nenhuma ainda'}</strong></td></tr>
+          </tbody>
+        </table>
+        ${memoryStats.total === 0 ? `
+        <div style="margin-top:0.75rem;padding:0.75rem;background:rgba(245,158,11,0.05);border:1px solid rgba(245,158,11,0.15);border-radius:6px;font-size:0.78rem;">
+          <strong>RAG ainda vazio — é normal!</strong><br>
+          Dados entram na memória quando você:<br>
+          • Resolve um incidente via <code>/resolve</code> no Telegram<br>
+          • Marca como falso positivo no dashboard (página Approvals)<br>
+          • Confirma uma ameaça no dashboard<br>
+          Quanto mais incidentes forem resolvidos, melhor Guardian fica em decidir o que é real vs. ruído.
+        </div>` : ''}
+      </div>
+
+      <!-- GeoIP / Country -->
+      <div class="card">
+        <div class="card-header"><span class="dot dot-yellow"></span> GeoIP & Threat Intelligence</div>
+        <p style="color:var(--text-muted);font-size:0.78rem;margin:0.5rem 0;">
+          Country/GeoIP vem da API do AbuseIPDB. Só é consultado para IPs com severidade acima de "info"
+          (ou seja, IPs que dispararam algum alerta de segurança real).
+        </p>
+        <table style="width:100%;font-size:0.82rem;">
+          <tbody>
+            <tr><td>Provedor de GeoIP</td><td>AbuseIPDB (gratuito: 1000 req/dia)</td></tr>
+            <tr><td>Quando consulta</td><td>Quando um evento com <code>severity != info</code> tem um IP de origem</td></tr>
+            <tr><td>Por que country está vazio</td><td>Todos os logins são de IPs confiáveis (seu próprio IP). Quando IPs maliciosos atacarem, o country aparecerá automaticamente.</td></tr>
+            <tr><td>AbuseIPDB configurado?</td><td>${config.threatIntel.abuseIpDbKey ? '<span style="color:var(--success)">Sim</span>' : '<span style="color:var(--warning)">Não — configure ABUSEIPDB_API_KEY para enriquecer IPs</span>'}</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Anomaly Detection -->
+      <div class="card">
+        <div class="card-header"><span class="dot dot-green"></span> Detecção de Anomalias</div>
+        <p style="color:var(--text-muted);font-size:0.78rem;margin:0.5rem 0;">
+          Usa z-score (desvio padrão) sobre 7 dias de métricas. Requer mínimo 10 amostras de métrica.
+        </p>
+        <table style="width:100%;font-size:0.82rem;">
+          <thead><tr><th>Métrica Monitorada</th><th>Threshold</th><th>O que detecta</th></tr></thead>
+          <tbody>
+            <tr><td>Load ratio (load/cores)</td><td>&gt; 2.5σ</td><td>Picos de CPU incomuns</td></tr>
+            <tr><td>Memória usada %</td><td>&gt; 2.5σ</td><td>Memory leaks, processos anormais</td></tr>
+            <tr><td>Disco max %</td><td>&gt; 2.5σ</td><td>Crescimento acelerado de disco</td></tr>
+            <tr><td>Kernel errors</td><td>&gt; 2.5σ</td><td>Hardware/driver problems</td></tr>
+            <tr><td>Journal errors</td><td>&gt; 2.5σ</td><td>Serviços falhando excessivamente</td></tr>
+          </tbody>
+        </table>
+        <p style="color:var(--text-dim);font-size:0.75rem;margin-top:0.5rem;">
+          Status atual: ${profileCount.cnt >= 10 ? '<span style="color:var(--success)">Dados suficientes para detecção</span>' : `<span style="color:var(--warning)">${profileCount.cnt} amostras — precisa de 10+ para começar a detectar</span>`}
+        </p>
+      </div>
+
+    </div>`;
+
+    res.send(html);
+  } catch (err) {
+    logger.error({ err }, 'Intelligence API error');
+    res.status(500).send('<p class="severity-critical">Erro ao carregar dados de inteligência</p>');
   }
 });

@@ -6,7 +6,7 @@
   <a href="https://github.com/afborda/guardian-blue-team/actions/workflows/ci.yml"><img src="https://github.com/afborda/guardian-blue-team/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License: AGPL-3.0"></a>
   <a href="https://ghcr.io/afborda/guardian-blue-team"><img src="https://img.shields.io/badge/Docker-ghcr.io-blue" alt="Docker"></a>
-  <img src="https://img.shields.io/badge/version-1.5.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.6.0-blue" alt="Version">
 </p>
 
 <p align="center">

@@ -717,7 +717,7 @@ async function getFileChanges(serverName?: string): Promise<string> {
 // ─── /sudo ─────────────────────────────────────────────────────────────────
 
 async function getSudoActivity(hoursStr?: string): Promise<string> {
-  const hours = parseInt(hoursStr || '24') || 24;
+  const hours = Math.min(parseInt(hoursStr || '24') || 24, 720);
   const since = new Date(Date.now() - hours * 60 * 60 * 1000);
 
   const events = await db.select()
@@ -830,7 +830,7 @@ async function getDNSActivity(serverName?: string, hoursStr?: string): Promise<s
   // If first arg is a number, treat it as hours (not server name)
   const firstArgIsHours = serverName && !isNaN(parseInt(serverName)) && !hoursStr;
   const actualServerName = firstArgIsHours ? undefined : serverName;
-  const hours = parseInt((firstArgIsHours ? serverName : hoursStr) || '24') || 24;
+  const hours = Math.min(parseInt((firstArgIsHours ? serverName : hoursStr) || '24') || 24, 720);
   const since = new Date(Date.now() - hours * 60 * 60 * 1000);
 
   const serverFilter = actualServerName

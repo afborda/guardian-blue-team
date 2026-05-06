@@ -66,6 +66,7 @@ async function createPostgresTables(pool: Pool): Promise<void> {
       CREATE INDEX IF NOT EXISTS security_events_event_type_idx ON security_events(event_type);
       CREATE INDEX IF NOT EXISTS security_events_source_ip_idx ON security_events(source_ip);
       CREATE INDEX IF NOT EXISTS security_events_severity_idx ON security_events(severity);
+      CREATE INDEX IF NOT EXISTS security_events_incident_idx ON security_events(incident_id);
 
       CREATE TABLE IF NOT EXISTS soc_incidents (
         id SERIAL PRIMARY KEY,

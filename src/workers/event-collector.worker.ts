@@ -19,6 +19,7 @@ import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
 import { requestPlaybookApproval } from '../telegram/callbacks.js';
 import { requestLoginVerification } from '../telegram/login-verification.js';
 import { config } from '../config/environment.js';
+import { CONSTANTS } from '../config/constants.js';
 import { logger } from '../utils/logger.js';
 
 export class EventCollectorWorker {
@@ -135,9 +136,11 @@ export class EventCollectorWorker {
           continue;
         }
 
-        // Await playbook execution to prevent race conditions with post-playbook logic
         try {
-          await PlaybookEngine.execute(playbook, ctx);
+          await Promise.race([
+            PlaybookEngine.execute(playbook, ctx),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Playbook timeout')), CONSTANTS.telegram.playbookTimeoutMs)),
+          ]);
         } catch (err) {
           logger.error({ err, playbook: playbook.name }, 'Auto-triggered playbook failed');
         }

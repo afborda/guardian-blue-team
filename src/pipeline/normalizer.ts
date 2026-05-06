@@ -152,6 +152,8 @@ export class EventNormalizer {
 
     const [, type, action, name] = parts;
 
+    if (action?.startsWith('exec_') || action?.startsWith('exec ')) return null;
+
     const severity = action === 'die' || action === 'kill' ? 'medium' : 'info';
 
     return {

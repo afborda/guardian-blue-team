@@ -70,8 +70,10 @@ export class HealthCollector {
     const disks = diskLines.map(line => {
       const parts = line.trim().split(/\s+/);
       if (parts.length >= 3) {
+        const mountpoint = parts[0];
+        if (mountpoint.includes('/docker/') || mountpoint.includes('/overlay')) return null;
         return {
-          mountpoint: parts[0],
+          mountpoint,
           usedPercent: parseInt(parts[1]) || 0,
           availableBytes: this.parseSize(parts[2]),
         };

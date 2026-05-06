@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { db, dbFalse, dbNow } from '../database/connection.js';
 import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts, serverMetrics, serverScores } from '../database/schema.js';
-import { eq, count, desc } from 'drizzle-orm';
+import { eq, count, desc, and } from 'drizzle-orm';
 import { config } from '../config/environment.js';
 import { layout } from './views/layout.js';
 import { overviewPage } from './views/overview.js';
 import { logger } from '../utils/logger.js';
 import { escapeHtml } from '../utils/sanitize.js';
+import { ThreatIntelManager } from '../threat-intel/manager.js';
 
 export const dashboardPages = Router();
 export const dashboardApi = Router();
@@ -93,7 +94,20 @@ dashboardPages.get('/logs', (_req, res) => {
   const token = config.dashboard.token || '';
   const content = `
     <h2>Security Events</h2>
-    <div hx-get="/api/dashboard/events?token=${token}" hx-trigger="load" hx-swap="innerHTML">
+    <div style="display:flex; gap:0.75rem; flex-wrap:wrap; margin-bottom:1.25rem;">
+      <select id="sev-filter" style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);padding:0.4rem 0.75rem;border-radius:var(--radius-sm);font-size:0.8rem;">
+        <option value="">All Severities</option>
+        <option value="critical">Critical</option>
+        <option value="high">High</option>
+        <option value="medium">Medium</option>
+        <option value="low">Low</option>
+        <option value="info">Info</option>
+      </select>
+      <input id="type-filter" type="text" placeholder="Event type..." style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);padding:0.4rem 0.75rem;border-radius:var(--radius-sm);font-size:0.8rem;width:160px;" />
+      <input id="ip-filter" type="text" placeholder="Source IP..." style="background:var(--bg-card);color:var(--text);border:1px solid var(--border);padding:0.4rem 0.75rem;border-radius:var(--radius-sm);font-size:0.8rem;width:140px;" />
+      <button hx-get="/api/dashboard/events?token=${token}" hx-include="#sev-filter,#type-filter,#ip-filter" hx-target="#events-table" hx-swap="innerHTML" style="font-size:0.8rem;">Filter</button>
+    </div>
+    <div id="events-table" hx-get="/api/dashboard/events?token=${token}" hx-trigger="load" hx-swap="innerHTML">
       <p aria-busy="true">Loading...</p>
     </div>
   `;
@@ -136,6 +150,28 @@ dashboardPages.get('/scores', (_req, res) => {
     </div>
   `;
   res.send(layout('Scores', content));
+});
+
+dashboardPages.get('/timeline', (_req, res) => {
+  const token = config.dashboard.token || '';
+  const content = `
+    <h2>Event Timeline</h2>
+    <div hx-get="/api/dashboard/timeline?token=${token}" hx-trigger="load" hx-swap="innerHTML">
+      <p aria-busy="true">Loading timeline...</p>
+    </div>
+  `;
+  res.send(layout('Timeline', content));
+});
+
+dashboardPages.get('/apis', (_req, res) => {
+  const token = config.dashboard.token || '';
+  const content = `
+    <h2>API & System Status</h2>
+    <div hx-get="/api/dashboard/system-status?token=${token}" hx-trigger="load" hx-swap="innerHTML">
+      <p aria-busy="true">Loading status...</p>
+    </div>
+  `;
+  res.send(layout('API Status', content));
 });
 
 // ─── API Routes (HTML fragments for HTMX) ─────────────────────────────────
@@ -398,11 +434,23 @@ dashboardApi.post('/blocks/:id/unblock', async (req, res) => {
 dashboardApi.get('/events', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 100, 200);
+    const severity = req.query.severity as string || '';
+    const eventType = req.query.type as string || '';
+    const sourceIp = req.query.ip as string || '';
 
-    const events = await db.select()
+    const conditions = [];
+    if (severity) conditions.push(eq(securityEvents.severity, severity));
+    if (eventType) conditions.push(eq(securityEvents.eventType, eventType));
+    if (sourceIp) conditions.push(eq(securityEvents.sourceIp, sourceIp));
+
+    const query = db.select()
       .from(securityEvents)
       .orderBy(desc(securityEvents.timestamp))
       .limit(limit);
+
+    const events = conditions.length > 0
+      ? await query.where(and(...conditions))
+      : await query;
 
     if (events.length === 0) {
       res.send('<p style="color:var(--text-dim)">No events found.</p>');
@@ -643,5 +691,140 @@ dashboardApi.get('/scores', async (_req, res) => {
   } catch (err) {
     logger.error({ err }, 'Scores API error');
     res.status(500).send('<p class="severity-critical">Error loading scores</p>');
+  }
+});
+
+// ─── Timeline API ─────────────────────────────────────────────────────────
+
+dashboardApi.get('/timeline', async (_req, res) => {
+  try {
+    const events = await db.select()
+      .from(securityEvents)
+      .orderBy(desc(securityEvents.timestamp))
+      .limit(50);
+
+    if (events.length === 0) {
+      res.send('<p style="color:var(--text-dim)">No events to show.</p>');
+      return;
+    }
+
+    const grouped = new Map<string, typeof events>();
+    for (const e of events) {
+      const dateKey = new Date(e.timestamp).toLocaleDateString();
+      if (!grouped.has(dateKey)) grouped.set(dateKey, []);
+      grouped.get(dateKey)!.push(e);
+    }
+
+    const severityIcon: Record<string, string> = {
+      critical: '&#128308;',
+      high: '&#128992;',
+      medium: '&#128993;',
+      low: '&#128309;',
+      info: '&#9898;',
+    };
+
+    let html = '<div style="position:relative;padding-left:2rem;">';
+    html += '<div style="position:absolute;left:0.75rem;top:0;bottom:0;width:2px;background:var(--border);"></div>';
+
+    for (const [date, dayEvents] of grouped) {
+      html += `<div style="margin-bottom:1.5rem;"><div style="color:var(--cyan);font-weight:600;font-size:0.85rem;margin-bottom:0.75rem;position:relative;">`
+        + `<span style="position:absolute;left:-1.65rem;width:12px;height:12px;border-radius:50%;background:var(--cyan);top:2px;box-shadow:0 0 8px var(--cyan);"></span>`
+        + `${escapeHtml(date)}</div>`;
+
+      for (const e of dayEvents) {
+        const time = new Date(e.timestamp).toLocaleTimeString();
+        const icon = severityIcon[e.severity] || '&#9898;';
+        const ipTag = e.sourceIp ? ` <span class="ip-tag">${escapeHtml(e.sourceIp)}</span>` : '';
+        html += `<div style="display:flex;align-items:flex-start;gap:0.5rem;padding:0.35rem 0;font-size:0.8rem;">`
+          + `<span style="color:var(--text-dim);min-width:5rem;font-family:var(--font-mono);font-size:0.72rem;">${time}</span>`
+          + `<span>${icon}</span>`
+          + `<div><span class="severity-${e.severity}">${escapeHtml(e.eventType.replace(/_/g, ' '))}</span>${ipTag}`
+          + `<span style="color:var(--text-dim);font-size:0.72rem;margin-left:0.5rem;">#${e.serverId}</span></div>`
+          + `</div>`;
+      }
+      html += '</div>';
+    }
+
+    html += '</div>';
+    res.send(html);
+  } catch (err) {
+    logger.error({ err }, 'Timeline API error');
+    res.status(500).send('<p class="severity-critical">Error loading timeline</p>');
+  }
+});
+
+// ─── System Status API ─────────────────────────────────────────────────────
+
+dashboardApi.get('/system-status', async (_req, res) => {
+  try {
+    const circuitStatus = ThreatIntelManager.getCircuitStatus();
+    const dbOk = await import('../database/connection.js').then(m => m.testConnection()).catch(() => false);
+
+    const statusIcon = (s: string) => s === 'closed' ? '&#128994;' : s === 'open' ? '&#128308;' : '&#128993;';
+    const statusLabel = (s: string) => s === 'closed' ? 'Healthy' : s === 'open' ? 'Circuit Open' : 'Recovering';
+
+    const uptimeSeconds = Math.floor(process.uptime());
+    const uptimeStr = uptimeSeconds >= 86400
+      ? `${Math.floor(uptimeSeconds / 86400)}d ${Math.floor((uptimeSeconds % 86400) / 3600)}h`
+      : uptimeSeconds >= 3600
+        ? `${Math.floor(uptimeSeconds / 3600)}h ${Math.floor((uptimeSeconds % 3600) / 60)}m`
+        : `${Math.floor(uptimeSeconds / 60)}m`;
+
+    const memUsage = process.memoryUsage();
+    const heapMB = Math.round(memUsage.heapUsed / 1048576);
+    const rssMB = Math.round(memUsage.rss / 1048576);
+
+    let html = `
+      <div class="kpi-grid">
+        <div class="kpi kpi-green">
+          <div class="kpi-label">Uptime</div>
+          <div class="kpi-value kpi-value-green">${uptimeStr}</div>
+        </div>
+        <div class="kpi kpi-blue">
+          <div class="kpi-label">Heap Memory</div>
+          <div class="kpi-value kpi-value-blue">${heapMB}MB</div>
+        </div>
+        <div class="kpi kpi-cyan">
+          <div class="kpi-label">RSS Memory</div>
+          <div class="kpi-value kpi-value-cyan">${rssMB}MB</div>
+        </div>
+        <div class="kpi ${dbOk ? 'kpi-green' : 'kpi-red'}">
+          <div class="kpi-label">Database</div>
+          <div class="kpi-value ${dbOk ? 'kpi-value-green' : 'kpi-value-red'}">${dbOk ? 'OK' : 'ERR'}</div>
+        </div>
+      </div>
+
+      <h3 class="section-title">External API Circuits</h3>
+      <table>
+        <thead><tr><th>Service</th><th>Status</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>AbuseIPDB</strong></td>
+            <td>${statusIcon(circuitStatus.abuseipdb)} ${statusLabel(circuitStatus.abuseipdb)}</td>
+            <td style="color:var(--text-dim)">IP reputation lookups (1000/day free tier)</td>
+          </tr>
+          <tr>
+            <td><strong>VirusTotal</strong></td>
+            <td>${statusIcon(circuitStatus.virustotal)} ${statusLabel(circuitStatus.virustotal)}</td>
+            <td style="color:var(--text-dim)">IP malware analysis (500/day free tier)</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3 class="section-title">Guardian Info</h3>
+      <table>
+        <thead><tr><th>Property</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Version</td><td><code>1.5.0</code></td></tr>
+          <tr><td>Node.js</td><td><code>${process.version}</code></td></tr>
+          <tr><td>Platform</td><td><code>${process.platform} ${process.arch}</code></td></tr>
+          <tr><td>PID</td><td><code>${process.pid}</code></td></tr>
+        </tbody>
+      </table>`;
+
+    res.send(html);
+  } catch (err) {
+    logger.error({ err }, 'System status API error');
+    res.status(500).send('<p class="severity-critical">Error loading system status</p>');
   }
 });

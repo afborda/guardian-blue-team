@@ -1,3 +1,5 @@
+import { config } from '../../config/environment.js';
+
 interface OverviewStats {
   servers: number;
   openIncidents: number;
@@ -25,7 +27,7 @@ export function overviewPage(stats: OverviewStats): string {
   const score = stats.overallScore ?? 0;
   const scoreColor = getScoreColor(score);
   const status = getScoreStatus(score);
-  const token = process.env.DASHBOARD_TOKEN || '';
+  const token = config.dashboard.token || '';
 
   return `
     <!-- ─── KPI BAR ──────────────────────────────── -->

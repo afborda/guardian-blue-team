@@ -250,6 +250,30 @@ async function createPostgresTables(pool: Pool): Promise<void> {
         UNIQUE(server_id, username, fingerprint)
       );
       CREATE INDEX IF NOT EXISTS ssh_key_baselines_server_idx ON ssh_key_baselines(server_id);
+
+      CREATE TABLE IF NOT EXISTS behavior_profiles (
+        id SERIAL PRIMARY KEY,
+        server_id INTEGER NOT NULL,
+        profile_type VARCHAR(30) NOT NULL,
+        subject_id VARCHAR(255) NOT NULL,
+        profile JSONB NOT NULL DEFAULT '{}',
+        sample_count INTEGER NOT NULL DEFAULT 0,
+        last_updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS behavior_profiles_subject_idx ON behavior_profiles(server_id, profile_type, subject_id);
+
+      CREATE TABLE IF NOT EXISTS incident_memory (
+        id SERIAL PRIMARY KEY,
+        incident_id INTEGER,
+        category VARCHAR(100) NOT NULL,
+        title VARCHAR(500) NOT NULL,
+        source_ips JSONB DEFAULT '[]',
+        resolution VARCHAR(500),
+        outcome VARCHAR(30),
+        root_cause VARCHAR(500),
+        stored_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
     `);
   } finally {
     client.release();

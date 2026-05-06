@@ -41,7 +41,7 @@ app.get('/health', async (_req, res) => {
     status,
     uptime: Math.floor(process.uptime()),
     database: dbOk ? 'connected' : 'unreachable',
-    version: '1.4.0',
+    version: '1.5.0',
   });
 });
 

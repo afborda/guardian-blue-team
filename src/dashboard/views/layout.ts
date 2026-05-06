@@ -1,5 +1,7 @@
+import { config } from '../../config/environment.js';
+
 export function layout(title: string, content: string): string {
-  const token = process.env.DASHBOARD_TOKEN || '';
+  const token = config.dashboard.token || '';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>

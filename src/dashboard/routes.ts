@@ -1203,6 +1203,15 @@ dashboardApi.get('/intelligence', async (_req, res) => {
     const [latestEvent] = await db.select({ at: securityEvents.timestamp }).from(securityEvents).orderBy(desc(securityEvents.timestamp)).limit(1);
     const [latestScore] = await db.select({ at: serverScores.periodEnd }).from(serverScores).orderBy(desc(serverScores.periodStart)).limit(1);
 
+    const fimResult = await db.execute<{ last_fim: Date | null }>(sql`SELECT MAX(last_seen_at) as last_fim FROM file_baselines`);
+    const latestFim = (fimResult.rows?.[0] as any)?.last_fim ?? null;
+
+    const [cveResult] = await db.select({ at: cveAlerts.createdAt }).from(cveAlerts).orderBy(desc(cveAlerts.createdAt)).limit(1);
+    const latestCve = cveResult?.at ?? null;
+
+    const vulnResult = await db.execute<{ last_vuln: Date | null }>(sql`SELECT MAX(detected_at) as last_vuln FROM vulnerabilities`);
+    const latestVuln = (vulnResult.rows?.[0] as any)?.last_vuln ?? null;
+
     const fmtTime = (d: Date | null | undefined) => d ? new Date(d).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : 'Nunca';
     const fmtAgo = (d: Date | null | undefined) => {
       if (!d) return '—';
@@ -1225,9 +1234,9 @@ dashboardApi.get('/intelligence', async (_req, res) => {
             <tr><td>Métricas (CPU/RAM/Disco)</td><td>5 minutos</td><td>${fmtTime(latestMetric?.at)}</td><td>${fmtAgo(latestMetric?.at)}</td></tr>
             <tr><td>Scores de Segurança</td><td>1 hora</td><td>${fmtTime(latestScore?.at)}</td><td>${fmtAgo(latestScore?.at)}</td></tr>
             <tr><td>ML — Perfis Comportamentais</td><td>1 hora</td><td>${fmtTime(sshProfiles[0]?.lastUpdated)}</td><td>${fmtAgo(sshProfiles[0]?.lastUpdated)}</td></tr>
-            <tr><td>FIM — Baselines de Arquivo</td><td>4 horas</td><td colspan="2">Verifica alterações em arquivos críticos</td></tr>
-            <tr><td>CVE Scanner</td><td>6 horas</td><td colspan="2">Verifica vulnerabilidades em pacotes</td></tr>
-            <tr><td>Vuln Scanner Completo</td><td>Semanal (sáb 09:00)</td><td colspan="2">Scan profundo de vulnerabilidades</td></tr>
+            <tr><td>FIM — Baselines de Arquivo</td><td>4 horas</td><td>${fmtTime(latestFim)}</td><td>${fmtAgo(latestFim)}</td></tr>
+            <tr><td>CVE Scanner</td><td>6 horas</td><td>${latestCve ? fmtTime(latestCve) : 'Nenhuma CVE encontrada'}</td><td>${latestCve ? fmtAgo(latestCve) : '<span style="color:var(--success)">Limpo</span>'}</td></tr>
+            <tr><td>Vuln Scanner Completo</td><td>Semanal (sáb 09:00)</td><td>${latestVuln ? fmtTime(latestVuln) : 'Nenhuma vulnerabilidade encontrada'}</td><td>${latestVuln ? fmtAgo(latestVuln) : '<span style="color:var(--success)">Limpo</span>'}</td></tr>
           </tbody>
         </table>
       </div>

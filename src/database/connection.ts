@@ -18,7 +18,16 @@ async function initPostgres(): Promise<void> {
     logger.error({ err }, 'Database pool error');
   });
 
-  await createPostgresTables(pool);
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      await createPostgresTables(pool);
+      break;
+    } catch (err) {
+      if (attempt === 5) throw err;
+      logger.warn({ attempt, err }, 'Database init failed, retrying...');
+      await new Promise(r => setTimeout(r, attempt * 2000));
+    }
+  }
 
   _db = drizzle(pool);
   _closeHandler = async () => { await pool.end(); };

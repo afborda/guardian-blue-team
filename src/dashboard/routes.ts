@@ -440,16 +440,25 @@ dashboardApi.get('/fleet-health', async (_req, res) => {
     const token = config.dashboard.token || '';
     let html = '<div class="kpi-grid">';
 
-    for (const server of servers) {
-      const [latestScore] = await db.select().from(serverScores)
-        .where(eq(serverScores.serverId, server.id))
-        .orderBy(desc(serverScores.periodStart))
-        .limit(1);
+    const latestScores = await db.select().from(serverScores)
+      .orderBy(desc(serverScores.periodStart))
+      .limit(servers.length * 2);
+    const scoreMap = new Map<number, typeof latestScores[0]>();
+    for (const s of latestScores) {
+      if (!scoreMap.has(s.serverId)) scoreMap.set(s.serverId, s);
+    }
 
-      const [latestMetrics] = await db.select().from(serverMetrics)
-        .where(eq(serverMetrics.serverId, server.id))
-        .orderBy(desc(serverMetrics.collectedAt))
-        .limit(1);
+    const latestMetricsAll = await db.select().from(serverMetrics)
+      .orderBy(desc(serverMetrics.collectedAt))
+      .limit(servers.length * 2);
+    const metricsMap = new Map<number, typeof latestMetricsAll[0]>();
+    for (const m of latestMetricsAll) {
+      if (!metricsMap.has(m.serverId)) metricsMap.set(m.serverId, m);
+    }
+
+    for (const server of servers) {
+      const latestScore = scoreMap.get(server.id);
+      const latestMetrics = metricsMap.get(server.id);
 
       const overall = latestScore?.overallScore ?? 0;
       const color = overall >= 80 ? 'var(--success)' : overall >= 60 ? 'var(--warning)' : 'var(--critical)';

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { db, dbFalse, dbNow } from '../database/connection.js';
 import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts, serverMetrics, serverScores } from '../database/schema.js';
-import { eq, count, desc, and } from 'drizzle-orm';
+import { eq, count, desc, and, gte, ne, sql } from 'drizzle-orm';
 import { config } from '../config/environment.js';
 import { layout } from './views/layout.js';
 import { overviewPage } from './views/overview.js';
@@ -161,6 +161,20 @@ dashboardPages.get('/timeline', (_req, res) => {
     </div>
   `;
   res.send(layout('Timeline', content));
+});
+
+dashboardPages.get('/map', (_req, res) => {
+  const token = config.dashboard.token || '';
+  const content = `
+    <h2>Attack Origin Map</h2>
+    <p class="text-muted" style="color: var(--text-muted); margin-bottom: 1rem;">
+      Geographic distribution of attack sources (last 7 days)
+    </p>
+    <div hx-get="/api/dashboard/geo-attacks?token=${token}" hx-trigger="load" hx-swap="innerHTML">
+      <p aria-busy="true">Loading map data...</p>
+    </div>
+  `;
+  res.send(layout('Attack Map', content));
 });
 
 dashboardPages.get('/apis', (_req, res) => {
@@ -828,3 +842,115 @@ dashboardApi.get('/system-status', async (_req, res) => {
     res.status(500).send('<p class="severity-critical">Error loading system status</p>');
   }
 });
+
+// ─── Geo Attack Map API ──────────────────────────────────────────────────────
+
+dashboardApi.get('/geo-attacks', async (_req, res) => {
+  try {
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    const attacks = await db.select({
+      ip: securityEvents.sourceIp,
+      cnt: count(),
+      severity: sql<string>`MAX(${securityEvents.severity})`,
+    })
+      .from(securityEvents)
+      .where(and(
+        gte(securityEvents.timestamp, weekAgo),
+        ne(securityEvents.severity, 'info'),
+        sql`${securityEvents.sourceIp} IS NOT NULL AND ${securityEvents.sourceIp} != ''`,
+      ))
+      .groupBy(securityEvents.sourceIp)
+      .orderBy(desc(count()))
+      .limit(100);
+
+    const countryMap = new Map<string, { count: number; ips: string[]; topSeverity: string }>();
+    const ipList: Array<{ ip: string; count: number; severity: string; country: string }> = [];
+
+    for (const atk of attacks) {
+      if (!atk.ip) continue;
+      const enrichment = await db.select({ enrichment: securityEvents.enrichment })
+        .from(securityEvents)
+        .where(eq(securityEvents.sourceIp, atk.ip))
+        .limit(1)
+        .then(rows => rows[0]?.enrichment as Record<string, any> | null);
+
+      const country = enrichment?.country ?? enrichment?.threatIntel?.country ?? 'Unknown';
+      const entry = countryMap.get(country) || { count: 0, ips: [], topSeverity: 'low' };
+      entry.count += Number(atk.cnt);
+      if (entry.ips.length < 5) entry.ips.push(atk.ip);
+      if (severityRank(atk.severity) > severityRank(entry.topSeverity)) entry.topSeverity = atk.severity;
+      countryMap.set(country, entry);
+
+      ipList.push({ ip: atk.ip, count: Number(atk.cnt), severity: atk.severity, country });
+    }
+
+    const sortedCountries = [...countryMap.entries()].sort((a, b) => b[1].count - a[1].count);
+    const totalAttacks = sortedCountries.reduce((s, [, v]) => s + v.count, 0);
+
+    const countryRows = sortedCountries.slice(0, 20).map(([country, data]) => {
+      const pct = totalAttacks > 0 ? Math.round((data.count / totalAttacks) * 100) : 0;
+      const sevColor = data.topSeverity === 'critical' ? 'var(--critical)' :
+                       data.topSeverity === 'high' ? 'var(--warning)' : 'var(--cyan)';
+      const bar = `<div style="background:${sevColor};height:8px;width:${Math.max(pct, 2)}%;border-radius:4px;"></div>`;
+      return `<tr>
+        <td><strong>${escapeHtml(country)}</strong></td>
+        <td>${data.count}</td>
+        <td style="width:40%">${bar}</td>
+        <td>${pct}%</td>
+        <td><code style="font-size:11px">${data.ips.slice(0, 3).join(', ')}</code></td>
+      </tr>`;
+    }).join('');
+
+    const topIPs = ipList.slice(0, 15).map(ip => {
+      const sevIcon = ip.severity === 'critical' ? '&#128308;' :
+                      ip.severity === 'high' ? '&#128992;' :
+                      ip.severity === 'medium' ? '&#128993;' : '&#128309;';
+      return `<tr>
+        <td>${sevIcon}</td>
+        <td><code>${escapeHtml(ip.ip)}</code></td>
+        <td>${ip.count}</td>
+        <td>${escapeHtml(ip.country)}</td>
+        <td>${ip.severity}</td>
+      </tr>`;
+    }).join('');
+
+    const html = `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem;margin-bottom:2rem;">
+        <div class="kpi">
+          <div class="kpi-label">Countries</div>
+          <div class="kpi-value">${sortedCountries.length}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Unique IPs</div>
+          <div class="kpi-value">${attacks.length}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Total Events</div>
+          <div class="kpi-value">${totalAttacks.toLocaleString()}</div>
+        </div>
+      </div>
+
+      <h3 class="section-title">Attack Origins by Country</h3>
+      <table>
+        <thead><tr><th>Country</th><th>Events</th><th>Distribution</th><th>%</th><th>Top IPs</th></tr></thead>
+        <tbody>${countryRows || '<tr><td colspan="5" style="text-align:center;color:var(--text-dim)">No attack data in the last 7 days</td></tr>'}</tbody>
+      </table>
+
+      <h3 class="section-title" style="margin-top:2rem;">Top Attacking IPs</h3>
+      <table>
+        <thead><tr><th></th><th>IP</th><th>Events</th><th>Country</th><th>Severity</th></tr></thead>
+        <tbody>${topIPs || '<tr><td colspan="5" style="text-align:center;color:var(--text-dim)">No data</td></tr>'}</tbody>
+      </table>`;
+
+    res.send(html);
+  } catch (err) {
+    logger.error({ err }, 'Geo attacks API error');
+    res.status(500).send('<p class="severity-critical">Error loading geo data</p>');
+  }
+});
+
+function severityRank(s: string): number {
+  const ranks: Record<string, number> = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
+  return ranks[s] ?? 0;
+}

@@ -9,4 +9,6 @@ export {
   cveAlerts,
   serverMetrics,
   serverScores,
+  behaviorProfiles,
+  incidentMemory,
 } from './guardian-schema.js';

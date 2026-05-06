@@ -12,6 +12,9 @@ import { PlaybookRegistry } from '../playbooks/registry.js';
 import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
 import { VulnScanner } from '../vuln-scanner/scanner.js';
 import { SOCAnalystService } from '../services/soc-analyst.service.js';
+import { AIProvider } from '../services/ai-provider.js';
+import { IncidentMemoryService } from '../services/incident-memory.service.js';
+import { blockIP, unblockIP } from '../playbooks/actions/block-ip.js';
 import { isValidHostname, isValidIp, isValidSshUser, isValidKeyPath, isValidServerName } from '../utils/sanitize.js';
 import { discoverRemoteServer, formatDiscoveryApprovalKeyboard } from '../discovery/remote.js';
 import { config } from '../config/environment.js';
@@ -71,6 +74,20 @@ export async function handleTelegramCommand(text: string): Promise<string> {
       return await removeServer(parts[1]);
     case '/apis':
       return getApiStatus();
+    case '/block':
+      return await blockIPCommand(parts.slice(1));
+    case '/unblock':
+      return await unblockIPCommand(parts.slice(1));
+    case '/firewall':
+      return await getFirewallStatus(parts[1]);
+    case '/services':
+      return await getServices(parts[1]);
+    case '/ai':
+      return getAIStatus();
+    case '/learn':
+      return await learnFromIncident(parts.slice(1));
+    case '/memory':
+      return await getMemoryStats();
     case '/help':
       return formatHelp();
     default:
@@ -480,7 +497,7 @@ async function getVulnSummary(): Promise<string> {
 
 async function askSOCAnalyst(question: string): Promise<string> {
   if (!question.trim()) return '❌ Uso: /ask &lt;pergunta&gt;\nEx: /ask quantos ataques SSH essa semana?';
-  if (!SOCAnalystService.isAvailable()) return '⚠️ AI não configurada (GEMINI_API_KEY ausente).';
+  if (!SOCAnalystService.isAvailable()) return '⚠️ AI não configurada (nenhum provider disponível: Ollama, Gemini, OpenAI ou Claude).';
 
   const answer = await SOCAnalystService.naturalLanguageQuery(question);
   if (!answer) return '⚠️ Não foi possível obter resposta da AI.';
@@ -545,6 +562,220 @@ async function removeServer(name: string | undefined): Promise<string> {
   return `✅ Servidor "${name}" removido.`;
 }
 
+// ─── /block ────────────────────────────────────────────────────────────────
+
+async function blockIPCommand(args: string[]): Promise<string> {
+  if (args.length < 1) {
+    return '❌ Uso: /block &lt;ip&gt; [server] [duration]\nEx: /block 1.2.3.4 hetzner-prod 7d\nDurações: 1h, 24h, 7d, 30d';
+  }
+
+  const [ip, serverName, duration] = args;
+  if (!isValidIp(ip)) return '❌ IP inválido.';
+
+  const servers = serverName
+    ? [await ServerService.getByName(serverName)].filter(Boolean)
+    : await ServerService.getEnabled();
+
+  if (servers.length === 0) return serverName ? `❌ Servidor "${serverName}" não encontrado.` : '⚠️ Nenhum servidor registrado.';
+
+  const results: string[] = [];
+  for (const server of servers) {
+    if (!server) continue;
+    const result = await blockIP(
+      { serverId: server.id, serverName: server.name, sourceIp: ip, triggeredBy: 'telegram', variables: {} },
+      { duration: duration || '24h' }
+    );
+    const icon = result.success ? '✅' : '❌';
+    results.push(`${icon} ${server.name}: ${result.message}`);
+  }
+
+  return `🚫 <b>Block ${ip}</b>\n\n${results.join('\n')}`;
+}
+
+// ─── /unblock ──────────────────────────────────────────────────────────────
+
+async function unblockIPCommand(args: string[]): Promise<string> {
+  if (args.length < 1) {
+    return '❌ Uso: /unblock &lt;ip&gt; [server]\nEx: /unblock 1.2.3.4 hetzner-prod';
+  }
+
+  const [ip, serverName] = args;
+  if (!isValidIp(ip)) return '❌ IP inválido.';
+
+  const servers = serverName
+    ? [await ServerService.getByName(serverName)].filter(Boolean)
+    : await ServerService.getEnabled();
+
+  if (servers.length === 0) return serverName ? `❌ Servidor "${serverName}" não encontrado.` : '⚠️ Nenhum servidor registrado.';
+
+  const results: string[] = [];
+  for (const server of servers) {
+    if (!server) continue;
+    const result = await unblockIP(
+      { serverId: server.id, serverName: server.name, sourceIp: ip, triggeredBy: 'telegram', variables: {} },
+      { ip }
+    );
+    const icon = result.success ? '✅' : '❌';
+    results.push(`${icon} ${server.name}: ${result.message}`);
+  }
+
+  return `🔓 <b>Unblock ${ip}</b>\n\n${results.join('\n')}`;
+}
+
+// ─── /firewall ─────────────────────────────────────────────────────────────
+
+async function getFirewallStatus(serverName?: string): Promise<string> {
+  const servers = serverName
+    ? [await ServerService.getByName(serverName)].filter(Boolean)
+    : await ServerService.getEnabled();
+
+  if (servers.length === 0) return serverName ? `❌ Servidor "${serverName}" não encontrado.` : '⚠️ Nenhum servidor registrado.';
+
+  const sections: string[] = [];
+  for (const server of servers) {
+    if (!server) continue;
+    const target = ServerService.toSSHTarget(server);
+
+    const ufwResult = await SSHCollector.run(target, 'sudo ufw status numbered 2>/dev/null | head -30', 10_000);
+    if (!ufwResult.success) {
+      sections.push(`━━ <b>${server.name}</b> — ❌ erro ou UFW não disponível`);
+      continue;
+    }
+
+    const lines = ufwResult.stdout.trim().split('\n');
+    const statusLine = lines[0] || '';
+    const isActive = statusLine.toLowerCase().includes('active');
+    const icon = isActive ? '🟢' : '🔴';
+    const rules = lines.slice(3).filter(l => l.trim()).slice(0, 15);
+
+    const formatted = rules.length > 0
+      ? rules.map(r => `   ${r.trim()}`).join('\n')
+      : '   (sem regras)';
+
+    sections.push(`${icon} <b>${server.name}</b> — ${statusLine}\n${formatted}`);
+  }
+
+  return `🧱 <b>Firewall Status</b>\n\n${sections.join('\n\n')}`;
+}
+
+// ─── /services ─────────────────────────────────────────────────────────────
+
+async function getServices(serverName?: string): Promise<string> {
+  const servers = serverName
+    ? [await ServerService.getByName(serverName)].filter(Boolean)
+    : await ServerService.getEnabled();
+
+  if (servers.length === 0) return serverName ? `❌ Servidor "${serverName}" não encontrado.` : '⚠️ Nenhum servidor registrado.';
+
+  const sections: string[] = [];
+  for (const server of servers) {
+    if (!server) continue;
+    const target = ServerService.toSSHTarget(server);
+
+    const result = await SSHCollector.run(target,
+      "systemctl list-units --type=service --state=running --no-pager --no-legend 2>/dev/null | awk '{print $1}' | head -25",
+      10_000
+    );
+
+    if (!result.success) {
+      sections.push(`━━ <b>${server.name}</b> — ❌ erro`);
+      continue;
+    }
+
+    const services = result.stdout.trim().split('\n').filter(Boolean);
+    const failedResult = await SSHCollector.run(target,
+      'systemctl --failed --no-pager --no-legend 2>/dev/null | head -10',
+      8_000
+    );
+
+    const failedLines = failedResult.success ? failedResult.stdout.trim().split('\n').filter(Boolean) : [];
+    const failedCount = failedLines.length;
+
+    const serviceList = services.slice(0, 20).map(s => `   🟢 ${s.replace('.service', '')}`).join('\n');
+    const failedSection = failedCount > 0
+      ? `\n   ⚠️ <b>${failedCount} failed:</b>\n` + failedLines.slice(0, 5).map(l => `   🔴 ${l.split(/\s+/)[0]?.replace('.service', '')}`).join('\n')
+      : '';
+
+    const more = services.length > 20 ? `\n   ... +${services.length - 20} mais` : '';
+    sections.push(`━━ <b>${server.name}</b> (${services.length} running) ━━\n${serviceList}${more}${failedSection}`);
+  }
+
+  return `⚙️ <b>Services</b>\n\n${sections.join('\n\n')}`;
+}
+
+// ─── /ai ───────────────────────────────────────────────────────────────────
+
+function getAIStatus(): string {
+  const providers = AIProvider.getStatus();
+  const lines = providers.map(p => {
+    const icon = p.available ? '🟢' : '⚫';
+    return `${icon} #${p.priority} <b>${p.name}</b> — ${p.model}${p.available ? '' : ' (não configurado)'}`;
+  });
+
+  const activeProvider = providers.find(p => p.available);
+  const strategy = config.ai.provider === 'auto' ? 'Local-first (Ollama → Cloud)' : `Fixed: ${config.ai.provider}`;
+
+  return [
+    '🤖 <b>AI Providers</b>',
+    '',
+    `Estratégia: ${strategy}`,
+    `Provider ativo: ${activeProvider?.name ?? 'nenhum'}`,
+    '',
+    ...lines,
+    '',
+    '<i>Ollama é sempre tentado primeiro. Se falhar ou timeout, usa cloud como fallback.</i>',
+  ].join('\n');
+}
+
+// ─── /learn ────────────────────────────────────────────────────────────────
+
+async function learnFromIncident(args: string[]): Promise<string> {
+  if (args.length < 2) {
+    return '❌ Uso: /learn &lt;incident_id&gt; &lt;resolved|false_positive|mitigated&gt; [resolução]\nEx: /learn 42 resolved "Bloqueei subnet inteira via /block"';
+  }
+
+  const [idStr, outcome, ...resolutionParts] = args;
+  const incidentId = parseInt(idStr);
+  if (isNaN(incidentId)) return '❌ ID do incidente inválido.';
+
+  const validOutcomes = ['resolved', 'false_positive', 'mitigated'];
+  if (!validOutcomes.includes(outcome)) {
+    return `❌ Outcome inválido. Use: ${validOutcomes.join(', ')}`;
+  }
+
+  const resolution = resolutionParts.join(' ') || `Marcado como ${outcome} via Telegram`;
+
+  await IncidentMemoryService.store(incidentId, resolution, outcome as 'resolved' | 'false_positive' | 'mitigated');
+  return `🧠 Incidente #${incidentId} salvo na memória (${outcome}).\nA AI usará este caso como referência para incidentes similares.`;
+}
+
+// ─── /memory ───────────────────────────────────────────────────────────────
+
+async function getMemoryStats(): Promise<string> {
+  const stats = await IncidentMemoryService.getStats();
+
+  if (stats.total === 0) return '🧠 Memória vazia. Use /learn para ensinar o Guardian sobre incidentes resolvidos.';
+
+  const categories = Object.entries(stats.byCategory)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([cat, cnt]) => `   • ${cat}: ${cnt}`)
+    .join('\n');
+
+  return [
+    '🧠 <b>Memória do Guardian (RAG)</b>',
+    '',
+    `📊 Total de casos: <b>${stats.total}</b>`,
+    `⚠️ Taxa de falso positivo: ${stats.falsePositiveRate}%`,
+    '',
+    '📂 <b>Categorias:</b>',
+    categories,
+    '',
+    '<i>A AI usa estes casos para dar recomendações baseadas em histórico.</i>',
+    '💡 /learn &lt;id&gt; resolved|false_positive|mitigated [descrição]',
+  ].join('\n');
+}
+
 // ─── /help ──────────────────────────────────────────────────────────────────
 
 function formatHelp(): string {
@@ -574,6 +805,10 @@ function formatHelp(): string {
     '  /dns [server] [hours] — DNS / anomalias',
     '',
     '⚡ <b>Ações:</b>',
+    '  /block ip [server] [duration] — Bloquear IP',
+    '  /unblock ip [server] — Desbloquear IP',
+    '  /firewall [server] — Status do firewall (UFW)',
+    '  /services [server] — Serviços systemd',
     '  /playbook list — Playbooks disponíveis',
     '  /playbook run name server [ip]',
     '  /scan — Forçar análise de abuso',
@@ -585,6 +820,9 @@ function formatHelp(): string {
     '  /rm-server nome',
     '  /vulns — Vulnerabilidades',
     '  /ask pergunta — AI analyst',
+    '  /ai — Status dos providers AI',
+    '  /learn id outcome — Ensinar o Guardian',
+    '  /memory — Status da memória RAG',
     '  /apis — Status dos circuitos de API externas',
   ].join('\n');
 }

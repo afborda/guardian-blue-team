@@ -150,6 +150,40 @@ async function sendTelegramMessage(chatId: number | string, text: string): Promi
   }
 }
 
+// ─── Telegram Webhook Registration ─────────────────────────────────────────
+
+async function registerTelegramWebhook(): Promise<void> {
+  const baseUrl = config.telegram.baseUrl;
+  if (!baseUrl) {
+    logger.warn('GUARDIAN_BASE_URL not set — Telegram webhook not registered. Bot will not receive messages.');
+    return;
+  }
+
+  const webhookUrl = `${baseUrl.replace(/\/$/, '')}/webhook/telegram`;
+  const params: Record<string, string> = { url: webhookUrl };
+
+  if (config.telegram.webhookSecret) {
+    params.secret_token = config.telegram.webhookSecret;
+  }
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/setWebhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+
+    const data = await res.json() as { ok?: boolean; description?: string };
+    if (data.ok) {
+      logger.info({ webhookUrl }, 'Telegram webhook registered');
+    } else {
+      logger.error({ response: data }, 'Telegram webhook registration failed');
+    }
+  } catch (err) {
+    logger.error({ err }, 'Failed to register Telegram webhook');
+  }
+}
+
 // ─── Heartbeat (Uptime Kuma push) ──────────────────────────────────────────
 
 let heartbeatInterval: NodeJS.Timeout | null = null;
@@ -191,6 +225,8 @@ async function start(): Promise<void> {
   app.listen(config.server.port, () => {
     logger.info(`Guardian listening on :${config.server.port}`);
   });
+
+  await registerTelegramWebhook();
 
   EventCollectorWorker.start();
   FIMWorker.start();

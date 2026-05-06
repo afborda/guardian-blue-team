@@ -1,6 +1,8 @@
 import { ServerService } from '../services/server.service.js';
 import { AnomalyDetector } from '../intelligence/anomaly-detector.js';
 import { TrendPredictor } from '../intelligence/trend-predictor.js';
+import { SSHBehaviorProfiler } from '../intelligence/ssh-behavior.js';
+import { ContainerBehaviorProfiler } from '../intelligence/container-behavior.js';
 import { NotifierManager } from '../plugins/notifier-manager.js';
 import { logger } from '../utils/logger.js';
 
@@ -29,15 +31,26 @@ export class IntelligenceWorker {
 
       let totalAnomalies = 0;
       let totalTrends = 0;
+      let totalProfiles = 0;
+      let totalContainerProfiles = 0;
 
       for (const server of servers) {
-        const [anomalies, trends] = await Promise.all([
+        const [anomalies, trends, profiles, containerProfiles] = await Promise.all([
           AnomalyDetector.detect(server.id),
           TrendPredictor.predict(server.id),
+          SSHBehaviorProfiler.buildProfiles(server.id),
+          ContainerBehaviorProfiler.buildProfiles(server.id),
         ]);
 
         totalAnomalies += anomalies.length;
         totalTrends += trends.length;
+        totalProfiles += profiles;
+        totalContainerProfiles += containerProfiles;
+
+        const containerAnomalies = await ContainerBehaviorProfiler.detectAnomalies(server.id);
+        for (const ca of containerAnomalies) {
+          await this.notifyContainerAnomaly(server.name, ca);
+        }
 
         for (const anomaly of anomalies.filter(a => a.severity === 'critical')) {
           await this.notifyAnomaly(server.name, anomaly);
@@ -48,8 +61,8 @@ export class IntelligenceWorker {
         }
       }
 
-      if (totalAnomalies > 0 || totalTrends > 0) {
-        logger.info({ anomalies: totalAnomalies, trends: totalTrends }, 'Intelligence cycle complete');
+      if (totalAnomalies > 0 || totalTrends > 0 || totalProfiles > 0 || totalContainerProfiles > 0) {
+        logger.info({ anomalies: totalAnomalies, trends: totalTrends, sshProfiles: totalProfiles, containerProfiles: totalContainerProfiles }, 'Intelligence cycle complete');
       }
     } catch (err) {
       logger.error({ err }, 'Intelligence worker run failed');
@@ -72,6 +85,15 @@ export class IntelligenceWorker {
       body: `${resource}: ${trend.currentPercent}% (+${trend.dailyGrowthPercent}%/dia)\nEstimativa 90%: ~${trend.daysUntil90} dias\nConfiança: ${Math.round(trend.confidence * 100)}%`,
       severity: trend.daysUntil90 < 7 ? 'high' : 'medium',
       metadata: { server: serverName, metric: trend.metric },
+    });
+  }
+
+  private static async notifyContainerAnomaly(serverName: string, anomaly: { containerName: string; anomalyType: string; message: string; severity: string }): Promise<void> {
+    await NotifierManager.notify({
+      title: `Container ${anomaly.anomalyType} em ${serverName}`,
+      body: anomaly.message,
+      severity: anomaly.severity === 'critical' ? 'high' : 'medium',
+      metadata: { server: serverName, container: anomaly.containerName, type: anomaly.anomalyType },
     });
   }
 

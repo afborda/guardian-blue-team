@@ -1,4 +1,35 @@
 node_modules/
 dist/
-.env
 *.log
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+id_*
+!id_*.pub
+
+# Data and runtime
+/data/
+*.db
+*.sqlite
+*.heapsnapshot
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Coverage and testing
+coverage/
+.nyc_output/
+
+# Docker
+docker-compose.override.yml

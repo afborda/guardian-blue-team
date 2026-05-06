@@ -603,6 +603,8 @@ export function layout(title: string, content: string): string {
     <a href="/dashboard/cve?token=${token}" class="${title === 'CVE Alerts' ? 'active' : ''}">CVE</a>
     <a href="/dashboard/blocks?token=${token}" class="${title === 'Blocks' ? 'active' : ''}">Blocks</a>
     <a href="/dashboard/logs?token=${token}" class="${title === 'Logs' ? 'active' : ''}">Logs</a>
+    <a href="/dashboard/timeline?token=${token}" class="${title === 'Timeline' ? 'active' : ''}">Timeline</a>
+    <a href="/dashboard/apis?token=${token}" class="${title === 'API Status' ? 'active' : ''}">APIs</a>
   </nav>
 
   <main class="main">

@@ -92,21 +92,35 @@ export class AIProvider {
     if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
     messages.push({ role: 'user', content: prompt });
 
+    const model = config.ai.openaiModel;
+    const isNewModel = /^(gpt-5|o[1-9])/.test(model);
+
+    const body: Record<string, unknown> = {
+      model,
+      messages,
+      temperature: 0.3,
+    };
+
+    if (isNewModel) {
+      body.max_completion_tokens = 2048;
+    } else {
+      body.max_tokens = 2048;
+    }
+
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${config.ai.openaiApiKey}`,
       },
-      body: JSON.stringify({
-        model: config.ai.openaiModel,
-        messages,
-        max_tokens: 2048,
-        temperature: 0.3,
-      }),
+      body: JSON.stringify(body),
     });
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const err = await res.text().catch(() => '');
+      logger.debug({ model, status: res.status, err }, 'OpenAI API error');
+      return null;
+    }
     const data = await res.json() as any;
     return data.choices?.[0]?.message?.content ?? null;
   }

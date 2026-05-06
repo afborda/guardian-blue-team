@@ -27,7 +27,11 @@ dashboardPages.get('/', async (_req, res) => {
     const [openCount] = await db.select({ cnt: count() }).from(socIncidents).where(eq(socIncidents.status, 'open'));
     const [blockedCount] = await db.select({ cnt: count() }).from(blockedIps);
     const [cveCount] = await db.select({ cnt: count() }).from(cveAlerts).where(eq(cveAlerts.status, 'pending'));
-    const [eventsCount] = await db.select({ cnt: count() }).from(securityEvents);
+    const [eventsCount] = await db.select({ cnt: count() }).from(securityEvents)
+      .where(and(
+        gte(securityEvents.timestamp, new Date(Date.now() - 24 * 60 * 60 * 1000)),
+        ne(securityEvents.severity, 'info')
+      ));
 
     const allScores = await db.select({ overall: serverScores.overallScore }).from(serverScores)
       .orderBy(desc(serverScores.periodStart))
@@ -250,13 +254,29 @@ dashboardApi.get('/stats', async (_req, res) => {
 
 dashboardApi.get('/recent-threats', async (_req, res) => {
   try {
-    const events = await db.select()
+    const routineDockerTypes = [
+      'docker_start', 'docker_stop', 'docker_die', 'docker_connect',
+      'docker_disconnect', 'docker_mount', 'docker_unmount', 'docker_create',
+      'docker_destroy', 'docker_pull', 'docker_attach', 'docker_detach',
+      'docker_health_status', 'docker_rename', 'docker_update', 'docker_pause',
+      'docker_unpause', 'docker_restart', 'docker_top', 'docker_resize',
+    ];
+
+    const events = await db.select({
+      event: securityEvents,
+      serverName: socServers.name,
+    })
       .from(securityEvents)
+      .leftJoin(socServers, eq(securityEvents.serverId, socServers.id))
+      .where(and(
+        ne(securityEvents.severity, 'info'),
+        ...routineDockerTypes.map(t => ne(securityEvents.eventType, t))
+      ))
       .orderBy(desc(securityEvents.timestamp))
       .limit(5);
 
     if (events.length === 0) {
-      res.send('<div class="action-item"><span>&#9989;</span> No threats detected</div>');
+      res.send('<div class="action-item"><span>&#9989;</span> Nenhuma ameaça detectada</div>');
       return;
     }
 
@@ -273,14 +293,15 @@ dashboardApi.get('/recent-threats', async (_req, res) => {
       unauthorized_ssh_key: '&#128273;',
     };
 
-    const html = events.map(e => {
+    const html = events.map(({ event: e, serverName }) => {
       const icon = threatIcons[e.eventType] || '&#9888;';
       const ipTag = e.sourceIp ? ` <span class="ip-tag">${escapeHtml(e.sourceIp)}</span>` : '';
+      const name = serverName || `Server #${e.serverId}`;
       return `<div class="threat-item">
         <span class="threat-icon">${icon}</span>
         <div style="flex:1">
           <div style="font-size:0.82rem;"><span class="severity-${e.severity}">${escapeHtml(e.eventType.replace(/_/g, ' '))}</span>${ipTag}</div>
-          <div style="font-size:0.7rem; color:var(--text-dim)">Server #${e.serverId} &middot; ${new Date(e.timestamp).toLocaleTimeString()}</div>
+          <div style="font-size:0.7rem; color:var(--text-dim)">${escapeHtml(name)} &middot; ${new Date(e.timestamp).toLocaleTimeString()}</div>
         </div>
       </div>`;
     }).join('');

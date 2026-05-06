@@ -76,6 +76,14 @@ export class EventCollectorWorker {
         const rawLogs = [...authLogs, ...ufwLogs, ...dockerEvents, ...suspiciousProcs, ...networkAnomaly, ...sudoLogs, ...dnsLogs, ...syslogLogs, ...proxyLogs, ...packageLogs, ...systemdLogs, ...auditLogs];
         if (rawLogs.length === 0) continue;
 
+        logger.debug({
+          server: server.name,
+          auth: authLogs.length, ufw: ufwLogs.length, docker: dockerEvents.length,
+          process: suspiciousProcs.length, network: networkAnomaly.length, sudo: sudoLogs.length,
+          dns: dnsLogs.length, syslog: syslogLogs.length, proxy: proxyLogs.length,
+          package: packageLogs.length, systemd: systemdLogs.length, audit: auditLogs.length,
+        }, 'Collector results');
+
         let normalized = EventNormalizer.normalizeBatch(rawLogs);
         if (normalized.length === 0) continue;
 

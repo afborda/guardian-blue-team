@@ -815,6 +815,8 @@ DCEOF
     warn "Guardian is still starting. Check logs: docker compose logs -f"
   fi
 
+  info "Tip: Run auto-discovery for advanced config: docker exec guardian npx tsx src/discovery/cli.ts"
+
   # Test Telegram
   if [[ -n "${TELEGRAM_TOKEN:-}" ]]; then
     info "Testing Telegram bot..."
@@ -843,6 +845,25 @@ else
     npm ci --production 2>/dev/null || npm install
     npm run build 2>/dev/null || true
     success "Guardian built successfully"
+
+    # ─── Auto-Discovery ────────────────────────────────────────────────
+    echo -e "\n  ${CYAN}${BOLD}[Auto-Discovery]${NC} ${BOLD}Running auto-discovery...${NC}"
+
+    DISCOVERY_ARGS="--dir ${INSTALL_DIR}"
+    [[ -n "${GEMINI_KEY:-}" ]] && DISCOVERY_ARGS="${DISCOVERY_ARGS} --api-key ${GEMINI_KEY}"
+    [[ -n "${TELEGRAM_TOKEN:-}" ]] && DISCOVERY_ARGS="${DISCOVERY_ARGS} --telegram-token ${TELEGRAM_TOKEN}"
+    [[ -n "${TELEGRAM_CHAT:-}" ]] && DISCOVERY_ARGS="${DISCOVERY_ARGS} --telegram-chat-id ${TELEGRAM_CHAT}"
+    [[ -n "${GUARDIAN_DOMAIN:-}" ]] && DISCOVERY_ARGS="${DISCOVERY_ARGS} --domain ${GUARDIAN_DOMAIN}"
+
+    if [[ -n "${GEMINI_KEY:-}" ]]; then
+      info "AI auto-discovery will configure Guardian for this server..."
+      npx tsx src/discovery/cli.ts ${DISCOVERY_ARGS} </dev/tty || {
+        warn "Auto-discovery exited non-zero. Using manual configuration."
+      }
+    else
+      info "No Gemini API key — skipping auto-discovery."
+      info "Run later: cd ${INSTALL_DIR}/app && npx tsx src/discovery/cli.ts --api-key YOUR_KEY --dir ${INSTALL_DIR}"
+    fi
 
     if command -v systemctl &>/dev/null; then
       info "Creating systemd service..."

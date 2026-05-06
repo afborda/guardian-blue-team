@@ -75,19 +75,22 @@ No local AI? Just set `GEMINI_API_KEY` — Google's free tier handles it.
 
 ---
 
-## Quick Start
+## Quick Start (5 minutes)
 
-### What you need
+> **One clone, one `.env`, one `docker compose up`. That's it.**
+> All database tables, AI models, and workers start automatically.
+
+### Prerequisites
 
 | Data | How to get it | Required? |
 |------|--------------|:---------:|
 | Telegram Bot Token | [@BotFather](https://t.me/BotFather) → `/newbot` | Yes |
 | Telegram Chat ID | Send anything to [@userinfobot](https://t.me/userinfobot) | Yes |
-| Public domain (HTTPS) | DNS pointing to your server | Yes |
-| SSH key | Auto-generated or use existing `~/.ssh/id_ed25519` | Auto |
+| Public domain (HTTPS) | DNS pointing to your server + Traefik/nginx | Yes |
+| SSH access to targets | Key-based auth to the servers you want to monitor | Yes |
 | AI API key | [aistudio.google.com](https://aistudio.google.com/) (free) or skip (Ollama runs locally) | No |
 
-### Install
+### Step 1: Clone & Configure
 
 ```bash
 git clone https://github.com/afborda/guardian-blue-team.git
@@ -95,47 +98,90 @@ cd guardian-blue-team
 cp .env.example .env
 ```
 
-Edit `.env` — fill **only these 4 values**:
+Edit `.env` — fill **only these values**:
 
 ```env
 TELEGRAM_BOT_TOKEN=your_token_from_botfather
 TELEGRAM_CHAT_ID=your_chat_id
 GUARDIAN_BASE_URL=https://guardian.yourdomain.com
 GUARDIAN_DB_PASSWORD=strong_password_here
+DASHBOARD_TOKEN=random_string_for_web_access
+
+# Optional but recommended:
+GEMINI_API_KEY=your_free_google_ai_key
+ABUSEIPDB_API_KEY=your_free_abuseipdb_key
 ```
 
-Start:
+### Step 2: Start
 
 ```bash
 docker compose up -d
 ```
 
-Wait 2-3 minutes (Ollama downloads AI models on first run).
+That's it. Wait 2-3 minutes for Ollama to download AI models on first run.
 
-### Verify
+### Step 3: Verify & Add Servers
 
-Send `/help` to your bot on Telegram. If it responds, you're done.
+Send `/help` to your bot on Telegram. If it responds, Guardian is running.
 
-Add your first server:
 ```
 /add-server myserver 1.2.3.4 22 root
 ```
 
-Wait 5 minutes, then:
+Guardian will:
+1. Generate an SSH key if needed
+2. Show you the public key to add to the target's `~/.ssh/authorized_keys`
+3. Start collecting events, metrics, and building ML profiles automatically
+
+Within 5 minutes you'll see:
 ```
-/status     → server metrics
-/events     → security events
-/scores     → health scores
+/status     → server metrics and health
+/events     → security events being collected
+/scores     → security scores (calculated after 1h)
 ```
 
-### What starts automatically
+### What happens automatically after start
 
-- Telegram webhook registered (bot starts receiving messages)
-- PostgreSQL initialized with schema
-- Ollama pulls models (qwen3:4b + nomic-embed-text)
-- Event collection every 2 minutes
-- ML profiling and anomaly detection every hour
-- Daily report at 08:00 BRT
+| System | Interval | First Run |
+|--------|----------|-----------|
+| Event collection (SSH/Docker/UFW) | 2 min | 30s after start |
+| Metrics (CPU/RAM/Disk) | 5 min | 30s after start |
+| ML behavioral profiling | 1 hour | 10 min after start |
+| Security scores | 1 hour | 5 min after start |
+| File integrity monitoring (FIM) | 4 hours | 4h after start |
+| CVE vulnerability scanner | 6 hours | 6h after start |
+| Daily Telegram report | 08:00 BRT | Next day |
+
+### SSH Key Setup (for target servers)
+
+Guardian connects to your servers **via SSH** — no agents needed. The target server only needs:
+
+1. SSH accessible (any port)
+2. User with read access to logs (`/var/log/auth.log`, `journalctl`)
+3. Guardian's public key in `~/.ssh/authorized_keys`
+
+```bash
+# Get Guardian's public key (run after first start):
+docker exec guardian cat /home/node/.ssh/id_ed25519.pub
+
+# Add it to your target server:
+ssh user@target "echo 'PASTE_KEY_HERE' >> ~/.ssh/authorized_keys"
+```
+
+> **Tip:** If your server uses fail2ban with nftables, add Guardian's container subnet to the ignore list:
+> ```bash
+> # On the TARGET server, in /etc/fail2ban/jail.local:
+> [DEFAULT]
+> ignoreip = 127.0.0.1/8 ::1 172.16.0.0/12
+> ```
+
+### Accessing the Dashboard
+
+```
+https://your-domain/dashboard?token=YOUR_DASHBOARD_TOKEN
+```
+
+12 pages: Overview · Fleet Health · Scores · Incidents · Servers · CVE · Blocks · Logs · Timeline · Attack Map · APIs · Intelligence
 
 [Full installation guide with troubleshooting →](docs/getting-started.md)
 
@@ -157,9 +203,11 @@ Wait 5 minutes, then:
 
 ## Dashboard
 
-11-page web dashboard at `https://your-domain/dashboard?token=TOKEN`
+12-page web dashboard at `https://your-domain/dashboard?token=TOKEN`
 
-Overview · Fleet Health · Scores · Incidents · Servers · CVE · Blocks · Logs · Timeline · Attack Map · API Status
+Overview · Fleet Health · Scores · Incidents · Servers · CVE · Blocks · Logs · Timeline · Attack Map · API Status · **Intelligence**
+
+The Intelligence page shows ML training status, RAG memory, data freshness, and has a "Recalculate Now" button to force-update all systems.
 
 [Dashboard details →](docs/dashboard.md)
 

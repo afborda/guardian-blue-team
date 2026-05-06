@@ -1,0 +1,27 @@
+{
+  "name": "@guardian-bt/cli",
+  "version": "2.0.0",
+  "description": "Guardian Blue Team — interactive installer CLI",
+  "type": "module",
+  "bin": {
+    "guardian": "./dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsup src/index.ts --format esm --clean --minify",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.9.1",
+    "chalk": "^5.4.1",
+    "execa": "^9.5.2",
+    "yargs": "^17.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/yargs": "^17.0.33",
+    "tsup": "^8.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

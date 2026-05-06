@@ -11,6 +11,7 @@ import { ScoreCalculatorWorker } from './workers/score-calculator.worker.js';
 import { MetricsRetentionWorker } from './workers/metrics-retention.worker.js';
 import { IntelligenceWorker } from './workers/intelligence.worker.js';
 import { FIMWorker } from './workers/fim.worker.js';
+import { DiscoveryWorker } from './workers/discovery.worker.js';
 import { ThreatIntelManager } from './threat-intel/manager.js';
 import { PlaybookRegistry } from './playbooks/registry.js';
 import { handleTelegramCommand } from './telegram/commands.js';
@@ -150,6 +151,7 @@ async function start(): Promise<void> {
   BlockCleanupWorker.start();
   ThreatIntelManager.start();
   PlaybookRegistry.init();
+  DiscoveryWorker.start();
   startHeartbeat();
 
   if (config.cveMonitor.enabled) {
@@ -176,6 +178,7 @@ async function shutdown(signal: string): Promise<void> {
     VulnScannerWorker.stop(),
     BlockCleanupWorker.stop(),
     CVEMonitorWorker.stop(),
+    DiscoveryWorker.stop(),
   ]);
   ThreatIntelManager.stop();
 

@@ -233,6 +233,72 @@ const DETECTION_RULES: DetectionRule[] = [
     severity: 'medium',
     eventType: 'dns_suspicious_tld',
   },
+  {
+    name: 'proxy_path_traversal',
+    description: 'Path traversal attempt detected in proxy logs',
+    condition: (_events, current) => {
+      return current.eventType === 'proxy_path_traversal';
+    },
+    severity: 'high',
+    eventType: 'proxy_path_traversal',
+  },
+  {
+    name: 'proxy_scanner_burst',
+    description: '10+ scanner requests from same IP in buffer',
+    condition: (events, current) => {
+      if (current.eventType !== 'proxy_scanner_detected') return false;
+      if (!current.sourceIp) return false;
+
+      const count = events.filter(e =>
+        e.sourceIp === current.sourceIp &&
+        e.eventType === 'proxy_scanner_detected'
+      ).length;
+
+      return count >= 10;
+    },
+    severity: 'medium',
+    eventType: 'proxy_scanner_burst',
+  },
+  {
+    name: 'systemd_restart_loop',
+    description: 'Same systemd unit restarted 3+ times in buffer',
+    condition: (events, current) => {
+      if (current.eventType !== 'systemd_unit_failed' && current.source !== 'systemd') return false;
+      const unit = (current.metadata?.unit as string) || current.processName;
+      if (!unit) return false;
+
+      const count = events.filter(e =>
+        e.source === 'systemd' &&
+        ((e.metadata?.unit as string) === unit || e.processName === unit) &&
+        (e.rawLog.toLowerCase().includes('restart') || e.rawLog.toLowerCase().includes('failed') || e.eventType === 'systemd_unit_failed')
+      ).length;
+
+      return count >= 3;
+    },
+    severity: 'high',
+    eventType: 'systemd_restart_loop',
+  },
+  {
+    name: 'package_suspicious_install',
+    description: 'Known offensive/attack tool package installed',
+    condition: (_events, current) => {
+      return current.eventType === 'package_suspicious';
+    },
+    severity: 'high',
+    eventType: 'package_suspicious',
+  },
+  {
+    name: 'oom_kill_repeated',
+    description: '2+ OOM kills in event buffer',
+    condition: (events, current) => {
+      if (current.eventType !== 'syslog_oom_kill') return false;
+
+      const count = events.filter(e => e.eventType === 'syslog_oom_kill').length;
+      return count >= 2;
+    },
+    severity: 'high',
+    eventType: 'syslog_oom_repeated',
+  },
 ];
 
 export class EventDetector {

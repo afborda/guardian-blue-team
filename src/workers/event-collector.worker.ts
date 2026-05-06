@@ -4,6 +4,11 @@ import { ProcessCollector } from '../collectors/process-collector.js';
 import { NetworkCollector } from '../collectors/network-collector.js';
 import { SudoCollector } from '../collectors/sudo-collector.js';
 import { DNSCollector } from '../collectors/dns-collector.js';
+import { SyslogCollector } from '../collectors/syslog-collector.js';
+import { ProxyCollector } from '../collectors/proxy-collector.js';
+import { PackageCollector } from '../collectors/package-collector.js';
+import { SystemdCollector } from '../collectors/systemd-collector.js';
+import { AuditCollector } from '../collectors/audit-collector.js';
 import { EventNormalizer } from '../pipeline/normalizer.js';
 import { EventEnricher } from '../pipeline/enricher.js';
 import { EventDetector } from '../pipeline/detector.js';
@@ -52,7 +57,7 @@ export class EventCollectorWorker {
       for (const server of servers) {
         const target = ServerService.toSSHTarget(server);
 
-        const [authLogs, ufwLogs, dockerEvents, suspiciousProcs, networkAnomaly, sudoLogs, dnsLogs] = await Promise.all([
+        const [authLogs, ufwLogs, dockerEvents, suspiciousProcs, networkAnomaly, sudoLogs, dnsLogs, syslogLogs, proxyLogs, packageLogs, systemdLogs, auditLogs] = await Promise.all([
           LogCollector.collectAuthLogs(target, 3),
           LogCollector.collectUfwLogs(target, 3),
           LogCollector.collectDockerEvents(target, 3),
@@ -60,9 +65,14 @@ export class EventCollectorWorker {
           NetworkCollector.detectSuspiciousConnections(target),
           SudoCollector.collect(target, 3),
           DNSCollector.collect(target, 3),
+          SyslogCollector.collect(target, 3),
+          ProxyCollector.collect(target, 3),
+          PackageCollector.collect(target, 5),
+          SystemdCollector.collect(target, 3),
+          AuditCollector.collect(target, 3),
         ]);
 
-        const rawLogs = [...authLogs, ...ufwLogs, ...dockerEvents, ...suspiciousProcs, ...networkAnomaly, ...sudoLogs, ...dnsLogs];
+        const rawLogs = [...authLogs, ...ufwLogs, ...dockerEvents, ...suspiciousProcs, ...networkAnomaly, ...sudoLogs, ...dnsLogs, ...syslogLogs, ...proxyLogs, ...packageLogs, ...systemdLogs, ...auditLogs];
         if (rawLogs.length === 0) continue;
 
         let normalized = EventNormalizer.normalizeBatch(rawLogs);

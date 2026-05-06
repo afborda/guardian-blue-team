@@ -74,6 +74,16 @@ export class EventNormalizer {
         return this.normalizeDns(entry);
       case 'ssh-keys':
         return this.normalizeSshKeys(entry);
+      case 'syslog':
+        return this.normalizeSyslog(entry);
+      case 'proxy':
+        return this.normalizeProxy(entry);
+      case 'package':
+        return this.normalizePackage(entry);
+      case 'systemd':
+        return this.normalizeSystemd(entry);
+      case 'audit':
+        return this.normalizeAudit(entry);
       default:
         return null;
     }
@@ -391,6 +401,274 @@ export class EventNormalizer {
         processName: null,
         rawLog: line,
         metadata: { keyType: removedMatch[2], fingerprint: removedMatch[3], comment: removedMatch[4] },
+      };
+    }
+
+    return null;
+  }
+
+  private static normalizeSyslog(entry: RawLogEntry): NormalizedEvent | null {
+    const line = entry.line;
+
+    if (/Out of memory: Killed process/i.test(line)) {
+      const processMatch = line.match(/Killed process \d+ \(([^)]+)\)/);
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'syslog',
+        category: 'system',
+        severity: 'high',
+        eventType: 'syslog_oom_kill',
+        sourceIp: null,
+        destinationPort: null,
+        userName: null,
+        processName: processMatch?.[1] ?? null,
+        rawLog: line,
+        metadata: { process: processMatch?.[1] },
+      };
+    }
+
+    if (/segfault|core dumped|fatal error/i.test(line)) {
+      const procMatch = line.match(/(\S+)\[\d+\]/) || line.match(/:\s+(\S+)\s/);
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'syslog',
+        category: 'system',
+        severity: 'high',
+        eventType: 'syslog_service_crash',
+        sourceIp: null,
+        destinationPort: null,
+        userName: null,
+        processName: procMatch?.[1] ?? null,
+        rawLog: line,
+        metadata: {},
+      };
+    }
+
+    if (/Hardware Error|I\/O error|EXT4-fs error|BTRFS error|XFS.*error|mce:/i.test(line)) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'syslog',
+        category: 'system',
+        severity: 'critical',
+        eventType: 'syslog_hardware_error',
+        sourceIp: null,
+        destinationPort: null,
+        userName: null,
+        processName: null,
+        rawLog: line,
+        metadata: {},
+      };
+    }
+
+    return null;
+  }
+
+  private static normalizeProxy(entry: RawLogEntry): NormalizedEvent | null {
+    const line = entry.line;
+
+    const ipMatch = line.match(/([\d.]+)\s+-\s+-/) || line.match(/"ClientAddr":"([\d.]+)/) || line.match(/SRC=([\d.]+)/);
+    const statusMatch = line.match(/" (\d{3}) /) || line.match(/"OriginStatus":(\d{3})/) || line.match(/"status":(\d+)/);
+    const pathMatch = line.match(/"(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+([^\s"]+)/) || line.match(/"RequestPath":"([^"]+)"/);
+
+    const sourceIp = ipMatch?.[1] ?? null;
+    const status = statusMatch ? parseInt(statusMatch[1]) : 0;
+    const path = pathMatch?.[1] ?? '';
+
+    const TRAVERSAL_PATTERNS = /\.\.[\/\\]|%2e%2e|%252e|\/etc\/passwd|\/proc\/self/i;
+    const SCANNER_PATHS = /\/\.env|\/wp-login|\/wp-admin|\/phpMyAdmin|\/\.git\/|\/actuator|\/api\/swagger|\/solr\/|\/manager\/html|\/cgi-bin/i;
+
+    if (TRAVERSAL_PATTERNS.test(path)) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'proxy',
+        category: 'network',
+        severity: 'high',
+        eventType: 'proxy_path_traversal',
+        sourceIp,
+        destinationPort: null,
+        userName: null,
+        processName: null,
+        rawLog: line,
+        metadata: { path, status },
+      };
+    }
+
+    if (SCANNER_PATHS.test(path)) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'proxy',
+        category: 'network',
+        severity: 'medium',
+        eventType: 'proxy_scanner_detected',
+        sourceIp,
+        destinationPort: null,
+        userName: null,
+        processName: null,
+        rawLog: line,
+        metadata: { path, status },
+      };
+    }
+
+    if (status >= 500) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'proxy',
+        category: 'network',
+        severity: 'medium',
+        eventType: 'proxy_error_spike',
+        sourceIp,
+        destinationPort: null,
+        userName: null,
+        processName: null,
+        rawLog: line,
+        metadata: { path, status },
+      };
+    }
+
+    return null;
+  }
+
+  private static normalizePackage(entry: RawLogEntry): NormalizedEvent | null {
+    const line = entry.line;
+
+    // dpkg.log: 2024-01-15 10:30:45 install package:amd64 1.2.3
+    const dpkgMatch = line.match(/\d{4}-\d{2}-\d{2}\s+[\d:]+\s+(install|remove|upgrade)\s+(\S+)\s+(\S+)/);
+    if (!dpkgMatch) return null;
+
+    const action = dpkgMatch[1];
+    const packageName = dpkgMatch[2].split(':')[0];
+    const version = dpkgMatch[3];
+
+    const SUSPICIOUS_PACKAGES = /nmap|masscan|hydra|john|hashcat|metasploit|aircrack|sqlmap|nikto|gobuster|wpscan|mimikatz|responder|impacket/i;
+    const isSuspicious = SUSPICIOUS_PACKAGES.test(packageName);
+
+    const eventType = isSuspicious ? 'package_suspicious' :
+      action === 'install' ? 'package_installed' :
+      action === 'remove' ? 'package_removed' : 'package_installed';
+
+    const severity = isSuspicious ? 'high' : action === 'remove' ? 'low' : 'info';
+
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: 'package',
+      category: 'system',
+      severity,
+      eventType,
+      sourceIp: null,
+      destinationPort: null,
+      userName: null,
+      processName: packageName,
+      rawLog: line,
+      metadata: { action, package: packageName, version },
+    };
+  }
+
+  private static normalizeSystemd(entry: RawLogEntry): NormalizedEvent | null {
+    const line = entry.line;
+
+    // UNIT_FAILED prefix from our custom systemctl --failed output
+    const failedMatch = line.match(/^UNIT_FAILED\s+(\S+)/);
+    if (failedMatch) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'systemd',
+        category: 'system',
+        severity: 'medium',
+        eventType: 'systemd_unit_failed',
+        sourceIp: null,
+        destinationPort: null,
+        userName: null,
+        processName: failedMatch[1],
+        rawLog: line,
+        metadata: { unit: failedMatch[1] },
+      };
+    }
+
+    // Journalctl restart/failed patterns
+    const unitMatch = line.match(/(\S+\.service).*(?:Failed|failed|entered failed state)/i);
+    if (unitMatch) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'systemd',
+        category: 'system',
+        severity: 'medium',
+        eventType: 'systemd_unit_failed',
+        sourceIp: null,
+        destinationPort: null,
+        userName: null,
+        processName: unitMatch[1],
+        rawLog: line,
+        metadata: { unit: unitMatch[1] },
+      };
+    }
+
+    const restartMatch = line.match(/Started\s+(.+)\./i) || line.match(/(\S+\.service).*start/i);
+    if (restartMatch && /restart|Restarting/i.test(line)) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'systemd',
+        category: 'system',
+        severity: 'low',
+        eventType: 'systemd_unit_restarted',
+        sourceIp: null,
+        destinationPort: null,
+        userName: null,
+        processName: restartMatch[1],
+        rawLog: line,
+        metadata: { unit: restartMatch[1] },
+      };
+    }
+
+    return null;
+  }
+
+  private static normalizeAudit(entry: RawLogEntry): NormalizedEvent | null {
+    const line = entry.line;
+
+    if (/ADD_USER|DEL_USER|USER_CHAUTHTOK|useradd|userdel|usermod|passwd/i.test(line)) {
+      const userMatch = line.match(/acct="?(\w+)"?/) || line.match(/user=(\w+)/);
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'audit',
+        category: 'authentication',
+        severity: 'high',
+        eventType: 'audit_user_change',
+        sourceIp: null,
+        destinationPort: null,
+        userName: userMatch?.[1] ?? null,
+        processName: null,
+        rawLog: line,
+        metadata: {},
+      };
+    }
+
+    if (/USER_AUTH.*res=failed|ANOM_LOGIN_FAILURES|authentication failure/i.test(line)) {
+      const userMatch = line.match(/acct="?(\w+)"?/) || line.match(/user=(\w+)/);
+      const ipMatch = line.match(/addr=([\d.]+)/) || line.match(/src=([\d.]+)/i);
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'audit',
+        category: 'authentication',
+        severity: 'medium',
+        eventType: 'audit_auth_failure',
+        sourceIp: ipMatch?.[1] ?? null,
+        destinationPort: null,
+        userName: userMatch?.[1] ?? null,
+        processName: null,
+        rawLog: line,
+        metadata: {},
       };
     }
 

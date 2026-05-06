@@ -13,6 +13,10 @@ import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
 import { VulnScanner } from '../vuln-scanner/scanner.js';
 import { SOCAnalystService } from '../services/soc-analyst.service.js';
 import { isValidHostname, isValidIp, isValidSshUser, isValidKeyPath, isValidServerName } from '../utils/sanitize.js';
+import { discoverRemoteServer, formatDiscoveryApprovalKeyboard } from '../discovery/remote.js';
+import { config } from '../config/environment.js';
+
+const pendingDiscoveries = new Map<number, { analysis: import('../discovery/types.js').DiscoveryResult; serverName: string }>();
 
 export async function handleTelegramCommand(text: string): Promise<string> {
   const parts = text.split(/\s+/);
@@ -503,9 +507,33 @@ async function addServer(args: string[]): Promise<string> {
   const server = await ServerService.add({ name, host, sshPort, sshUser: user || 'ubuntu', sshKeyPath: keyPath });
   const target = ServerService.toSSHTarget(server);
   const reachable = await SSHCollector.isReachable(target);
-  const status = reachable ? '🟢 conectado' : '🔴 não acessível';
 
-  return `✅ <b>${name}</b> adicionado\n${server.sshUser}@${host}:${sshPort} | ${status}`;
+  if (!reachable) {
+    await ServerService.remove(name);
+    return `❌ Não foi possível conectar a ${host}:${sshPort}. Servidor não adicionado.`;
+  }
+
+  discoverRemoteServer(target).then(async discoveryResult => {
+    if (!discoveryResult) return;
+
+    pendingDiscoveries.set(server.id, { analysis: discoveryResult.analysis, serverName: name });
+
+    const keyboard = formatDiscoveryApprovalKeyboard(server.id);
+    await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: config.telegram.chatId,
+        text: discoveryResult.telegramMessage,
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      }),
+    }).catch(err => logger.warn({ err }, 'Failed to send discovery message'));
+
+    setTimeout(() => pendingDiscoveries.delete(server.id), 30 * 60_000);
+  }).catch(err => logger.warn({ err }, 'Background discovery failed'));
+
+  return `✅ <b>${name}</b> adicionado (${user || 'ubuntu'}@${host}:${sshPort}) 🟢\n\n🔍 Auto-discovery em andamento...`;
 }
 
 async function removeServer(name: string | undefined): Promise<string> {
@@ -870,3 +898,5 @@ async function getServerNameMap(): Promise<Map<number, string>> {
   const servers = await db.select({ id: socServers.id, name: socServers.name }).from(socServers);
   return new Map(servers.map(s => [s.id, s.name]));
 }
+
+export { pendingDiscoveries };

@@ -207,11 +207,20 @@ dashboardPages.get('/apis', (_req, res) => {
 dashboardPages.get('/intelligence', (_req, res) => {
   const token = config.dashboard.token || '';
   const content = `
-    <h2>Intelligence & Learning</h2>
-    <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:1.5rem;">
-      How Guardian learns, when it updates, and what data feeds each system.
-    </p>
-    <div hx-get="/api/dashboard/intelligence?token=${token}" hx-trigger="load" hx-swap="innerHTML">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;">
+      <div>
+        <h2 style="margin-bottom:0.25rem;">Intelligence & Learning</h2>
+        <p style="color:var(--text-muted);font-size:0.82rem;">
+          How Guardian learns, when it updates, and what data feeds each system.
+        </p>
+      </div>
+      <button hx-post="/api/dashboard/run-workers?token=${token}" hx-swap="outerHTML" hx-indicator="#run-spinner"
+        style="display:inline-flex;align-items:center;gap:0.5rem;">
+        <span id="run-spinner" class="htmx-indicator" style="display:none;">&#9881;</span>
+        &#9654; Recalcular Agora
+      </button>
+    </div>
+    <div id="intel-content" hx-get="/api/dashboard/intelligence?token=${token}" hx-trigger="load" hx-swap="innerHTML">
       <p aria-busy="true">Loading intelligence status...</p>
     </div>
   `;
@@ -1361,21 +1370,19 @@ dashboardApi.get('/intelligence', async (_req, res) => {
 });
 
 dashboardApi.post('/run-workers', async (_req, res) => {
+  const token = config.dashboard.token || '';
   try {
-    const results: string[] = [];
-
     await ScoreCalculatorWorker.computeScores();
-    results.push('Scores computed');
-
     await IntelligenceWorker.run();
-    results.push('Intelligence (ML profiles + anomaly detection) complete');
-
     await CVEMonitorWorker.run();
-    results.push('CVE scan complete');
 
-    res.json({ ok: true, results });
+    res.send(`<button disabled style="border-color:var(--success);color:var(--success);cursor:default;">
+      &#10003; Atualizado — <a href="/dashboard/intelligence?token=${token}" style="color:var(--success);text-decoration:underline;">Recarregar</a>
+    </button>`);
   } catch (err) {
     logger.error({ err }, 'Run workers error');
-    res.status(500).json({ ok: false, error: String(err) });
+    res.send(`<button disabled style="border-color:var(--critical);color:var(--critical);cursor:default;">
+      &#10007; Erro ao recalcular
+    </button>`);
   }
 });

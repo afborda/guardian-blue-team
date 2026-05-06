@@ -1,6 +1,9 @@
 import { Router } from 'express';
 import { db, dbFalse, dbNow } from '../database/connection.js';
 import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts, serverMetrics, serverScores, behaviorProfiles } from '../database/schema.js';
+import { IntelligenceWorker } from '../workers/intelligence.worker.js';
+import { ScoreCalculatorWorker } from '../workers/score-calculator.worker.js';
+import { CVEMonitorWorker } from '../workers/cve-monitor.worker.js';
 import { eq, count, desc, and, gte, ne, sql } from 'drizzle-orm';
 import { config } from '../config/environment.js';
 import { layout } from './views/layout.js';
@@ -1324,5 +1327,25 @@ dashboardApi.get('/intelligence', async (_req, res) => {
   } catch (err) {
     logger.error({ err }, 'Intelligence API error');
     res.status(500).send('<p class="severity-critical">Erro ao carregar dados de inteligência</p>');
+  }
+});
+
+dashboardApi.post('/run-workers', async (_req, res) => {
+  try {
+    const results: string[] = [];
+
+    await ScoreCalculatorWorker.computeScores();
+    results.push('Scores computed');
+
+    await IntelligenceWorker.run();
+    results.push('Intelligence (ML profiles + anomaly detection) complete');
+
+    await CVEMonitorWorker.run();
+    results.push('CVE scan complete');
+
+    res.json({ ok: true, results });
+  } catch (err) {
+    logger.error({ err }, 'Run workers error');
+    res.status(500).json({ ok: false, error: String(err) });
   }
 });

@@ -33,8 +33,16 @@ app.use('/api/dashboard', rateLimiter(60), dashboardAuth, dashboardApi);
 
 // ─── Health ─────────────────────────────────────────────────────────────────
 
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', uptime: Math.floor(process.uptime()) });
+app.get('/health', async (_req, res) => {
+  const dbOk = await testConnection().catch(() => false);
+  const status = dbOk ? 'ok' : 'degraded';
+  const code = dbOk ? 200 : 503;
+  res.status(code).json({
+    status,
+    uptime: Math.floor(process.uptime()),
+    database: dbOk ? 'connected' : 'unreachable',
+    version: '1.4.0',
+  });
 });
 
 // ─── Telegram Webhook ───────────────────────────────────────────────────────

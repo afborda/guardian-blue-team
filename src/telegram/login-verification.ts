@@ -148,7 +148,9 @@ async function answerCallback(callbackId: string, text: string): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ callback_query_id: callbackId, text }),
     });
-  } catch { /* non-critical */ }
+  } catch (err) {
+    logger.debug({ err }, 'Failed to answer callback query');
+  }
 }
 
 async function editMessage(message: { message_id: number; chat: { id: number } } | undefined, text: string): Promise<void> {
@@ -164,5 +166,7 @@ async function editMessage(message: { message_id: number; chat: { id: number } }
         parse_mode: 'HTML',
       }),
     });
-  } catch { /* non-critical */ }
+  } catch (err) {
+    logger.debug({ err, messageId: message.message_id }, 'Failed to edit message');
+  }
 }

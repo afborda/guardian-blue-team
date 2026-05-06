@@ -69,6 +69,8 @@ export async function handleTelegramCommand(text: string): Promise<string> {
       return await addServer(parts.slice(1));
     case '/rm-server':
       return await removeServer(parts[1]);
+    case '/apis':
+      return getApiStatus();
     case '/help':
       return formatHelp();
     default:
@@ -583,10 +585,26 @@ function formatHelp(): string {
     '  /rm-server nome',
     '  /vulns — Vulnerabilidades',
     '  /ask pergunta — AI analyst',
+    '  /apis — Status dos circuitos de API externas',
   ].join('\n');
 }
 
-// ─── /health ───────────────────────────────────────────────────────────────
+// ─── /apis ────────────────────────────────────────────────────────────────
+
+function getApiStatus(): string {
+  const status = ThreatIntelManager.getCircuitStatus();
+  const icon = (s: string) => s === 'closed' ? '🟢' : s === 'open' ? '🔴' : '🟡';
+  const label = (s: string) => s === 'closed' ? 'OK' : s === 'open' ? 'OPEN (bloqueado)' : 'half-open (testando)';
+
+  return [
+    '🔌 <b>Status das APIs Externas</b>',
+    '',
+    `${icon(status.abuseipdb)} AbuseIPDB: ${label(status.abuseipdb)}`,
+    `${icon(status.virustotal)} VirusTotal: ${label(status.virustotal)}`,
+    '',
+    '<i>Circuit breaker abre após 3 falhas consecutivas. Recupera automaticamente em 5min.</i>',
+  ].join('\n');
+}
 
 async function getFleetHealth(): Promise<string> {
   const servers = await ServerService.getEnabled();

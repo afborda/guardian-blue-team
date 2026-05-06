@@ -1,5 +1,7 @@
 import { AbuseIPDBClient } from './abuseipdb.js';
+import { VirusTotalClient } from './virustotal.js';
 import { ThreatIntelCache } from './cache.js';
+import { CircuitBreaker } from '../utils/circuit-breaker.js';
 import { logger } from '../utils/logger.js';
 
 export interface ThreatReport {
@@ -13,7 +15,20 @@ export interface ThreatReport {
   lastReported: string | null;
   source: string;
   cached: boolean;
+  virusTotal?: { malicious: number; suspicious: number; reputation: number };
 }
+
+const abuseBreaker = new CircuitBreaker({
+  name: 'abuseipdb',
+  failureThreshold: 3,
+  resetTimeoutMs: 5 * 60 * 1000,
+});
+
+const vtBreaker = new CircuitBreaker({
+  name: 'virustotal',
+  failureThreshold: 3,
+  resetTimeoutMs: 5 * 60 * 1000,
+});
 
 export class ThreatIntelManager {
   static start(): void {
@@ -30,7 +45,7 @@ export class ThreatIntelManager {
     const cached = ThreatIntelCache.get<ThreatReport>(cacheKey);
     if (cached) return { ...cached, cached: true };
 
-    const report = await AbuseIPDBClient.checkIP(ip);
+    const report = await abuseBreaker.call(() => AbuseIPDBClient.checkIP(ip));
     if (!report) return null;
 
     const result: ThreatReport = {
@@ -46,6 +61,18 @@ export class ThreatIntelManager {
       cached: false,
     };
 
+    if (VirusTotalClient.isConfigured() && report.abuseConfidenceScore >= 30) {
+      const vtReport = await vtBreaker.call(() => VirusTotalClient.checkIP(ip));
+      if (vtReport) {
+        result.virusTotal = {
+          malicious: vtReport.maliciousVotes,
+          suspicious: vtReport.suspiciousVotes,
+          reputation: vtReport.reputation,
+        };
+        result.source = 'abuseipdb+virustotal';
+      }
+    }
+
     ThreatIntelCache.set(cacheKey, result);
     return result;
   }
@@ -53,10 +80,13 @@ export class ThreatIntelManager {
   static async enrichIP(ip: string): Promise<{ score: number; malicious: boolean } | null> {
     const report = await this.lookupIP(ip);
     if (!report) return null;
-    return {
-      score: report.score,
-      malicious: report.score >= 50,
-    };
+
+    let score = report.score;
+    if (report.virusTotal && report.virusTotal.malicious > 5) {
+      score = Math.min(100, score + 15);
+    }
+
+    return { score, malicious: score >= 50 };
   }
 
   static async batchEnrich(ips: string[]): Promise<Map<string, ThreatReport>> {
@@ -87,6 +117,16 @@ export class ThreatIntelManager {
       `📌 Uso: ${report.usageType || 'unknown'}`,
     ];
 
+    if (report.virusTotal) {
+      lines.push(
+        ``,
+        `<b>VirusTotal:</b>`,
+        `  🚨 Malicious: ${report.virusTotal.malicious}`,
+        `  ⚠️ Suspicious: ${report.virusTotal.suspicious}`,
+        `  📉 Reputation: ${report.virusTotal.reputation}`,
+      );
+    }
+
     if (report.lastReported) {
       lines.push(`🕐 Último report: ${report.lastReported}`);
     }
@@ -97,6 +137,13 @@ export class ThreatIntelManager {
 
     lines.push(``, `Fonte: ${report.source}`);
     return lines.join('\n');
+  }
+
+  static getCircuitStatus(): { abuseipdb: string; virustotal: string } {
+    return {
+      abuseipdb: abuseBreaker.getState(),
+      virustotal: vtBreaker.getState(),
+    };
   }
 
   private static scoreBar(score: number): string {

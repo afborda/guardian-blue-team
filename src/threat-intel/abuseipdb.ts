@@ -24,38 +24,37 @@ export class AbuseIPDBClient {
   static async checkIP(ip: string): Promise<AbuseIPDBReport | null> {
     if (!config.threatIntel.abuseIpDbKey) return null;
 
-    try {
-      const url = `${this.BASE_URL}/check?ipAddress=${encodeURIComponent(ip)}&maxAgeInDays=90&verbose`;
-      const response = await fetch(url, {
-        headers: {
-          'Key': config.threatIntel.abuseIpDbKey,
-          'Accept': 'application/json',
-        },
-      });
+    const url = `${this.BASE_URL}/check?ipAddress=${encodeURIComponent(ip)}&maxAgeInDays=90&verbose`;
+    const response = await fetch(url, {
+      headers: {
+        'Key': config.threatIntel.abuseIpDbKey,
+        'Accept': 'application/json',
+      },
+    });
 
-      if (!response.ok) {
-        logger.warn({ status: response.status, ip }, 'AbuseIPDB API error');
-        return null;
-      }
-
-      const json = await response.json() as { data: Record<string, unknown> };
-      const d = json.data;
-
-      return {
-        ip: d.ipAddress as string,
-        abuseConfidenceScore: d.abuseConfidenceScore as number,
-        totalReports: d.totalReports as number,
-        countryCode: d.countryCode as string,
-        domain: d.domain as string,
-        isp: d.isp as string,
-        usageType: d.usageType as string,
-        isWhitelisted: d.isWhitelisted as boolean,
-        lastReportedAt: d.lastReportedAt as string | null,
-        categories: (d.categories ?? []) as number[],
-      };
-    } catch (error) {
-      logger.error({ err: error, ip }, 'AbuseIPDB lookup failed');
-      return null;
+    if (response.status === 429) {
+      throw new Error('AbuseIPDB rate limit exceeded');
     }
+
+    if (!response.ok) {
+      logger.warn({ status: response.status, ip }, 'AbuseIPDB API error');
+      throw new Error(`AbuseIPDB HTTP ${response.status}`);
+    }
+
+    const json = await response.json() as { data: Record<string, unknown> };
+    const d = json.data;
+
+    return {
+      ip: d.ipAddress as string,
+      abuseConfidenceScore: d.abuseConfidenceScore as number,
+      totalReports: d.totalReports as number,
+      countryCode: d.countryCode as string,
+      domain: d.domain as string,
+      isp: d.isp as string,
+      usageType: d.usageType as string,
+      isWhitelisted: d.isWhitelisted as boolean,
+      lastReportedAt: d.lastReportedAt as string | null,
+      categories: (d.categories ?? []) as number[],
+    };
   }
 }

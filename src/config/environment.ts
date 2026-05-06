@@ -21,6 +21,9 @@ const envSchema = z.object({
   TELEGRAM_CHAT_ID: z.string().min(1, 'TELEGRAM_CHAT_ID is required'),
   TELEGRAM_WEBHOOK_SECRET: z.string().optional(),
 
+  // Base URL for webhook registration
+  GUARDIAN_BASE_URL: z.string().optional(),
+
   // AI — Gemini
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
@@ -93,6 +96,7 @@ export const config = {
     botToken: env.TELEGRAM_BOT_TOKEN,
     chatId: env.TELEGRAM_CHAT_ID,
     webhookSecret: env.TELEGRAM_WEBHOOK_SECRET,
+    baseUrl: env.GUARDIAN_BASE_URL || null,
   },
 
   ai: {

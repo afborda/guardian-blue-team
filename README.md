@@ -26,12 +26,54 @@ Guardian is an agentless SIEM/SOAR that monitors your servers via SSH, detects t
 | Notifications | Email | — | Email | **7 channels** |
 | CVE monitoring | — | — | Yes | **Yes (OSV.dev + AI fix)** |
 | Health scoring | — | — | — | **6 dimensions** |
-| Anomaly detection | — | — | — | **Statistical baseline** |
+| ML anomaly detection | — | — | — | **Behavioral baselines** |
 | Trend prediction | — | — | — | **Linear regression** |
-| AI analysis | — | — | — | **4 providers** |
+| AI analysis | — | — | — | **Local-first (Ollama) + cloud fallback** |
+| Incident memory (RAG) | — | — | — | **Learns from past incidents** |
 | Dashboard | — | Web | Web | **HTMX (lightweight)** |
 | Mobile-first | — | — | — | **Telegram/WhatsApp** |
 | Resource usage | Minimal | Low | High | **~50MB RAM** |
+
+---
+
+## Requirements
+
+### Guardian Host (where Guardian runs)
+
+| Requirement | Minimum | Recommended |
+|-------------|---------|-------------|
+| CPU | 1 core | 2+ cores |
+| RAM | 512MB (without Ollama) | 4GB+ (with Ollama) |
+| RAM for Ollama | — | 8-12GB (for qwen3:4b/8b) |
+| Disk | 2GB | 10GB+ (logs + models) |
+| Docker | 20.10+ | 24+ |
+| Docker Compose | v2+ | v2.20+ |
+| Network | Outbound HTTPS (Telegram, AI APIs) | Public IP or reverse proxy for webhook |
+| OS | Any with Docker | Ubuntu 22.04+, Debian 12+ |
+
+### Target Servers (monitored via SSH)
+
+| Requirement | Details |
+|-------------|---------|
+| SSH access | Key-based auth (password not supported) |
+| SSH user | Root or user with `sudo NOPASSWD` for: `ufw`, `docker`, `journalctl`, `systemctl`, `ausearch` |
+| OS | Linux (Debian/Ubuntu/Alpine tested) |
+| Packages (optional) | `ufw` (firewall), `docker` (container monitoring), `auditd` (audit logs) |
+
+### Data You Need Before Starting
+
+| Data | Where to get it | Required? |
+|------|----------------|-----------|
+| **Telegram Bot Token** | Create a bot via [@BotFather](https://t.me/BotFather) | Yes |
+| **Telegram Chat ID** | Send `/start` to [@userinfobot](https://t.me/userinfobot) | Yes |
+| **Public URL** (`GUARDIAN_BASE_URL`) | Your domain pointing to Guardian (e.g. `https://guardian.example.com`) | Yes (for bot to receive messages) |
+| **SSH private key** | Generate with `ssh-keygen -t ed25519` | Yes |
+| **SSH public key on targets** | Add to `~/.ssh/authorized_keys` on each target server | Yes |
+| AI API key (Gemini/OpenAI/Claude) | Provider's dashboard | No (Ollama is local and free) |
+| AbuseIPDB API key | [abuseipdb.com](https://www.abuseipdb.com/) (free: 1000/day) | No (enriches threat intel) |
+| Domain + SSL cert | DNS + Let's Encrypt via Traefik | No (for dashboard HTTPS) |
+
+---
 
 ## Quick Start
 
@@ -41,25 +83,51 @@ Guardian is an agentless SIEM/SOAR that monitors your servers via SSH, detects t
 bash <(curl -fsSL https://raw.githubusercontent.com/afborda/guardian-blue-team/main/install.sh)
 ```
 
-The installer guides you through SSH key generation, environment configuration, AI provider selection, and first server setup with a beautiful terminal UI. All prompts have sensible defaults — just press Enter to accept them.
+The installer guides you through SSH key generation, environment configuration, AI provider selection, and first server setup with a beautiful terminal UI.
 
-### Docker (one-line, no installer)
+### Docker Compose (production)
+
+```bash
+git clone https://github.com/afborda/guardian-blue-team.git
+cd guardian-blue-team
+cp .env.example .env
+# Edit .env with your values (see Configuration below)
+docker compose up -d
+```
+
+This starts 4 containers:
+- **guardian** — main application
+- **guardian-db** — PostgreSQL 16
+- **guardian-ollama** — local AI (Ollama)
+- **guardian-ollama-pull** — one-shot model downloader (exits after pulling models)
+
+### Docker (minimal, single container)
 
 ```bash
 docker run -d --name guardian \
   -e TELEGRAM_BOT_TOKEN=your_token \
   -e TELEGRAM_CHAT_ID=your_chat_id \
-  -v guardian_data:/data \
+  -e GUARDIAN_BASE_URL=https://guardian.example.com \
+  -e DATABASE_URL=postgres://user:pass@host:5432/guardian \
   -v ~/.ssh:/home/node/.ssh:ro \
   -p 3334:3334 \
   ghcr.io/afborda/guardian-blue-team:latest
 ```
+
+### After Starting
+
+1. Send `/help` to your Telegram bot — if it responds, everything is working
+2. Register your first server: `/add-server myserver 1.2.3.4 22 root`
+3. Wait 2-5 minutes for the first collection cycle
+4. Check `/status` to see metrics, `/events` for security events
 
 ### Uninstall
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/afborda/guardian-blue-team/main/install.sh) --uninstall
 ```
+
+---
 
 ## Architecture
 
@@ -68,50 +136,42 @@ bash <(curl -fsSL https://raw.githubusercontent.com/afborda/guardian-blue-team/m
 │                          Guardian Core                                 │
 ├─────────────┬────────────┬─────────────┬─────────────┬───────────────┤
 │  Collectors │  Pipeline  │ Intelligence│  Playbook   │   Dashboard   │
-│  (SSH/proc) │(Bronze→Gold)│(Anomaly/AI) │   Engine    │  (HTMX/SSR)  │
+│  (SSH/proc) │(Norm→Det→  │(ML Behavior │   Engine    │  (HTMX/SSR)  │
+│             │ Enrich→Cor)│ + AI + RAG) │             │               │
 ├─────────────┴────────────┴─────────────┴─────────────┴───────────────┤
 │                        Plugin System (7 notifiers)                     │
 ├────────┬─────────┬────────┬────────┬───────┬────────┬────────────────┤
 │Telegram│ Discord │ Slack  │ Email  │ ntfy  │Webhook │  WhatsApp      │
 └────────┴─────────┴────────┴────────┴───────┴────────┴────────────────┘
       ↕                    ↕                    ↕               ↕
- [Telegram Bot]     [PostgreSQL/SQLite]    [SSH Targets]   [AI Providers]
-  commands+alerts     event storage        your servers    Gemini/GPT/Claude/Ollama
-```
-
-### Data Pipeline (Bronze → Silver → Gold)
-
-```
-Collectors (5min)          Pipeline                    Output
-─────────────────          ────────                    ──────
-Health  ─┐                 ┌─ Bronze ──────────────┐
-System  ─┼─► SSH cmds ──► │ server_metrics (raw)  │──► Dashboard
-Perf    ─┘                 └───────────────────────┘
-                                    │
-                           ┌─ Gold ─┴──────────────┐
-                           │ server_scores (6 dim) │──► Telegram
-                           └───────────────────────┘
-                                    │
-                           ┌─ Intelligence ────────┐
-                           │ Anomaly + Trends + AI │──► Alerts
-                           └───────────────────────┘
+ [Telegram Bot]     [PostgreSQL]          [SSH Targets]   [AI: Ollama → Cloud]
+  commands+actions   event storage        your servers    local-first fallback
 ```
 
 ### Security Event Pipeline
 
 ```
 SSH Logs → Normalize → Detect → Enrich → Correlate → Playbook → Notify
-  (2min)     (parse)   (rules)  (intel)  (incidents)  (auto)    (7ch)
-
-FIM/Cron/SSH Keys → Baseline Compare → Detect → Correlate → Playbook → Notify
-       (4h)            (DB diff)        (rules)  (incidents)   (auto)    (7ch)
+  (2min)     (parse)   (rules)  (intel    (incidents)  (auto)    (7ch)
+                                +ML score)
 ```
+
+### ML Intelligence Pipeline (hourly)
+
+```
+Per server → SSH Behavior Profiler → Anomaly scores for logins
+           → Container Behavior    → Crashloop / memory leak detection
+           → Statistical Anomaly   → Z-score deviation alerts
+           → Trend Predictor       → Disk/memory exhaustion forecast
+```
+
+---
 
 ## Features
 
 ### Security Monitoring (SIEM/SOAR)
 
-**Threat Detection (15 built-in rules):**
+**Threat Detection (15+ built-in rules):**
 - SSH brute force (20+ failed attempts from same IP)
 - Port scanning (5+ ports probed in 10 minutes)
 - Crypto mining processes (xmrig, minerd, cpuminer, kdevtmpfsi, kinsing)
@@ -134,74 +194,66 @@ FIM/Cron/SSH Keys → Baseline Compare → Detect → Correlate → Playbook →
 - Pause/disconnect compromised containers
 - Enrich IPs with threat intelligence (AbuseIPDB, VirusTotal)
 - Track repeat offenders across servers
-- Alert on critical file integrity violations (requires approval)
+- Alert on critical file integrity violations
 - Flag suspicious sudo activity
-- Detect cron-based persistence mechanisms (requires approval)
-- Alert on unauthorized SSH key additions (requires approval)
-- Respond to DNS-based C2 indicators (DGA + suspicious TLDs)
+- Detect cron-based persistence mechanisms
+- Alert on unauthorized SSH key additions
+- Respond to DNS-based C2 indicators
 
 **CVE Monitoring:**
 - Scans installed packages (Debian, Alpine, npm) against OSV.dev
 - AI-powered fix recommendations with risk assessment
 - One-click patching via Telegram with human approval
 
-### Infrastructure Observability
+### ML Intelligence Layer
 
-**Collectors (agentless, via SSH to /proc):**
+| Feature | How it works | What it catches |
+|---------|-------------|-----------------|
+| SSH Behavior Profiling | Builds per-user baselines (hours, IPs, fingerprints, velocity) | Login from new IP at unusual hour = high anomaly score |
+| Container Behavior | Tracks CPU/memory mean+stddev, restart frequency, uptime | Crashloops, memory leaks, CPU spikes (crypto mining) |
+| Statistical Anomaly | Z-score over 7-day rolling window | Metric deviations > 2.5σ from normal |
+| Trend Prediction | Linear regression on disk/memory usage | Predicts resource exhaustion days in advance |
+| Incident Memory (RAG) | Stores resolved incidents, finds similar cases | AI uses past context for better recommendations |
+| Auto-Learn | Playbook resolutions auto-stored in memory | Guardian improves over time without manual input |
 
-| Collector | Data | Source |
-|-----------|------|--------|
-| Health | CPU load, memory, swap, disk usage, uptime | `/proc/loadavg`, `free`, `df`, `/proc/uptime` |
-| System | Kernel errors, journal errors, failed systemd units | `dmesg`, `journalctl`, `systemctl` |
-| Performance | Disk I/O (read/write Bps), Network I/O (rx/tx Bps) | `/proc/diskstats`, `/proc/net/dev` (delta sampling) |
+### AI Analysis (Local-First)
 
-**6-Dimension Server Scoring (0-100, penalty-based):**
+Guardian tries **Ollama first** (local, fast, private), then falls back to cloud providers:
 
-| Score | Measures | Weight |
-|-------|----------|--------|
-| Health | CPU load ratio, memory %, disk %, swap % | 20% |
-| Security | Open incidents, attack events, blocked IPs | 25% |
-| Quality | Failed services, kernel errors, journal errors, uptime | 15% |
-| Waste | Idle CPU, unused memory, idle resources | 10% |
-| Vulnerability | Open CVEs (critical/high), days since last scan | 20% |
-| Availability | Uptime, service restarts, container crashes | 10% |
+```
+Ollama (local) → Gemini → OpenAI → Claude
+```
 
-**Overall Score** = weighted average of all 6 dimensions.
-
-### AI Intelligence Layer
-
-Works with 4 providers (configurable, with automatic fallback):
-
-| Provider | Config | Use case |
-|----------|--------|----------|
-| Gemini | `GEMINI_API_KEY` | Free tier, fast, recommended |
+| Provider | Config | Notes |
+|----------|--------|-------|
+| **Ollama** | `OLLAMA_URL` | Primary. Included in docker-compose. Free, private. |
+| Gemini | `GEMINI_API_KEY` | Free tier available. Fast. |
 | OpenAI | `OPENAI_API_KEY` | GPT-4o-mini for analysis |
-| Claude | `ANTHROPIC_API_KEY` | Best reasoning |
-| Ollama | `OLLAMA_URL` | Local, free, slower |
+| Claude | `ANTHROPIC_API_KEY` | Best reasoning quality |
 
-**Capabilities:**
-
-| Feature | Requires API? | Description |
-|---------|---------------|-------------|
-| Anomaly Detection | No | Statistical baseline (mean + 2.5σ over 7 days) |
-| Trend Prediction | No | Linear regression — predicts disk/memory exhaustion |
-| Root Cause Analysis | Optional | AI explains why a score dropped significantly |
-| Optimization Recommendations | Optional | Weekly suggestions prioritized by impact |
-| Natural Language Queries | Yes | Ask questions via `/ask` in Telegram |
+**AI Capabilities:**
+- Root cause analysis (why did this score drop?)
+- Natural language queries (`/ask why is my server slow?`)
+- Incident analysis with historical context (RAG)
+- CVE fix recommendations
+- Weekly optimization suggestions
 
 ### Dashboard (HTMX, server-rendered)
 
 | Page | URL | Description |
 |------|-----|-------------|
-| Overview | `/dashboard` | Stats summary (servers, incidents, blocks, CVEs) |
+| Overview | `/dashboard` | Stats summary, pipeline visualization, recent threats |
 | Fleet Health | `/dashboard/health` | Score cards per server with color coding |
 | Server Detail | `/dashboard/health/:id` | Metrics, disks, failed units for one server |
 | Scores Grid | `/dashboard/scores` | Comparative table: servers x 6 dimensions |
 | Incidents | `/dashboard/incidents` | Open incidents with severity |
 | Servers | `/dashboard/servers` | Registered servers + last seen |
-| CVE Alerts | `/dashboard/cve` | Pending CVEs with one-click actions |
+| CVE Alerts | `/dashboard/cve` | Pending CVEs with actions |
 | IP Blocks | `/dashboard/blocks` | Active IP blocks with unblock button |
-| Security Logs | `/dashboard/logs` | Recent security events |
+| Security Logs | `/dashboard/logs` | Recent security events (filterable) |
+| Timeline | `/dashboard/timeline` | Chronological event correlation |
+| Attack Map | `/dashboard/map` | Geographic distribution of attacking IPs |
+| API Status | `/dashboard/apis` | System status and service health |
 
 ### Telegram Commands
 
@@ -225,20 +277,34 @@ Works with 4 providers (configurable, with automatic fallback):
 | `/playbook list` | Available playbooks |
 | `/playbook run <name> <server> [ip]` | Execute a playbook |
 | `/vulns` | Vulnerability summary |
+| `/scan <server>` | Trigger vulnerability scan |
 | `/ask <question>` | AI-powered natural language query |
 | `/report` | Trigger daily report |
 | `/report full` | Full historical report |
 | `/add-server <name> <host> [port] [user] [key]` | Register a server |
 | `/rm-server <name>` | Remove a server |
+| `/block <ip> [server] [hours]` | Block an IP via UFW (default: 24h) |
+| `/unblock <ip> [server]` | Unblock an IP |
+| `/firewall [server]` | Show UFW firewall status |
+| `/services [server]` | List running services/containers |
+| `/ai` | Show AI provider status (which is active, latency) |
+| `/learn <incident_id> <resolution>` | Teach Guardian from a resolved incident |
+| `/memory` | Show incident memory stats (RAG) |
+| `/apis` | External API health check |
+| `/help` | Full command list |
+
+---
 
 ## Configuration
 
-### Required
+### Required (Guardian won't work without these)
 
-| Variable | Description |
-|----------|-------------|
-| `TELEGRAM_BOT_TOKEN` | From [@BotFather](https://t.me/BotFather) |
-| `TELEGRAM_CHAT_ID` | From [@userinfobot](https://t.me/userinfobot) |
+| Variable | Description | Where to get it |
+|----------|-------------|-----------------|
+| `TELEGRAM_BOT_TOKEN` | Bot authentication token | [@BotFather](https://t.me/BotFather) → /newbot |
+| `TELEGRAM_CHAT_ID` | Your chat/group ID for alerts | [@userinfobot](https://t.me/userinfobot) |
+| `GUARDIAN_BASE_URL` | Public URL for Telegram webhook (e.g. `https://guardian.example.com`) | Your domain + reverse proxy |
+| `DATABASE_URL` | PostgreSQL connection string | Included in docker-compose |
 
 ### Core
 
@@ -246,24 +312,23 @@ Works with 4 providers (configurable, with automatic fallback):
 |----------|---------|-------------|
 | `PORT` | `3334` | HTTP server port |
 | `NODE_ENV` | `development` | `production` for optimized logging |
-| `DATABASE_URL` | SQLite | PostgreSQL URL or `sqlite:/path/to/file.db` |
-| `DASHBOARD_TOKEN` | — | Token to access web dashboard |
+| `DASHBOARD_TOKEN` | — | Token to access web dashboard (auto-generated by installer) |
 | `NOTIFIERS` | `telegram` | Comma-separated: `telegram,discord,slack,whatsapp,email,ntfy,webhook` |
 
 ### AI Providers
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AI_PROVIDER` | `auto` | `gemini`, `openai`, `claude`, `ollama`, or `auto` |
+| `AI_PROVIDER` | `auto` | `ollama`, `gemini`, `openai`, `claude`, or `auto` (local-first) |
+| `OLLAMA_URL` | `http://ollama:11434` | Ollama API endpoint |
+| `OLLAMA_MODEL` | `qwen3:4b` | Model for analysis tasks |
+| `OLLAMA_CHAT_MODEL` | `qwen3:0.6b` | Lightweight model for chat/NL queries |
 | `GEMINI_API_KEY` | — | Google AI Studio key |
 | `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model |
 | `OPENAI_API_KEY` | — | OpenAI key |
 | `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model |
 | `ANTHROPIC_API_KEY` | — | Anthropic key |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6-20250514` | Claude model |
-| `OLLAMA_URL` | `http://localhost:11434` | Local Ollama instance |
-| `OLLAMA_MODEL` | `qwen3:4b` | Model for analysis |
-| `OLLAMA_CHAT_MODEL` | `qwen3:0.6b` | Lightweight model for chat |
 
 ### Threat Intelligence
 
@@ -281,7 +346,7 @@ Works with 4 providers (configurable, with automatic fallback):
 | `CVE_MONITOR_MIN_CVSS` | `7.0` | Min CVSS to alert (7.0 = High+) |
 | `CVE_MONITOR_INTERVAL_HOURS` | `6` | How often to check |
 
-### Notification Channels
+### Notification Channels (all optional)
 
 | Variable | Description |
 |----------|-------------|
@@ -306,48 +371,96 @@ Works with 4 providers (configurable, with automatic fallback):
 | `HOST_SSH_USER` | `ubuntu` | Default SSH user |
 | `HOST_SSH_KEY_PATH` | `/home/node/.ssh/id_ed25519` | Path to SSH private key |
 
-### Security — Trusted Entities
+### Security
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TRUSTED_IPS` | — | Comma-separated IPs that bypass `unauthorized_login` alerts (your admin/home IPs) |
-| `TRUSTED_FINGERPRINTS` | — | Comma-separated SSH key fingerprints (`SHA256:xxx`) that bypass `unauthorized_login` alerts |
-| `DASHBOARD_TOKEN` | — | Secret token to access `/dashboard` (auto-generated by installer) |
-| `TELEGRAM_WEBHOOK_SECRET` | — | Secret header for Telegram webhook validation (rejects in production if missing) |
+| `TRUSTED_IPS` | — | Comma-separated IPs that bypass `unauthorized_login` alerts |
+| `TRUSTED_FINGERPRINTS` | — | Comma-separated SSH key fingerprints (`SHA256:xxx`) |
+| `TELEGRAM_WEBHOOK_SECRET` | — | Secret header for Telegram webhook validation |
 
-## Interactive Installer
+### Docker Compose Variables
 
-The installer (`install.sh`) walks you through the full setup in 7 steps. Here's everything it asks:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SSH_KEY_DIR` | `~/.ssh` | Path to SSH keys (mounted read-only) |
+| `GUARDIAN_DOMAIN` | `guardian.localhost` | Domain for Traefik routing |
+| `GUARDIAN_DB_PASSWORD` | `guardian_secret` | PostgreSQL password |
 
-| Step | What it asks | Required? | Notes |
-|------|-------------|-----------|-------|
-| 1 | — | — | Auto-detects OS and package manager |
-| 2 | — | — | Verifies prerequisites (Node.js 20+, npm, SSH client, Docker, disk, RAM, network) |
-| 3 | Install directory | No | Default: `~/.guardian` |
-| 4 | — | — | Generates a unique ed25519 SSH key (`guardian-XXXXX_ed25519`); never overwrites existing keys |
-| 5 | Telegram Bot Token | No | From [@BotFather](https://t.me/BotFather) — can be set later in `.env` |
-| 5 | Telegram Chat ID | No | From [@userinfobot](https://t.me/userinfobot) — can be set later in `.env` |
-| 5 | AI Provider choice (1-5) | No | 1=Gemini, 2=OpenAI, 3=Claude, 4=Ollama, 5=Skip (default) |
-| 5 | AI API key | Only if 1-3 | Secret input (not echoed) |
-| 5 | Database choice (1-2) | No | 1=SQLite (default), 2=PostgreSQL |
-| 5 | PostgreSQL URL | Only if 2 | Connection string |
-| 5 | AbuseIPDB API key | No | For threat intelligence (Enter to skip) |
-| 5 | Trusted IPs | No | Comma-separated admin IPs to avoid false alerts |
-| 5 | Trusted SSH fingerprints | No | Comma-separated `SHA256:xxx` values (get via `ssh-keygen -lf ~/.ssh/id_ed25519.pub`) |
-| 6 | Deploy mode (1-2) | No | 1=Docker Compose (if available), 2=Native Node.js + systemd |
-| 7 | Server name | No | Default: current hostname |
-| 7 | Server IP/hostname | No | Default: `127.0.0.1` |
-| 7 | SSH port | No | Default: `22` |
-| 7 | SSH user | No | Default: current user |
+---
 
-After setup, the installer:
-- Creates `.env` with all configured values
-- Generates a unique SSH key (safe — never overwrites your keys)
-- Tests SSH connectivity to the first server (if not localhost)
-- Creates a systemd service (native mode) or `docker-compose.yml` (Docker mode)
-- Prints the dashboard URL with its auto-generated token
+## Docker Compose (full production stack)
 
-**Uninstall:** `bash <(curl -fsSL .../install.sh) --uninstall` removes everything (config, keys, data, service, Docker image).
+```yaml
+services:
+  guardian:
+    build: .
+    container_name: guardian
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      guardian-db:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${SSH_KEY_DIR:-~/.ssh}:/home/node/.ssh:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 512M
+
+  guardian-db:
+    image: postgres:16-alpine
+    container_name: guardian-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: guardian
+      POSTGRES_USER: guardian
+      POSTGRES_PASSWORD: ${GUARDIAN_DB_PASSWORD:-guardian_secret}
+    volumes:
+      - guardian_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guardian -d guardian"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: guardian-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          memory: 12G
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: guardian-ollama-pull
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: ["sh", "-c", "ollama pull ${OLLAMA_MODEL:-qwen3:4b} && ollama pull nomic-embed-text"]
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    restart: "no"
+
+volumes:
+  guardian_pgdata:
+  ollama_models:
+```
+
+---
 
 ## Development
 
@@ -360,7 +473,7 @@ cp .env.example .env  # fill in your values
 npm run dev           # hot-reload dev server
 npm run build         # TypeScript → dist/
 npm run type-check    # tsc --noEmit
-npm run test          # vitest (53 tests)
+npm run test          # vitest
 npm run lint          # ESLint
 ```
 
@@ -371,6 +484,7 @@ src/
 ├── collectors/           # SSH-based data collection (agentless)
 │   ├── ssh-collector.ts      # Base SSH execution layer
 │   ├── log-collector.ts      # auth.log, ufw, docker events
+│   ├── docker-collector.ts   # Container stats + anomalies
 │   ├── health-collector.ts   # CPU, memory, disk, uptime
 │   ├── system-collector.ts   # kernel errors, journal, failed units
 │   ├── performance-collector.ts  # disk I/O, network throughput
@@ -384,68 +498,52 @@ src/
 ├── pipeline/             # Event processing
 │   ├── normalizer.ts         # Raw logs → structured events
 │   ├── detector.ts           # Rule-based threat detection
-│   ├── enricher.ts           # Threat intelligence enrichment
+│   ├── enricher.ts           # Threat intel + ML behavioral scoring
 │   ├── correlator.ts         # Event → Incident correlation
-│   ├── ingestor.ts           # Event persistence (security)
-│   ├── metrics-ingestor.ts   # Metrics persistence (Bronze)
-│   └── score-calculator.ts   # 6-dimension scoring (Gold)
-├── intelligence/         # AI + statistical analysis
-│   ├── anomaly-detector.ts   # Baseline learning + deviation alerts
+│   ├── ingestor.ts           # Event persistence
+│   ├── metrics-ingestor.ts   # Metrics persistence
+│   └── score-calculator.ts   # 6-dimension scoring
+├── intelligence/         # ML + statistical analysis
+│   ├── anomaly-detector.ts   # Z-score baseline + deviation alerts
 │   ├── trend-predictor.ts    # Linear regression predictions
+│   ├── ssh-behavior.ts       # Per-user SSH login baselines
+│   ├── container-behavior.ts # Per-container resource baselines
 │   ├── root-cause.ts         # AI root cause analysis
-│   └── recommendations.ts   # Optimization recommendations
+│   └── recommendations.ts    # Optimization recommendations
 ├── services/             # Business logic
-│   ├── ai-provider.ts        # Multi-provider AI (Gemini/OpenAI/Claude/Ollama)
-│   ├── ai.service.ts         # Legacy AI service
+│   ├── ai-provider.ts        # Multi-provider AI (local-first)
 │   ├── server.service.ts     # Server CRUD
-│   └── soc-analyst.service.ts # Natural language queries
+│   ├── soc-analyst.service.ts # NL queries + RAG-augmented analysis
+│   └── incident-memory.service.ts # Incident case memory (RAG)
 ├── workers/              # Background jobs
 │   ├── event-collector.worker.ts     # Security events (2min)
 │   ├── fim.worker.ts                 # File/cron/key baselines (4h)
 │   ├── score-calculator.worker.ts    # Metrics (5min) + Scores (1h)
-│   ├── intelligence.worker.ts        # Anomaly + Trends (1h)
+│   ├── intelligence.worker.ts        # ML profiling + anomaly (1h)
 │   ├── metrics-retention.worker.ts   # Cleanup >30d (daily)
 │   ├── daily-report.worker.ts        # Morning report (08:00 BRT)
 │   ├── block-cleanup.worker.ts       # Expired IP blocks
 │   ├── cve-monitor.worker.ts         # CVE scanning
 │   └── vuln-scanner.worker.ts        # Package vulnerability scan
-├── playbooks/            # Automated response playbooks
-├── plugins/              # Notification plugin system
-├── telegram/             # Telegram bot commands + callbacks
-├── dashboard/            # HTMX web dashboard
+├── playbooks/            # Automated response engine
+├── plugins/              # Notification plugin system (7 channels)
+├── telegram/             # Bot commands + callbacks + actions
+├── dashboard/            # HTMX web dashboard (11 pages)
 ├── database/             # Drizzle ORM schema + connection
 ├── config/               # Environment + constants
 └── index.ts              # Express server + worker orchestration
 ```
 
-## Docker Compose
+---
 
-```yaml
-services:
-  guardian:
-    image: ghcr.io/afborda/guardian-blue-team:latest
-    env_file: .env
-    ports:
-      - "3334:3334"
-    volumes:
-      - guardian_data:/data
-      - ~/.ssh:/home/node/.ssh:ro
-    restart: unless-stopped
+## Security Considerations
 
-  # Optional: PostgreSQL for multi-server production
-  guardian-db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: guardian
-      POSTGRES_USER: guardian
-      POSTGRES_PASSWORD: ${GUARDIAN_DB_PASSWORD:-guardian_secret}
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-
-volumes:
-  guardian_data:
-  pg_data:
-```
+- **No secrets in the repository** — all sensitive data is in `.env` (gitignored)
+- **SSH keys** are mounted read-only into the container
+- **Telegram webhook** validates `X-Telegram-Bot-Api-Secret-Token` header in production
+- **Dashboard** requires `DASHBOARD_TOKEN` for access
+- **AI requests** never send raw SSH keys or passwords — only log analysis data
+- **Playbooks requiring system changes** (block IP, kill process) need explicit approval unless configured as auto-execute
 
 ## Contributing
 

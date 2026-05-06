@@ -195,3 +195,37 @@ export const serverScores = pgTable('server_scores', {
 }, (table) => ({
   serverPeriodIdx: uniqueIndex('server_scores_server_period_idx').on(table.serverId, table.periodStart, table.periodType),
 }));
+
+// ─── ML Behavioral Baselines ──────────────────────────────────────────────────
+
+export const behaviorProfiles = pgTable('behavior_profiles', {
+  id: serial('id').primaryKey(),
+  serverId: integer('server_id').notNull(),
+  profileType: varchar('profile_type', { length: 30 }).notNull(),
+  subjectId: varchar('subject_id', { length: 255 }).notNull(),
+  profile: jsonb('profile').$type<Record<string, unknown>>().notNull(),
+  sampleCount: integer('sample_count').default(0).notNull(),
+  lastUpdatedAt: timestamp('last_updated_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  subjectIdx: uniqueIndex('behavior_profiles_subject_idx').on(table.serverId, table.profileType, table.subjectId),
+}));
+
+export const incidentMemory = pgTable('incident_memory', {
+  id: serial('id').primaryKey(),
+  incidentId: integer('incident_id'),
+  category: varchar('category', { length: 100 }).notNull(),
+  title: varchar('title', { length: 500 }).notNull(),
+  sourceIps: jsonb('source_ips').$type<string[]>().default([]),
+  resolution: varchar('resolution', { length: 500 }),
+  outcome: varchar('outcome', { length: 30 }),
+  falsePositive: boolean('false_positive').default(false).notNull(),
+  rootCause: text('root_cause'),
+  timeToContainMinutes: integer('time_to_contain_minutes'),
+  tags: jsonb('tags').$type<string[]>().default([]),
+  embedding: jsonb('embedding').$type<number[]>(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  categoryIdx: index('incident_memory_category_idx').on(table.category),
+  createdIdx: index('incident_memory_created_idx').on(table.createdAt),
+}));

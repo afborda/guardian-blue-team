@@ -1,5 +1,6 @@
 import type { NormalizedEvent } from './normalizer.js';
 import { ThreatIntelManager } from '../threat-intel/manager.js';
+import { SSHBehaviorProfiler } from '../intelligence/ssh-behavior.js';
 
 export class EventEnricher {
   static async enrich(events: NormalizedEvent[]): Promise<NormalizedEvent[]> {
@@ -22,24 +23,72 @@ export class EventEnricher {
       }
     }
 
-    return events.map(event => {
-      if (!event.sourceIp) return event;
+    const enrichedEvents: NormalizedEvent[] = [];
 
-      const intel = enrichments.get(event.sourceIp);
-      if (!intel) return event;
+    for (const event of events) {
+      let enriched = event;
 
-      return {
-        ...event,
-        metadata: {
-          ...event.metadata,
-          threatIntel: {
-            score: intel.score,
-            malicious: intel.malicious,
-          },
-        },
-        severity: this.adjustSeverity(event.severity, intel),
-      };
-    });
+      // Threat intel enrichment
+      if (event.sourceIp) {
+        const intel = enrichments.get(event.sourceIp);
+        if (intel) {
+          enriched = {
+            ...enriched,
+            metadata: {
+              ...enriched.metadata,
+              threatIntel: { score: intel.score, malicious: intel.malicious },
+            },
+            severity: this.adjustSeverity(enriched.severity, intel),
+          };
+        }
+      }
+
+      // ML behavioral scoring for SSH logins
+      if (event.eventType === 'ssh_login_success' || event.eventType === 'ssh_key_login') {
+        const behaviorScore = await this.scoreBehavior(enriched);
+        if (behaviorScore) {
+          enriched = {
+            ...enriched,
+            metadata: {
+              ...enriched.metadata,
+              behaviorScore,
+            },
+          };
+          if (behaviorScore.score >= 0.7 && this.severityRank(enriched.severity) < this.severityRank('high')) {
+            enriched = { ...enriched, severity: 'high' };
+          }
+        }
+      }
+
+      enrichedEvents.push(enriched);
+    }
+
+    return enrichedEvents;
+  }
+
+  private static async scoreBehavior(event: NormalizedEvent) {
+    if (!event.userName || !event.sourceIp || !event.serverId) return null;
+
+    try {
+      const hour = event.timestamp.getHours();
+      const meta = event.metadata as Record<string, unknown> | null;
+      const fingerprint = typeof meta?.fingerprint === 'string' ? meta.fingerprint : undefined;
+
+      return await SSHBehaviorProfiler.scoreLogin(
+        event.serverId,
+        event.userName,
+        event.sourceIp,
+        hour,
+        fingerprint,
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  private static severityRank(severity: string): number {
+    const scale: Record<string, number> = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
+    return scale[severity] ?? 0;
   }
 
   private static adjustSeverity(

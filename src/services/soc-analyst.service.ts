@@ -1,16 +1,13 @@
 import { db } from '../database/connection.js';
 import { securityEvents, socIncidents } from '../database/schema.js';
 import { desc, eq, gte, sql } from 'drizzle-orm';
-import { config } from '../config/environment.js';
 import { logger } from '../utils/logger.js';
+import { AIProvider } from './ai-provider.js';
+import { IncidentMemoryService } from './incident-memory.service.js';
 
 export class SOCAnalystService {
-  private static get geminiUrl(): string {
-    return `https://generativelanguage.googleapis.com/v1beta/models/${config.ai.geminiModel}:generateContent`;
-  }
-
   static isAvailable(): boolean {
-    return !!config.ai.geminiApiKey;
+    return AIProvider.isAvailable();
   }
 
   static async analyzeIncident(incidentId: number): Promise<string | null> {
@@ -26,7 +23,16 @@ export class SOCAnalystService {
       .limit(50);
 
     const prompt = this.buildIncidentPrompt(incident, events);
-    return this.callGemini(prompt);
+    const ragContext = await IncidentMemoryService.buildContextForAI(
+      incident.category ?? 'unknown',
+      (incident.sourceIps ?? []) as string[],
+    );
+    const augmentedPrompt = ragContext ? `${prompt}\n${ragContext}` : prompt;
+    const response = await AIProvider.chat(augmentedPrompt, 'You are a SOC analyst. Analyze security incidents concisely in Portuguese (BR). Use historical context when available to inform your recommendations.');
+    if (response) {
+      logger.info({ provider: response.provider, latency: response.durationMs }, 'SOC incident analysis completed');
+    }
+    return response?.text ?? null;
   }
 
   static async generateWeeklySummary(): Promise<string | null> {
@@ -48,7 +54,8 @@ export class SOCAnalystService {
       .where(gte(socIncidents.createdAt, weekAgo));
 
     const prompt = this.buildWeeklySummaryPrompt(stats, incidents);
-    return this.callGemini(prompt);
+    const response = await AIProvider.chat(prompt, 'You are a SOC analyst generating weekly security reports in Portuguese (BR).');
+    return response?.text ?? null;
   }
 
   static async naturalLanguageQuery(question: string): Promise<string | null> {
@@ -70,7 +77,23 @@ export class SOCAnalystService {
       .where(eq(socIncidents.status, 'open'));
 
     const prompt = this.buildNLQueryPrompt(question, recentEvents, openIncidents);
-    return this.callGemini(prompt);
+    const memoryStats = await IncidentMemoryService.getStats();
+    const memoryContext = memoryStats.total > 0
+      ? `\nINCIDENT MEMORY (${memoryStats.total} cases stored, ${memoryStats.falsePositiveRate}% false positive rate):\nCategories: ${Object.entries(memoryStats.byCategory).map(([k, v]) => `${k}:${v}`).join(', ')}\n`
+      : '';
+    const augmentedPrompt = memoryContext ? `${prompt}\n${memoryContext}` : prompt;
+    const response = await AIProvider.chat(augmentedPrompt, 'You are a SOC analyst assistant. Answer security questions based on available data in Portuguese (BR).');
+    if (response) {
+      return `${response.text}\n\n<i>🤖 ${response.provider}/${this.getModelShort(response.provider)} (${(response.durationMs / 1000).toFixed(1)}s)</i>`;
+    }
+    return null;
+  }
+
+  private static getModelShort(provider: string): string {
+    const status = AIProvider.getStatus();
+    const entry = status.find(s => s.name === provider);
+    const model = entry?.model ?? 'unknown';
+    return model.split('/').pop()?.split(':')[0] ?? model;
   }
 
   private static buildIncidentPrompt(incident: typeof socIncidents.$inferSelect, events: Array<typeof securityEvents.$inferSelect>): string {
@@ -149,36 +172,4 @@ ${incidentSummary || 'No open incidents'}
 Answer in Portuguese (BR). Be concise and data-driven. If you don't have enough data to answer accurately, say so.`;
   }
 
-  private static async callGemini(prompt: string): Promise<string | null> {
-    try {
-      const response = await fetch(this.geminiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': config.ai.geminiApiKey! },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.4,
-            topP: 0.9,
-            maxOutputTokens: 1024,
-          },
-        }),
-      });
-
-      if (!response.ok) {
-        logger.warn({ status: response.status }, 'SOC Analyst Gemini call failed');
-        return null;
-      }
-
-      const data = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-      const text = data.candidates?.[0]?.content?.parts
-        ?.map(p => p.text)
-        .filter(Boolean)
-        .join('');
-
-      return text ?? null;
-    } catch (error) {
-      logger.error({ err: error }, 'SOC Analyst Gemini error');
-      return null;
-    }
-  }
 }

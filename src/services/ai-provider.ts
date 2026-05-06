@@ -36,16 +36,44 @@ export class AIProvider {
 
   private static getProviderOrder(): AIProviderName[] {
     if (config.ai.provider !== 'auto') {
-      const fallback: AIProviderName[] = ['ollama'];
-      return [config.ai.provider as AIProviderName, ...fallback.filter(f => f !== config.ai.provider)];
+      const others: AIProviderName[] = ['ollama', 'gemini', 'openai', 'claude'];
+      return [config.ai.provider as AIProviderName, ...others.filter(f => f !== config.ai.provider)];
     }
 
-    const order: AIProviderName[] = [];
+    // Local-first: always try Ollama before cloud providers
+    const order: AIProviderName[] = ['ollama'];
     if (config.ai.geminiApiKey) order.push('gemini');
     if (config.ai.openaiApiKey) order.push('openai');
     if (config.ai.anthropicApiKey) order.push('claude');
-    order.push('ollama');
     return order;
+  }
+
+  static getStatus(): Array<{ name: string; available: boolean; model: string; priority: number }> {
+    const order = this.getProviderOrder();
+    return order.map((name, i) => ({
+      name,
+      available: this.isProviderAvailable(name),
+      model: this.getModelForProvider(name),
+      priority: i + 1,
+    }));
+  }
+
+  private static isProviderAvailable(name: AIProviderName): boolean {
+    switch (name) {
+      case 'ollama': return !!config.ai.ollamaUrl;
+      case 'gemini': return !!config.ai.geminiApiKey;
+      case 'openai': return !!config.ai.openaiApiKey;
+      case 'claude': return !!config.ai.anthropicApiKey;
+    }
+  }
+
+  private static getModelForProvider(name: AIProviderName): string {
+    switch (name) {
+      case 'ollama': return config.ai.ollamaModel;
+      case 'gemini': return config.ai.geminiModel;
+      case 'openai': return config.ai.openaiModel;
+      case 'claude': return config.ai.anthropicModel;
+    }
   }
 
   private static async callProvider(provider: AIProviderName, prompt: string, systemPrompt?: string): Promise<string | null> {
@@ -161,7 +189,7 @@ export class AIProvider {
         prompt: systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt,
         stream: false,
       }),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(120_000),
     });
 
     if (!res.ok) return null;

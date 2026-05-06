@@ -592,11 +592,17 @@ dashboardApi.get('/scores', async (_req, res) => {
 
     let html = '<table class="score-grid-table"><thead><tr><th style="text-align:left">Server</th><th>Overall</th><th>Health</th><th>Security</th><th>Quality</th><th>Waste</th><th>Vuln</th><th>Avail</th></tr></thead><tbody>';
 
+    const latestScores = await db.select().from(serverScores)
+      .orderBy(desc(serverScores.periodStart))
+      .limit(servers.length * 2);
+
+    const scoreMap = new Map<number, typeof latestScores[0]>();
+    for (const score of latestScores) {
+      if (!scoreMap.has(score.serverId)) scoreMap.set(score.serverId, score);
+    }
+
     for (const server of servers) {
-      const [s] = await db.select().from(serverScores)
-        .where(eq(serverScores.serverId, server.id))
-        .orderBy(desc(serverScores.periodStart))
-        .limit(1);
+      const s = scoreMap.get(server.id);
 
       if (!s) {
         html += `<tr><td style="text-align:left"><strong>${escapeHtml(server.name)}</strong></td><td colspan="7" style="color:var(--text-dim)"><em>No data</em></td></tr>`;

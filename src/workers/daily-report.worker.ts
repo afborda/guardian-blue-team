@@ -84,17 +84,24 @@ export class DailyReportWorker {
       }
     }
 
-    // Scores summary
+    // Scores summary — batch query for latest score per server
     const scoreLines: string[] = [];
-    for (const server of servers) {
-      const [score] = await db.select().from(serverScores)
-        .where(eq(serverScores.serverId, server.id))
+    if (servers.length > 0) {
+      const latestScores = await db.select().from(serverScores)
         .orderBy(desc(serverScores.periodStart))
-        .limit(1);
+        .limit(servers.length * 2);
 
-      if (score) {
-        const icon = score.overallScore >= 80 ? '🟢' : score.overallScore >= 60 ? '🟡' : score.overallScore >= 40 ? '🟠' : '🔴';
-        scoreLines.push(`   ${icon} ${server.name}: ${score.overallScore}/100 (H:${score.healthScore} S:${score.securityScore} Q:${score.qualityScore})`);
+      const scoreMap = new Map<number, typeof latestScores[0]>();
+      for (const score of latestScores) {
+        if (!scoreMap.has(score.serverId)) scoreMap.set(score.serverId, score);
+      }
+
+      for (const server of servers) {
+        const score = scoreMap.get(server.id);
+        if (score) {
+          const icon = score.overallScore >= 80 ? '🟢' : score.overallScore >= 60 ? '🟡' : score.overallScore >= 40 ? '🟠' : '🔴';
+          scoreLines.push(`   ${icon} ${server.name}: ${score.overallScore}/100 (H:${score.healthScore} S:${score.securityScore} Q:${score.qualityScore})`);
+        }
       }
     }
     if (scoreLines.length > 0) {

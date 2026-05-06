@@ -30,7 +30,7 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=traefik-public"
-      - "traefik.http.routers.guardian.rule=Host(`${GUARDIAN_DOMAIN:-guardian.localhost}`)"
+      - "traefik.http.routers.guardian.rule=Host(`${GUARDIAN_DOMAIN:-guardian.abnerfonseca.com.br}`)"
       - "traefik.http.routers.guardian.entrypoints=websecure"
       - "traefik.http.routers.guardian.tls.certresolver=letsencrypt"
       - "traefik.http.services.guardian.loadbalancer.server.port=3334"
@@ -87,11 +87,11 @@ services:
         max-size: "5m"
         max-file: "2"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      test: ["CMD", "ollama", "list"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 30s
 
   ollama-pull:
     image: ollama/ollama:latest

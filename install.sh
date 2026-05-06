@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # No set -e: we handle errors explicitly to avoid silent crashes
 
-INSTALLER_VERSION="1.3.0"
+INSTALLER_VERSION="1.4.0"
 
 # ─── Guardian Blue Team — Interactive Installer ─────────────────────────────────
 # Supports: Ubuntu/Debian, Alpine, macOS

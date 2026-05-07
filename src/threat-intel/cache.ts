@@ -7,7 +7,7 @@ export interface CacheEntry<T> {
 
 export class ThreatIntelCache {
   private static cache = new Map<string, CacheEntry<unknown>>();
-  private static readonly DEFAULT_TTL_MS = 60 * 60 * 1000; // 1 hour
+  private static readonly DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
   private static cleanupInterval: NodeJS.Timeout | null = null;
 
   static start(): void {

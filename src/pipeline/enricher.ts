@@ -2,15 +2,46 @@ import type { NormalizedEvent } from './normalizer.js';
 import { ThreatIntelManager } from '../threat-intel/manager.js';
 import { SSHBehaviorProfiler } from '../intelligence/ssh-behavior.js';
 import { FalsePositiveFilter } from '../intelligence/false-positive-filter.js';
+import { CONSTANTS } from '../config/constants.js';
+import { db } from '../database/connection.js';
+import { blockedIps } from '../database/schema.js';
 import { logger } from '../utils/logger.js';
+
+const TRUSTED_IPS = new Set(CONSTANTS.trustedIps);
+
+function isSkippableIp(ip: string): boolean {
+  if (TRUSTED_IPS.has(ip)) return true;
+  if (ip.startsWith('172.') || ip.startsWith('10.') || ip.startsWith('192.168.')) return true;
+  return false;
+}
+
+let blockedIpCache = new Set<string>();
+let blockedCacheExpires = 0;
+
+async function getBlockedIps(): Promise<Set<string>> {
+  if (Date.now() < blockedCacheExpires) return blockedIpCache;
+  try {
+    const rows = await db.select({ ip: blockedIps.ip }).from(blockedIps);
+    blockedIpCache = new Set(rows.map(r => r.ip));
+    blockedCacheExpires = Date.now() + 5 * 60_000;
+  } catch {}
+  return blockedIpCache;
+}
+
+export function addTrustedIpToEnricher(ip: string): void {
+  TRUSTED_IPS.add(ip);
+}
 
 export class EventEnricher {
   static async enrich(events: NormalizedEvent[]): Promise<NormalizedEvent[]> {
+    const blocked = await getBlockedIps();
     const ipsToEnrich = new Set<string>();
 
     for (const event of events) {
-      if (event.sourceIp && event.severity !== 'info') {
-        ipsToEnrich.add(event.sourceIp);
+      if (event.sourceIp && (event.severity === 'high' || event.severity === 'critical')) {
+        if (!isSkippableIp(event.sourceIp) && !blocked.has(event.sourceIp)) {
+          ipsToEnrich.add(event.sourceIp);
+        }
       }
     }
 

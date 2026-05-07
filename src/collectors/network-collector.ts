@@ -1,5 +1,6 @@
 import { SSHCollector, type SSHTarget } from './ssh-collector.js';
 import type { RawLogEntry } from './log-collector.js';
+import { CONSTANTS } from '../config/constants.js';
 
 export interface OpenPort {
   port: number;
@@ -87,6 +88,67 @@ export class NetworkCollector {
       }
     }
 
+    return entries;
+  }
+
+  static async collectSynRecvStates(target: SSHTarget): Promise<RawLogEntry[]> {
+    const result = await SSHCollector.run(target,
+      `ss -tn state syn-recv 2>/dev/null | tail -n +2 | awk '{print $5}' | grep -oP '[\\d.]+(?=:)' | sort | uniq -c | sort -rn | head -10`,
+      10_000
+    );
+    if (!result.success || !result.stdout.trim()) return [];
+
+    const entries: RawLogEntry[] = [];
+    for (const line of result.stdout.trim().split('\n')) {
+      const match = line.trim().match(/^(\d+)\s+([\d.]+)$/);
+      if (!match) continue;
+      const [, countStr, ip] = match;
+      const count = parseInt(countStr);
+      if (count >= CONSTANTS.ddos.synFloodThreshold) {
+        entries.push({
+          serverId: target.id,
+          serverName: target.name,
+          timestamp: new Date(),
+          source: 'network',
+          line: `SYN_FLOOD: ${count} SYN_RECV from ${ip}`,
+        });
+      }
+    }
+    return entries;
+  }
+
+  static async collectConnectionRate(target: SSHTarget): Promise<RawLogEntry[]> {
+    // Two samples 1s apart to calculate rate
+    const result = await SSHCollector.run(target,
+      `C1=$(ss -tn state established 2>/dev/null | wc -l); sleep 1; C2=$(ss -tn state established 2>/dev/null | wc -l); echo "$C1 $C2"`,
+      15_000
+    );
+    if (!result.success || !result.stdout.trim()) return [];
+
+    const parts = result.stdout.trim().split(' ');
+    if (parts.length < 2) return [];
+    const rate = Math.abs(parseInt(parts[1]) - parseInt(parts[0]));
+
+    if (rate >= CONSTANTS.ddos.connectionRateThreshold) {
+      return [{
+        serverId: target.id,
+        serverName: target.name,
+        timestamp: new Date(),
+        source: 'network',
+        line: `CONN_RATE_SPIKE: ${rate} new connections/sec`,
+      }];
+    }
+    return [];
+  }
+
+  static async collectAllThreats(target: SSHTarget): Promise<RawLogEntry[]> {
+    const entries: RawLogEntry[] = [];
+
+    const suspiciousEntries = await this.detectSuspiciousConnections(target);
+    const synFloodEntries = await this.collectSynRecvStates(target);
+    const connRateEntries = await this.collectConnectionRate(target);
+
+    entries.push(...suspiciousEntries, ...synFloodEntries, ...connRateEntries);
     return entries;
   }
 }

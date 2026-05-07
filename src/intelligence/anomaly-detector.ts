@@ -66,6 +66,28 @@ export class AnomalyDetector {
       checks.push({ metric: 'disk_max_percent', current: maxDisk, values: histMaxDisks });
     }
 
+    // Network bandwidth anomaly detection
+    const networkIo = (latest.networkIo as Array<{ iface: string; rxBps: number; txBps: number }>) ?? [];
+    const totalRxBps = networkIo.reduce((sum, n) => sum + n.rxBps, 0);
+    const histRxBps = history.map(m => {
+      const nio = (m.networkIo as Array<{ iface: string; rxBps: number; txBps: number }>) ?? [];
+      return nio.reduce((sum, n) => sum + n.rxBps, 0);
+    }).filter(v => v > 0);
+
+    if (histRxBps.length >= 3 && totalRxBps > 0) {
+      checks.push({ metric: 'network_rx_bps', current: totalRxBps, values: histRxBps });
+    }
+
+    const totalTxBps = networkIo.reduce((sum, n) => sum + n.txBps, 0);
+    const histTxBps = history.map(m => {
+      const nio = (m.networkIo as Array<{ iface: string; rxBps: number; txBps: number }>) ?? [];
+      return nio.reduce((sum, n) => sum + n.txBps, 0);
+    }).filter(v => v > 0);
+
+    if (histTxBps.length >= 3 && totalTxBps > 0) {
+      checks.push({ metric: 'network_tx_bps', current: totalTxBps, values: histTxBps });
+    }
+
     for (const check of checks) {
       if (check.values.length < 5) continue;
 

@@ -143,14 +143,46 @@ export const blockedIps = pgTable('blocked_ips', {
   playbookExecutionId: integer('playbook_execution_id'),
   incidentId: integer('incident_id'),
   blockedAt: timestamp('blocked_at').defaultNow().notNull(),
-  expiresAt: timestamp('expires_at').notNull(),
+  expiresAt: timestamp('expires_at'),
   unblockedAt: timestamp('unblocked_at'),
   active: boolean('active').default(true).notNull(),
+  verified: boolean('verified').default(false),
+  method: varchar('method', { length: 20 }),
 }, (table) => ({
   activeIdx: index('blocked_ips_active_idx').on(table.active),
   expiresIdx: index('blocked_ips_expires_idx').on(table.expiresAt),
   ipServerIdx: index('blocked_ips_ip_server_idx').on(table.ip, table.serverId),
 }));
+
+// ─── Rate Limiting (DDoS Graduated Response) ────────────────────────────────────
+
+export const rateLimitedIps = pgTable('rate_limited_ips', {
+  id: serial('id').primaryKey(),
+  ip: varchar('ip', { length: 45 }).notNull(),
+  serverId: integer('server_id').notNull(),
+  limitPerSec: integer('limit_per_sec').notNull().default(10),
+  burst: integer('burst').notNull().default(20),
+  reason: varchar('reason', { length: 255 }),
+  incidentId: integer('incident_id'),
+  appliedAt: timestamp('applied_at').defaultNow().notNull(),
+  escalatedAt: timestamp('escalated_at'),
+  removedAt: timestamp('removed_at'),
+  active: boolean('active').default(true).notNull(),
+}, (table) => ({
+  activeIdx: index('rate_limited_ips_active_idx').on(table.active),
+}));
+
+// ─── Threat Hunt Findings ───────────────────────────────────────────────────────
+
+export const threatHuntFindings = pgTable('threat_hunt_findings', {
+  id: serial('id').primaryKey(),
+  runAt: timestamp('run_at').defaultNow().notNull(),
+  eventsAnalyzed: integer('events_analyzed').notNull().default(0),
+  finding: text('finding').notNull(),
+  severity: varchar('severity', { length: 20 }).default('medium'),
+  aiProvider: varchar('ai_provider', { length: 30 }),
+  notified: boolean('notified').default(false),
+});
 
 // ─── Infrastructure Monitoring Tables ──────────────────────────────────────────
 

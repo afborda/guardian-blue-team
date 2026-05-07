@@ -41,9 +41,12 @@ const envSchema = z.object({
   OLLAMA_URL: z.string().default('http://localhost:11434'),
   OLLAMA_MODEL: z.string().default('qwen3:4b'),
   OLLAMA_CHAT_MODEL: z.string().default('qwen3:0.6b'),
+  OLLAMA_EMBED_MODEL: z.string().default('nomic-embed-text'),
 
   // AI — Provider preference
   AI_PROVIDER: z.enum(['gemini', 'openai', 'claude', 'ollama', 'auto']).default('auto'),
+  // AI — Strategy (local-only: only Ollama | api-only: only cloud | auto: Ollama first, cloud fallback)
+  AI_STRATEGY: z.enum(['local-only', 'api-only', 'auto']).default('auto'),
 
   // Email
   RESEND_API_KEY: z.string().optional(),
@@ -119,6 +122,7 @@ export const config = {
 
   ai: {
     provider: env.AI_PROVIDER,
+    strategy: env.AI_STRATEGY,
     geminiApiKey: env.GEMINI_API_KEY || null,
     geminiModel: env.GEMINI_MODEL,
     openaiApiKey: env.OPENAI_API_KEY || null,
@@ -128,6 +132,7 @@ export const config = {
     ollamaUrl: env.OLLAMA_URL,
     ollamaModel: env.OLLAMA_MODEL,
     ollamaChatModel: env.OLLAMA_CHAT_MODEL,
+    ollamaEmbedModel: env.OLLAMA_EMBED_MODEL,
   },
 
   resend: {

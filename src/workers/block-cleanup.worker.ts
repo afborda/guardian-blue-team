@@ -1,6 +1,6 @@
 import { db, dbTrue, dbFalse, dbNow } from '../database/connection.js';
 import { blockedIps } from '../database/schema.js';
-import { and, eq, lte, gte } from 'drizzle-orm';
+import { and, eq, lte, gte, isNotNull } from 'drizzle-orm';
 import { SSHCollector } from '../collectors/ssh-collector.js';
 import { ServerService } from '../services/server.service.js';
 import { NotifierManager } from '../plugins/notifier-manager.js';
@@ -33,6 +33,7 @@ export class BlockCleanupWorker {
     const expiringSoon = await db.select().from(blockedIps)
       .where(and(
         eq(blockedIps.active, dbTrue),
+        isNotNull(blockedIps.expiresAt),
         gte(blockedIps.expiresAt, now),
         lte(blockedIps.expiresAt, oneHourFromNow),
       ));
@@ -42,7 +43,7 @@ export class BlockCleanupWorker {
     const servers = await ServerService.getEnabled();
     const lines = expiringSoon.map(b => {
       const server = servers.find(s => s.id === b.serverId);
-      const mins = Math.round((b.expiresAt.getTime() - Date.now()) / 60_000);
+      const mins = Math.round((b.expiresAt!.getTime() - Date.now()) / 60_000);
       return `  • ${b.ip} (${server?.name ?? 'unknown'}) — expira em ${mins}min`;
     });
 
@@ -58,6 +59,7 @@ export class BlockCleanupWorker {
     const expired = await db.select().from(blockedIps)
       .where(and(
         eq(blockedIps.active, dbTrue),
+        isNotNull(blockedIps.expiresAt),
         lte(blockedIps.expiresAt, dbNow()),
       ));
 

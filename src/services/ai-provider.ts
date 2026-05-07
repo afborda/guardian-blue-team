@@ -35,6 +35,24 @@ export class AIProvider {
   }
 
   private static getProviderOrder(): AIProviderName[] {
+    // Strategy filtering: restrict which providers are available
+    if (config.ai.strategy === 'local-only') {
+      return ['ollama'];
+    }
+
+    if (config.ai.strategy === 'api-only') {
+      if (config.ai.provider !== 'auto' && config.ai.provider !== 'ollama') {
+        const others: AIProviderName[] = ['gemini', 'openai', 'claude'];
+        return [config.ai.provider as AIProviderName, ...others.filter(f => f !== config.ai.provider)];
+      }
+      const order: AIProviderName[] = [];
+      if (config.ai.geminiApiKey) order.push('gemini');
+      if (config.ai.openaiApiKey) order.push('openai');
+      if (config.ai.anthropicApiKey) order.push('claude');
+      return order;
+    }
+
+    // Strategy 'auto': Ollama first, then cloud fallback
     if (config.ai.provider !== 'auto') {
       const others: AIProviderName[] = ['ollama', 'gemini', 'openai', 'claude'];
       return [config.ai.provider as AIProviderName, ...others.filter(f => f !== config.ai.provider)];

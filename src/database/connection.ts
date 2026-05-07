@@ -164,13 +164,41 @@ async function createPostgresTables(pool: Pool): Promise<void> {
         playbook_execution_id INTEGER,
         incident_id INTEGER,
         blocked_at TIMESTAMP NOT NULL DEFAULT NOW(),
-        expires_at TIMESTAMP NOT NULL,
+        expires_at TIMESTAMP,
         unblocked_at TIMESTAMP,
         active BOOLEAN NOT NULL DEFAULT true
       );
       CREATE INDEX IF NOT EXISTS blocked_ips_active_idx ON blocked_ips(active);
       CREATE INDEX IF NOT EXISTS blocked_ips_expires_idx ON blocked_ips(expires_at);
       CREATE INDEX IF NOT EXISTS blocked_ips_ip_server_idx ON blocked_ips(ip, server_id);
+
+      ALTER TABLE blocked_ips ADD COLUMN IF NOT EXISTS verified BOOLEAN DEFAULT false;
+      ALTER TABLE blocked_ips ADD COLUMN IF NOT EXISTS method VARCHAR(20);
+
+      CREATE TABLE IF NOT EXISTS rate_limited_ips (
+        id SERIAL PRIMARY KEY,
+        ip VARCHAR(45) NOT NULL,
+        server_id INTEGER NOT NULL,
+        limit_per_sec INTEGER NOT NULL DEFAULT 10,
+        burst INTEGER NOT NULL DEFAULT 20,
+        reason VARCHAR(255),
+        incident_id INTEGER,
+        applied_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        escalated_at TIMESTAMP,
+        removed_at TIMESTAMP,
+        active BOOLEAN NOT NULL DEFAULT true
+      );
+      CREATE INDEX IF NOT EXISTS rate_limited_ips_active_idx ON rate_limited_ips(active);
+
+      CREATE TABLE IF NOT EXISTS threat_hunt_findings (
+        id SERIAL PRIMARY KEY,
+        run_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        events_analyzed INTEGER NOT NULL DEFAULT 0,
+        finding TEXT NOT NULL,
+        severity VARCHAR(20) DEFAULT 'medium',
+        ai_provider VARCHAR(30),
+        notified BOOLEAN DEFAULT false
+      );
 
       CREATE TABLE IF NOT EXISTS server_metrics (
         id SERIAL PRIMARY KEY,
@@ -429,13 +457,38 @@ function createSqliteTables(sqlite: { exec: (sql: string) => void }): void {
       playbook_execution_id INTEGER,
       incident_id INTEGER,
       blocked_at TEXT NOT NULL DEFAULT (datetime('now')),
-      expires_at TEXT NOT NULL,
+      expires_at TEXT,
       unblocked_at TEXT,
       active INTEGER NOT NULL DEFAULT 1
     );
     CREATE INDEX IF NOT EXISTS blocked_ips_active_idx ON blocked_ips(active);
     CREATE INDEX IF NOT EXISTS blocked_ips_expires_idx ON blocked_ips(expires_at);
     CREATE INDEX IF NOT EXISTS blocked_ips_ip_server_idx ON blocked_ips(ip, server_id);
+
+    CREATE TABLE IF NOT EXISTS rate_limited_ips (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ip VARCHAR(45) NOT NULL,
+      server_id INTEGER NOT NULL,
+      limit_per_sec INTEGER NOT NULL DEFAULT 10,
+      burst INTEGER NOT NULL DEFAULT 20,
+      reason VARCHAR(255),
+      incident_id INTEGER,
+      applied_at TEXT NOT NULL DEFAULT (datetime('now')),
+      escalated_at TEXT,
+      removed_at TEXT,
+      active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE INDEX IF NOT EXISTS rate_limited_ips_active_idx ON rate_limited_ips(active);
+
+    CREATE TABLE IF NOT EXISTS threat_hunt_findings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_at TEXT NOT NULL DEFAULT (datetime('now')),
+      events_analyzed INTEGER NOT NULL DEFAULT 0,
+      finding TEXT NOT NULL,
+      severity VARCHAR(20) DEFAULT 'medium',
+      ai_provider VARCHAR(30),
+      notified INTEGER DEFAULT 0
+    );
 
     CREATE TABLE IF NOT EXISTS server_metrics (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

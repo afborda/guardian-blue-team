@@ -16,6 +16,7 @@ import { EventCorrelator, type CorrelationResult } from '../pipeline/correlator.
 import { EventIngestor } from '../pipeline/ingestor.js';
 import { PlaybookRegistry } from '../playbooks/registry.js';
 import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
+import { AIBlockAdvisor } from '../services/ai-block-advisor.service.js';
 import { requestPlaybookApproval } from '../telegram/callbacks.js';
 import { addWebPendingApproval } from '../dashboard/routes.js';
 import { requestLoginVerification } from '../telegram/login-verification.js';
@@ -64,7 +65,7 @@ export class EventCollectorWorker {
           LogCollector.collectUfwLogs(target, 3),
           LogCollector.collectDockerEvents(target, 3),
           ProcessCollector.detectSuspiciousProcesses(target),
-          NetworkCollector.detectSuspiciousConnections(target),
+          NetworkCollector.collectAllThreats(target),
           SudoCollector.collect(target, 3),
           DNSCollector.collect(target, 3),
           SyslogCollector.collect(target, 3),
@@ -144,6 +145,35 @@ export class EventCollectorWorker {
           requestPlaybookApproval(playbook.name, ctx);
           addWebPendingApproval(playbook.name, ctx);
           continue;
+        }
+
+        // Consult AI before auto-executing blocking playbooks
+        const hasBlockAction = playbook.steps.some(s => s.action === 'block-ip');
+        if (hasBlockAction && result.event.sourceIp) {
+          try {
+            const recommendation = await AIBlockAdvisor.getRecommendation(ctx, {
+              eventType: result.event.eventType,
+              severity: result.event.severity,
+              eventCount: result.event.metadata?.eventCount as number | undefined,
+              sourceIp: result.event.sourceIp,
+            });
+
+            if (recommendation.confidence >= 70) {
+              if (recommendation.action === 'monitor' || recommendation.action === 'ignore') {
+                logger.info({
+                  ip: result.event.sourceIp, playbook: playbook.name,
+                  action: recommendation.action, confidence: recommendation.confidence,
+                  reasoning: recommendation.reasoning,
+                }, 'AI advisor: skipping block');
+                continue;
+              }
+              if (recommendation.action === 'rate_limit') {
+                ctx.variables = { ...ctx.variables, aiOverride: 'rate_limit' };
+              }
+            }
+          } catch (err) {
+            logger.debug({ err }, 'AI advisor failed — proceeding with rule-based block');
+          }
         }
 
         try {

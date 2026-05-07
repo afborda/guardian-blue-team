@@ -125,6 +125,33 @@ const DETECTION_RULES: DetectionRule[] = [
     eventType: 'connection_flood',
   },
   {
+    name: 'syn_flood_detected',
+    description: 'SYN flood detected (>50 half-open connections from single IP)',
+    condition: (_events: NormalizedEvent[], current: NormalizedEvent) => {
+      return current.source === 'network' && current.rawLog.includes('SYN_FLOOD');
+    },
+    severity: 'critical' as const,
+    eventType: 'syn_flood',
+  },
+  {
+    name: 'bandwidth_spike',
+    description: 'Bandwidth spike detected via anomaly detection',
+    condition: (_events: NormalizedEvent[], current: NormalizedEvent) => {
+      return current.source === 'network' && current.rawLog.includes('BANDWIDTH_SPIKE');
+    },
+    severity: 'high' as const,
+    eventType: 'bandwidth_spike',
+  },
+  {
+    name: 'connection_rate_spike',
+    description: 'Connection rate spike (>100 new connections/sec)',
+    condition: (_events: NormalizedEvent[], current: NormalizedEvent) => {
+      return current.source === 'network' && current.rawLog.includes('CONN_RATE_SPIKE');
+    },
+    severity: 'high' as const,
+    eventType: 'connection_rate_spike',
+  },
+  {
     name: 'unauthorized_login',
     description: 'SSH login from IP not in trusted list and fingerprint not trusted',
     condition: (_events, current) => {

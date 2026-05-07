@@ -31,10 +31,27 @@ export const CONSTANTS = {
   blocking: {
     // How often the cleanup worker checks for expired blocks
     cleanupIntervalMs: 5 * 60 * 1000, // 5 minutes
-    // Default block duration if playbook doesn't specify
-    defaultDurationHours: 24,
+    // Default block duration (-1 = permanent)
+    defaultDurationHours: -1,
     // SSH command timeout for block/unblock operations
     sshTimeoutMs: 10_000,
+  },
+
+  // ─── DDoS Detection & Mitigation ─────────────────────────────────────────
+  ddos: {
+    // SYN_RECV count from single IP to trigger SYN flood alert
+    synFloodThreshold: 50,
+    // New connections/sec from single IP to trigger rate spike alert
+    connectionRateThreshold: 100,
+    // Standard deviations above baseline to trigger bandwidth spike
+    bandwidthSigmaThreshold: 3,
+    // iptables rate-limit parameters (graduated response before full block)
+    rateLimitPerSec: 10,
+    rateLimitBurst: 20,
+    // If rate-limited IP triggers again within this window, escalate to full block
+    escalationWindowMs: 10 * 60 * 1000, // 10 minutes
+    // How often the escalation worker checks rate-limited IPs
+    escalationCheckIntervalMs: 2 * 60 * 1000, // 2 minutes
   },
 
   // ─── Event Collection ──────────────────────────────────────────────────────

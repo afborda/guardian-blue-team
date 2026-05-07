@@ -12,6 +12,8 @@ import { MetricsRetentionWorker } from './workers/metrics-retention.worker.js';
 import { IntelligenceWorker } from './workers/intelligence.worker.js';
 import { FIMWorker } from './workers/fim.worker.js';
 import { DiscoveryWorker } from './workers/discovery.worker.js';
+import { ThreatHunterWorker } from './workers/threat-hunter.worker.js';
+import { DDoSEscalationWorker } from './workers/ddos-escalation.worker.js';
 import { ThreatIntelManager } from './threat-intel/manager.js';
 import { PlaybookRegistry } from './playbooks/registry.js';
 import { handleTelegramCommand } from './telegram/commands.js';
@@ -41,7 +43,7 @@ app.get('/health', async (_req, res) => {
     status,
     uptime: Math.floor(process.uptime()),
     database: dbOk ? 'connected' : 'unreachable',
-    version: '1.5.0',
+    version: '2.0.0',
   });
 });
 
@@ -182,6 +184,30 @@ async function registerTelegramWebhook(): Promise<void> {
   } catch (err) {
     logger.error({ err }, 'Failed to register Telegram webhook');
   }
+
+  try {
+    await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/setMyCommands`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commands: [
+          { command: 'status', description: 'Resumo de todos os servidores' },
+          { command: 'incidents', description: 'Incidentes abertos (com ações)' },
+          { command: 'dashboard', description: 'URL do dashboard (token temporário)' },
+          { command: 'events', description: 'Últimos eventos de segurança' },
+          { command: 'health', description: 'CPU, RAM, disco' },
+          { command: 'scores', description: 'Pontuação de segurança' },
+          { command: 'threat', description: 'Investigar IP (reputação)' },
+          { command: 'block', description: 'Bloquear IP no firewall' },
+          { command: 'ask', description: 'Pergunte qualquer coisa à AI' },
+          { command: 'report', description: 'Relatório de segurança' },
+          { command: 'vulns', description: 'Vulnerabilidades CVE' },
+          { command: 'servers', description: 'Servidores monitorados' },
+          { command: 'help', description: 'Todos os comandos disponíveis' },
+        ],
+      }),
+    });
+  } catch (_) {}
 }
 
 // ─── Heartbeat (Uptime Kuma push) ──────────────────────────────────────────
@@ -237,6 +263,8 @@ async function start(): Promise<void> {
   VulnScannerWorker.start();
   BlockCleanupWorker.start();
   DiscoveryWorker.start();
+  ThreatHunterWorker.start();
+  DDoSEscalationWorker.start();
   startHeartbeat();
 
   if (config.cveMonitor.enabled) {
@@ -264,6 +292,8 @@ async function shutdown(signal: string): Promise<void> {
     BlockCleanupWorker.stop(),
     CVEMonitorWorker.stop(),
     DiscoveryWorker.stop(),
+    ThreatHunterWorker.stop(),
+    DDoSEscalationWorker.stop(),
   ]);
   ThreatIntelManager.stop();
 

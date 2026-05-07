@@ -55,6 +55,10 @@ export class EventCorrelator {
       return this.correlateUnauthorizedAccess(event);
     }
 
+    if (event.eventType === 'syn_flood' || event.eventType === 'connection_rate_spike' || event.eventType === 'bandwidth_spike') {
+      return this.correlateDDoS(event);
+    }
+
     return null;
   }
 
@@ -215,6 +219,51 @@ export class EventCorrelator {
     }).returning();
 
     logger.warn({ ip: event.sourceIp, type: event.eventType, incidentId: newIncident.id }, 'Unauthorized access incident created');
+    return { id: newIncident.id, isNew: true };
+  }
+
+  private static async correlateDDoS(event: NormalizedEvent): Promise<{ id: number; isNew: boolean } | null> {
+    const cutoff = new Date(Date.now() - CORRELATION_WINDOW_MS);
+
+    // Find existing open DDoS incident for this server
+    const existing = await db.select().from(socIncidents)
+      .where(and(
+        eq(socIncidents.category, 'ddos'),
+        eq(socIncidents.status, 'open'),
+        gte(socIncidents.lastSeenAt, dbDate(cutoff)),
+      ))
+      .then(rows => rows.find(r => {
+        const servers = (r.affectedServers ?? []) as number[];
+        return servers.includes(event.serverId);
+      }));
+
+    if (existing) {
+      const sourceIps = (existing.sourceIps ?? []) as string[];
+      if (event.sourceIp && !sourceIps.includes(event.sourceIp)) {
+        sourceIps.push(event.sourceIp);
+      }
+      await db.update(socIncidents)
+        .set({
+          lastSeenAt: dbNow(),
+          eventCount: existing.eventCount + 1,
+          sourceIps,
+        })
+        .where(eq(socIncidents.id, existing.id));
+      return { id: existing.id, isNew: false };
+    }
+
+    const [newIncident] = await db.insert(socIncidents).values({
+      title: `DDoS Attack: ${event.eventType} on server ${event.serverId}${event.sourceIp ? ` from ${event.sourceIp}` : ''}`,
+      severity: 'critical',
+      category: 'ddos',
+      sourceIps: event.sourceIp ? [event.sourceIp] : [],
+      affectedServers: [event.serverId],
+      eventCount: 1,
+      firstSeenAt: dbNow(),
+      lastSeenAt: dbNow(),
+    }).returning();
+
+    logger.warn({ ip: event.sourceIp, type: event.eventType, incidentId: newIncident.id }, 'New DDoS incident detected');
     return { id: newIncident.id, isNew: true };
   }
 

@@ -7,15 +7,21 @@ import type { PlaybookContext } from '../engine.js';
 import { logger } from '../../utils/logger.js';
 import { isValidIp } from '../../utils/sanitize.js';
 
+function isPermanent(duration: string): boolean {
+  return duration === 'permanent' || duration === 'perm' || duration === '-1';
+}
+
 function parseDuration(duration: string): number {
+  if (isPermanent(duration)) return -1;
   const match = duration.match(/^(\d+)(m|h|d)$/);
-  if (!match) return 24 * 60 * 60 * 1000; // default 24h
+  if (!match) return -1; // default permanent
   const [, num, unit] = match;
   const ms = { m: 60_000, h: 3_600_000, d: 86_400_000 }[unit] ?? 3_600_000;
   return parseInt(num) * ms;
 }
 
 function durationToSeconds(duration: string): number {
+  if (isPermanent(duration)) return -1;
   return Math.floor(parseDuration(duration) / 1000);
 }
 
@@ -42,6 +48,22 @@ async function tryUfw(target: ReturnType<typeof ServerService.toSSHTarget>, ip: 
   return result.success;
 }
 
+export async function verifyBlock(
+  target: ReturnType<typeof ServerService.toSSHTarget>,
+  ip: string,
+  method: 'fail2ban' | 'ufw'
+): Promise<boolean> {
+  if (!isValidIp(ip)) return false;
+
+  if (method === 'fail2ban') {
+    const result = await SSHCollector.run(target, `sudo fail2ban-client status guardian-jail 2>/dev/null | grep -q "${ip}"`, 10_000);
+    return result.success;
+  }
+
+  const result = await SSHCollector.run(target, `sudo ufw status | grep -q "${ip}"`, 10_000);
+  return result.success;
+}
+
 export async function blockIP(ctx: PlaybookContext, params?: Record<string, unknown>): Promise<{ success: boolean; message: string }> {
   if (!ctx.sourceIp) {
     return { success: false, message: 'No source IP to block' };
@@ -56,6 +78,7 @@ export async function blockIP(ctx: PlaybookContext, params?: Record<string, unkn
     return { success: false, message: `Server ${ctx.serverId} not found` };
   }
 
+  // Check if already blocked — handle race condition gracefully via try-catch on insert
   const existing = await db.select().from(blockedIps)
     .where(and(
       eq(blockedIps.ip, ctx.sourceIp),
@@ -65,7 +88,8 @@ export async function blockIP(ctx: PlaybookContext, params?: Record<string, unkn
     .then(rows => rows[0]);
 
   if (existing) {
-    return { success: true, message: `IP ${ctx.sourceIp} already blocked on ${ctx.serverName} (expires ${existing.expiresAt.toISOString()})` };
+    const expiresLabel = existing.expiresAt ? `expires ${existing.expiresAt.toISOString()}` : 'permanent';
+    return { success: true, message: `IP ${ctx.sourceIp} already blocked on ${ctx.serverName} (${expiresLabel})` };
   }
 
   const target = ServerService.toSSHTarget(server);
@@ -84,19 +108,37 @@ export async function blockIP(ctx: PlaybookContext, params?: Record<string, unkn
     method = 'ufw';
   }
 
-  const expiresAt = new Date(Date.now() + parseDuration(duration));
+  // Verify the block actually exists in the firewall
+  const verified = await verifyBlock(target, ctx.sourceIp, method);
 
-  await db.insert(blockedIps).values({
-    ip: ctx.sourceIp,
-    serverId: ctx.serverId,
-    reason: `Playbook auto-block via ${method} (incident #${ctx.incidentId ?? 'n/a'})`,
-    playbookExecutionId: null,
-    incidentId: ctx.incidentId ?? null,
-    expiresAt,
-  });
+  const durationMs = parseDuration(duration);
+  const expiresAt = durationMs === -1 ? null : new Date(Date.now() + durationMs);
 
-  logger.info({ ip: ctx.sourceIp, server: ctx.serverName, duration, method, expiresAt }, 'IP blocked via playbook');
-  return { success: true, message: `Blocked ${ctx.sourceIp} on ${ctx.serverName} via ${method} (expires in ${duration})` };
+  // Insert with conflict handling — if unique index rejects (race condition), treat as already blocked
+  try {
+    await db.insert(blockedIps).values({
+      ip: ctx.sourceIp,
+      serverId: ctx.serverId,
+      reason: `${ctx.triggeredBy === 'telegram' ? 'Manual' : 'Playbook auto'}-block via ${method} (incident #${ctx.incidentId ?? 'n/a'})`,
+      playbookExecutionId: null,
+      incidentId: ctx.incidentId ?? null,
+      expiresAt,
+      verified,
+      method,
+    });
+  } catch (err: any) {
+    // Unique constraint violation (race condition) — another process inserted first
+    if (err?.code === '23505' || err?.message?.includes('UNIQUE constraint')) {
+      logger.info({ ip: ctx.sourceIp, server: ctx.serverName }, 'IP block race condition — already inserted by another process');
+      return { success: true, message: `IP ${ctx.sourceIp} already blocked on ${ctx.serverName} (concurrent insert)` };
+    }
+    throw err;
+  }
+
+  const expiresLabel = expiresAt ? `expires in ${duration}` : 'permanent';
+  const verifiedLabel = verified ? 'verified' : 'unverified';
+  logger.info({ ip: ctx.sourceIp, server: ctx.serverName, duration, method, expiresAt, verified }, 'IP blocked via playbook');
+  return { success: true, message: `Blocked ${ctx.sourceIp} on ${ctx.serverName} via ${method} (${expiresLabel}, ${verifiedLabel})` };
 }
 
 export async function unblockIP(ctx: PlaybookContext, params?: Record<string, unknown>): Promise<{ success: boolean; message: string }> {

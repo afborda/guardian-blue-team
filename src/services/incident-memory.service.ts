@@ -1,8 +1,9 @@
 import { db } from '../database/connection.js';
 import { incidentMemory, socIncidents } from '../database/schema.js';
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, isNotNull } from 'drizzle-orm';
 import { logger } from '../utils/logger.js';
 import { FalsePositiveFilter } from '../intelligence/false-positive-filter.js';
+import { EmbeddingService } from './embedding.service.js';
 
 export interface IncidentCase {
   id: number;
@@ -35,7 +36,7 @@ export class IncidentMemoryService {
       ? Math.round((incident.resolvedAt.getTime() - incident.firstSeenAt.getTime()) / 60_000)
       : null;
 
-    await db.insert(incidentMemory).values({
+    const [newRecord] = await db.insert(incidentMemory).values({
       incidentId,
       category: incident.category ?? 'unknown',
       title: incident.title,
@@ -46,13 +47,52 @@ export class IncidentMemoryService {
       rootCause: rootCause ?? null,
       timeToContainMinutes: timeToContain,
       tags: this.extractTags(incident),
-    });
+    }).returning({ id: incidentMemory.id });
+
+    // Generate and store embedding for semantic search
+    const embeddingText = `${incident.title} ${incident.category ?? ''} ${resolution} ${this.extractTags(incident).join(' ')}`;
+    const embedding = await EmbeddingService.generate(embeddingText);
+    if (embedding && newRecord?.id) {
+      await db.update(incidentMemory).set({ embedding }).where(eq(incidentMemory.id, newRecord.id));
+    }
 
     logger.info({ incidentId, category: incident.category, outcome }, 'Incident stored in memory');
     FalsePositiveFilter.invalidateCache();
   }
 
   static async findSimilar(category: string, sourceIps: string[], limit = 5): Promise<IncidentCase[]> {
+    // Try embedding-based semantic search first
+    const queryText = `${category} ${sourceIps.join(' ')}`;
+    const queryEmbedding = await EmbeddingService.generate(queryText);
+    if (queryEmbedding) {
+      const allWithEmbeddings = await db.select().from(incidentMemory)
+        .where(isNotNull(incidentMemory.embedding));
+      if (allWithEmbeddings.length > 0) {
+        const scored = allWithEmbeddings
+          .map(record => ({
+            ...record,
+            similarity: EmbeddingService.cosineSimilarity(queryEmbedding, record.embedding as number[]),
+          }))
+          .sort((a, b) => b.similarity - a.similarity)
+          .slice(0, limit);
+        if (scored.length > 0 && scored[0].similarity > 0.5) {
+          return scored.map(s => ({
+            id: s.id,
+            category: s.category,
+            title: s.title,
+            sourceIps: (s.sourceIps ?? []) as string[],
+            resolution: s.resolution,
+            outcome: s.outcome,
+            falsePositive: s.falsePositive,
+            rootCause: s.rootCause,
+            timeToContainMinutes: s.timeToContainMinutes,
+            tags: (s.tags ?? []) as string[],
+          }));
+        }
+      }
+    }
+
+    // Keyword-based fallback
     const cases = await db.select()
       .from(incidentMemory)
       .where(eq(incidentMemory.category, category))

@@ -5,6 +5,7 @@ import { enrichIP } from './actions/enrich-ip.js';
 import { checkRepeatOffender } from './actions/check-repeat.js';
 import { killProcess } from './actions/kill-process.js';
 import { pauseContainer, disconnectContainer } from './actions/container-actions.js';
+import { rateLimit, removeRateLimit } from './actions/rate-limit.js';
 
 const PLAYBOOKS: PlaybookDefinition[] = [
   {
@@ -14,7 +15,7 @@ const PLAYBOOKS: PlaybookDefinition[] = [
     steps: [
       { action: 'enrich-ip' },
       { action: 'check-repeat' },
-      { action: 'block-ip', params: { duration: '24h' }, condition: 'score > 50 OR repeatCount > 1' },
+      { action: 'block-ip', params: { duration: 'permanent' }, condition: 'score > 50 OR repeatCount > 1' },
       { action: 'notify', params: { severity: 'high' } },
     ],
     requiresApproval: false,
@@ -26,7 +27,7 @@ const PLAYBOOKS: PlaybookDefinition[] = [
     steps: [
       { action: 'enrich-ip' },
       { action: 'check-repeat' },
-      { action: 'block-ip', params: { duration: '12h' }, condition: 'score > 50 OR repeatCount > 2' },
+      { action: 'block-ip', params: { duration: 'permanent' }, condition: 'score > 50 OR repeatCount > 2' },
       { action: 'notify', params: { severity: 'medium' } },
     ],
     requiresApproval: false,
@@ -38,7 +39,7 @@ const PLAYBOOKS: PlaybookDefinition[] = [
     steps: [
       { action: 'kill-process' },
       { action: 'enrich-ip' },
-      { action: 'block-ip', params: { duration: '7d' } },
+      { action: 'block-ip', params: { duration: 'permanent' } },
       { action: 'notify', params: { severity: 'critical', message: '🚨 CRYPTO MINER DETECTED AND KILLED' } },
     ],
     requiresApproval: false,
@@ -60,7 +61,7 @@ const PLAYBOOKS: PlaybookDefinition[] = [
     trigger: { eventType: 'lateral_movement' },
     steps: [
       { action: 'enrich-ip' },
-      { action: 'block-ip', params: { duration: '7d' } },
+      { action: 'block-ip', params: { duration: 'permanent' } },
       { action: 'notify', params: { severity: 'critical', message: '🚨 LATERAL MOVEMENT DETECTED — IP blocked' } },
     ],
     requiresApproval: false,
@@ -72,8 +73,39 @@ const PLAYBOOKS: PlaybookDefinition[] = [
     steps: [
       { action: 'enrich-ip' },
       { action: 'check-repeat' },
-      { action: 'block-ip', params: { duration: '6h' }, condition: 'score > 30 OR repeatCount > 1' },
+      { action: 'block-ip', params: { duration: 'permanent' }, condition: 'score > 30 OR repeatCount > 1' },
       { action: 'notify', params: { severity: 'high' } },
+    ],
+    requiresApproval: false,
+  },
+  {
+    name: 'ddos-syn-flood-response',
+    description: 'SYN flood graduated response: rate-limit, then escalate to permanent block',
+    trigger: { eventType: 'syn_flood' },
+    steps: [
+      { action: 'enrich-ip' },
+      { action: 'rate-limit', params: { limitPerSec: 10, burst: 20 } },
+      { action: 'notify', params: { severity: 'critical', message: 'SYN flood detected — rate limiting applied' } },
+    ],
+    requiresApproval: false,
+  },
+  {
+    name: 'connection-rate-response',
+    description: 'Connection rate spike response',
+    trigger: { eventType: 'connection_rate_spike' },
+    steps: [
+      { action: 'enrich-ip' },
+      { action: 'rate-limit', params: { limitPerSec: 10, burst: 20 } },
+      { action: 'notify', params: { severity: 'high' } },
+    ],
+    requiresApproval: false,
+  },
+  {
+    name: 'bandwidth-spike-response',
+    description: 'Bandwidth spike response — notify and investigate',
+    trigger: { eventType: 'bandwidth_spike' },
+    steps: [
+      { action: 'notify', params: { severity: 'high', message: 'Bandwidth spike detected — possible DDoS' } },
     ],
     requiresApproval: false,
   },
@@ -173,6 +205,8 @@ export class PlaybookRegistry {
     PlaybookEngine.registerAction('kill-process', killProcess);
     PlaybookEngine.registerAction('pause-container', pauseContainer);
     PlaybookEngine.registerAction('disconnect-container', disconnectContainer);
+    PlaybookEngine.registerAction('rate-limit', rateLimit);
+    PlaybookEngine.registerAction('remove-rate-limit', removeRateLimit);
     PlaybookEngine.registerAction('notify', notify);
 
     this.initialized = true;

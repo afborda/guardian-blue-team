@@ -11,4 +11,6 @@ export {
   serverScores,
   behaviorProfiles,
   incidentMemory,
+  rateLimitedIps,
+  threatHuntFindings,
 } from './guardian-schema.js';

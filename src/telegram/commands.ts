@@ -4,8 +4,8 @@ import { ServerService } from '../services/server.service.js';
 import { SSHCollector } from '../collectors/ssh-collector.js';
 import { CronCollector } from '../collectors/cron-collector.js';
 import { SSHKeysCollector } from '../collectors/ssh-keys-collector.js';
-import { db } from '../database/connection.js';
-import { securityEvents, socIncidents, socServers, serverScores, serverMetrics } from '../database/schema.js';
+import { db, dbTrue } from '../database/connection.js';
+import { securityEvents, socIncidents, socServers, serverScores, serverMetrics, blockedIps } from '../database/schema.js';
 import { desc, eq, ne, count, and, gte, inArray } from 'drizzle-orm';
 import { ThreatIntelManager } from '../threat-intel/manager.js';
 import { PlaybookRegistry } from '../playbooks/registry.js';
@@ -14,9 +14,10 @@ import { VulnScanner } from '../vuln-scanner/scanner.js';
 import { SOCAnalystService } from '../services/soc-analyst.service.js';
 import { AIProvider } from '../services/ai-provider.js';
 import { IncidentMemoryService } from '../services/incident-memory.service.js';
-import { blockIP, unblockIP } from '../playbooks/actions/block-ip.js';
+import { blockIP, unblockIP, verifyBlock } from '../playbooks/actions/block-ip.js';
 import { isValidHostname, isValidIp, isValidSshUser, isValidKeyPath, isValidServerName } from '../utils/sanitize.js';
 import { discoverRemoteServer, formatDiscoveryApprovalKeyboard } from '../discovery/remote.js';
+import { rotateToken } from '../dashboard/auth.js';
 import { config } from '../config/environment.js';
 
 const pendingDiscoveries = new Map<number, { analysis: import('../discovery/types.js').DiscoveryResult; serverName: string }>();
@@ -33,7 +34,7 @@ export async function handleTelegramCommand(text: string): Promise<string> {
     case '/events':
       return await getRecentEvents(parts[1]);
     case '/incidents':
-      return await getOpenIncidents();
+      return await getOpenIncidents(true);
     case '/threat':
       return await threatLookup(parts[1]);
     case '/hunt':
@@ -80,6 +81,8 @@ export async function handleTelegramCommand(text: string): Promise<string> {
       return await unblockIPCommand(parts.slice(1));
     case '/firewall':
       return await getFirewallStatus(parts[1]);
+    case '/verify-blocks':
+      return await verifyBlocksCommand();
     case '/services':
       return await getServices(parts[1]);
     case '/ai':
@@ -88,6 +91,8 @@ export async function handleTelegramCommand(text: string): Promise<string> {
       return await learnFromIncident(parts.slice(1));
     case '/memory':
       return await getMemoryStats();
+    case '/dashboard':
+      return getDashboardUrl();
     case '/help':
       return formatHelp();
     default:
@@ -251,7 +256,7 @@ async function getRecentEvents(filterArg?: string): Promise<string> {
 
 // ─── /incidents ─────────────────────────────────────────────────────────────
 
-async function getOpenIncidents(): Promise<string> {
+async function getOpenIncidents(withButtons = false): Promise<string> {
   const incidents = await db.select()
     .from(socIncidents)
     .where(eq(socIncidents.status, 'open'))
@@ -262,6 +267,44 @@ async function getOpenIncidents(): Promise<string> {
 
   const serverNames = await getServerNameMap();
   const severityIcon: Record<string, string> = { critical: '🔴', high: '🟠', medium: '🟡', low: '🔵' };
+
+  if (withButtons) {
+    for (const i of incidents) {
+      const icon = severityIcon[i.severity] ?? '⚪';
+      const ago = timeAgo(i.lastSeenAt);
+      const affectedIds = (i.affectedServers ?? []) as number[];
+      const serverName = affectedIds.length > 0 ? serverNames.get(affectedIds[0]) ?? '?' : '?';
+      const ips = (i.sourceIps ?? []) as string[];
+      const mainIp = ips[0];
+
+      const text = `${icon} <b>#${i.id} ${i.title}</b>\n📍 ${serverName} | ${i.eventCount} eventos | ${ago}`;
+
+      const buttons: { text: string; callback_data: string }[][] = [[
+        { text: '✅ Resolver', callback_data: `incident_confirm_${i.id}` },
+        { text: '🚫 Falso Positivo', callback_data: `incident_fp_${i.id}` },
+      ]];
+
+      if (mainIp && /^[\d.]+$/.test(mainIp)) {
+        buttons.push([
+          { text: `🔒 Bloquear ${mainIp}`, callback_data: `incident_block_${i.id}_${mainIp}` },
+          { text: `🔍 Threat Intel`, callback_data: `incident_threat_${i.id}_${mainIp}` },
+        ]);
+      }
+
+      await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: config.telegram.chatId,
+          text,
+          parse_mode: 'HTML',
+          reply_markup: { inline_keyboard: buttons },
+        }),
+      }).catch(() => {});
+    }
+
+    return `🚨 <b>Incidentes Abertos: ${incidents.length}</b>`;
+  }
 
   const lines = incidents.map(i => {
     const icon = severityIcon[i.severity] ?? '⚪';
@@ -284,6 +327,22 @@ async function getOpenIncidents(): Promise<string> {
 
 // ─── /threat ────────────────────────────────────────────────────────────────
 
+const EVENT_TYPE_PT: Record<string, string> = {
+  ssh_failed_password: 'senha errada (SSH)',
+  ssh_invalid_user: 'usuário inexistente (SSH)',
+  ssh_login: 'login SSH',
+  unauthorized_login: 'login não autorizado',
+  port_scan: 'port scan',
+  brute_force: 'força bruta',
+  ssh_brute_force: 'força bruta SSH',
+  crypto_mining: 'mineração de cripto',
+  container_escape: 'escape de container',
+  dns_dga: 'DNS suspeito (C2)',
+  fim_change: 'alteração de arquivo',
+  sudo_abuse: 'abuso de sudo',
+  reverse_shell: 'reverse shell',
+};
+
 async function threatLookup(ip: string | undefined): Promise<string> {
   if (!ip) return '❌ Uso: /threat &lt;ip&gt;\nEx: /threat 8.8.8.8';
   if (!/^[\d.:a-fA-F]+$/.test(ip)) return '❌ IP inválido.';
@@ -294,8 +353,8 @@ async function threatLookup(ip: string | undefined): Promise<string> {
   if (report) {
     const scoreBar = report.score >= 80 ? '🔴' : report.score >= 50 ? '🟠' : report.score >= 25 ? '🟡' : '🟢';
     lines.push(
-      `${scoreBar} AbuseIPDB Score: <b>${report.score}/100</b>`,
-      `📊 Reports: ${report.totalReports} | 🌍 ${report.country} | 🏢 ${report.isp}`,
+      `${scoreBar} Reputação: <b>${report.score}/100</b> (quanto maior, pior)`,
+      `📊 Denúncias: ${report.totalReports} | 🌍 País: ${report.country} | 🏢 Provedor: ${report.isp}`,
       ''
     );
   } else {
@@ -313,10 +372,11 @@ async function threatLookup(ip: string | undefined): Promise<string> {
     .groupBy(securityEvents.serverId, securityEvents.eventType);
 
   if (eventsByServer.length > 0) {
-    lines.push('📋 <b>Nos nossos logs:</b>');
+    lines.push('📋 <b>Atividade nos nossos servidores:</b>');
     for (const row of eventsByServer) {
       const name = serverNames.get(row.serverId!) ?? '?';
-      lines.push(`   • ${row.cnt} ${row.eventType} em ${name}`);
+      const typeLabel = EVENT_TYPE_PT[row.eventType!] ?? row.eventType;
+      lines.push(`   • ${row.cnt}× ${typeLabel} em ${name}`);
     }
 
     const [firstEvent] = await db.select({ ts: securityEvents.timestamp })
@@ -331,10 +391,53 @@ async function threatLookup(ip: string | undefined): Promise<string> {
       lines.push(`   ⏱ Primeiro: ${fmt(firstEvent.ts)} | Último: ${fmt(lastEvent.ts)}`);
     }
   } else {
-    lines.push('📋 Nenhum evento encontrado nos nossos logs.');
+    lines.push('📋 Nenhuma atividade deste IP nos nossos servidores.');
   }
 
-  lines.push('', `💡 /hunt ${ip} — histórico detalhado`);
+  lines.push('');
+
+  // Recomendação em português baseada no score e eventos
+  if (report) {
+    const eventCount = eventsByServer.reduce((sum, r) => sum + Number(r.cnt), 0);
+    if (report.score >= 80) {
+      lines.push(
+        '⚠️ <b>RECOMENDAÇÃO: BLOQUEAR</b>',
+        `Este IP é altamente malicioso (score ${report.score}/100).`,
+        `Reportado ${report.totalReports} vezes. Risco real de ataque.`,
+        `→ /block ${ip}`,
+      );
+    } else if (report.score >= 50) {
+      lines.push(
+        '🟠 <b>RECOMENDAÇÃO: PROVÁVEL AMEAÇA</b>',
+        `Score moderado (${report.score}/100) com ${report.totalReports} reports.`,
+        eventCount > 5
+          ? 'Múltiplas tentativas nos nossos logs. Recomendo bloquear.'
+          : 'Poucos eventos locais. Monitorar, bloquear se persistir.',
+        `→ /block ${ip}`,
+      );
+    } else if (report.score >= 25) {
+      lines.push(
+        '🟡 <b>RECOMENDAÇÃO: SUSPEITO</b>',
+        `Score baixo-médio (${report.score}/100). Pode ser scanner automatizado.`,
+        eventCount > 10
+          ? 'Muita atividade local — considere bloquear.'
+          : 'Monitorar por agora. Não é urgente.',
+      );
+    } else {
+      lines.push(
+        '🟢 <b>RECOMENDAÇÃO: SEGURO</b>',
+        `IP com boa reputação (score ${report.score}/100).`,
+        'Provavelmente legítimo. Não precisa bloquear.',
+      );
+    }
+  } else {
+    const eventCount = eventsByServer.reduce((sum, r) => sum + Number(r.cnt), 0);
+    if (eventCount > 20) {
+      lines.push('🟠 <b>RECOMENDAÇÃO: BLOQUEAR</b>', 'Muita atividade suspeita nos logs, mesmo sem dados do AbuseIPDB.');
+    } else {
+      lines.push('⚪ <b>SEM DADOS SUFICIENTES</b>', 'Sem AbuseIPDB e pouca atividade. Monitorar.');
+    }
+  }
 
   return lines.join('\n');
 }
@@ -566,7 +669,7 @@ async function removeServer(name: string | undefined): Promise<string> {
 
 async function blockIPCommand(args: string[]): Promise<string> {
   if (args.length < 1) {
-    return '❌ Uso: /block &lt;ip&gt; [server] [duration]\nEx: /block 1.2.3.4 hetzner-prod 7d\nDurações: 1h, 24h, 7d, 30d';
+    return '❌ Uso: /block &lt;ip&gt; [server] [duration]\nEx: /block 1.2.3.4 hetzner-prod 7d\nDurações: 1h, 24h, 7d, 30d, permanent (padrão: permanent)';
   }
 
   const [ip, serverName, duration] = args;
@@ -583,7 +686,7 @@ async function blockIPCommand(args: string[]): Promise<string> {
     if (!server) continue;
     const result = await blockIP(
       { serverId: server.id, serverName: server.name, sourceIp: ip, triggeredBy: 'telegram', variables: {} },
-      { duration: duration || '24h' }
+      { duration: duration || 'permanent' }
     );
     const icon = result.success ? '✅' : '❌';
     results.push(`${icon} ${server.name}: ${result.message}`);
@@ -656,6 +759,44 @@ async function getFirewallStatus(serverName?: string): Promise<string> {
   }
 
   return `🧱 <b>Firewall Status</b>\n\n${sections.join('\n\n')}`;
+}
+
+// ─── /verify-blocks ───────────────────────────────────────────────────────
+
+async function verifyBlocksCommand(): Promise<string> {
+  const activeBlocks = await db.select().from(blockedIps)
+    .where(eq(blockedIps.active, dbTrue));
+
+  if (activeBlocks.length === 0) return '✅ Nenhum IP bloqueado no momento.';
+
+  const servers = await ServerService.getEnabled();
+  let verified = 0;
+  let missing = 0;
+  const missingList: string[] = [];
+
+  for (const block of activeBlocks) {
+    const server = servers.find(s => s.id === block.serverId);
+    if (!server) continue;
+
+    const target = ServerService.toSSHTarget(server);
+    const isBlocked = await verifyBlock(target, block.ip, (block.method as 'fail2ban' | 'ufw') || 'ufw');
+
+    if (isBlocked) {
+      verified++;
+      if (!block.verified) {
+        await db.update(blockedIps).set({ verified: true }).where(eq(blockedIps.id, block.id));
+      }
+    } else {
+      missing++;
+      missingList.push(`${block.ip} (${server.name})`);
+    }
+  }
+
+  let response = `🔍 <b>Verificação de Blocks</b>\n\n✅ Verificados: ${verified}\n❌ Ausentes no firewall: ${missing}`;
+  if (missingList.length > 0) {
+    response += `\n\n⚠️ Blocks ausentes:\n${missingList.slice(0, 10).map(ip => `  • ${ip}`).join('\n')}`;
+  }
+  return response;
 }
 
 // ─── /services ─────────────────────────────────────────────────────────────
@@ -776,54 +917,64 @@ async function getMemoryStats(): Promise<string> {
   ].join('\n');
 }
 
+// ─── /dashboard ────────────────────────────────────────────────────────────
+
+function getDashboardUrl(): string {
+  const token = rotateToken();
+  const baseUrl = config.telegram.baseUrl;
+  if (!baseUrl) return '❌ GUARDIAN_BASE_URL não configurado.';
+
+  return [
+    '🖥️ <b>Dashboard Guardian</b>',
+    '',
+    `<code>${baseUrl}/dashboard?token=${token}</code>`,
+    '',
+    '⏱ Token válido por <b>5 minutos</b>.',
+    'Solicite novamente com /dashboard para gerar um novo.',
+  ].join('\n');
+}
+
 // ─── /help ──────────────────────────────────────────────────────────────────
 
 function formatHelp(): string {
   return [
-    '🤖 <b>Guardian SOC</b>',
+    '🛡️ <b>Guardian Blue Team</b>',
     '',
-    '📊 <b>Monitoramento:</b>',
-    '  /status — Overview dos servidores',
-    '  /health — Métricas de saúde (CPU, RAM, disco)',
-    '  /scores — Scores de qualidade (6 dimensões)',
-    '  /scores server — Detalhes de um servidor',
-    '  /servers — Lista + health check',
-    '  /containers — Containers rodando',
-    '  /events — Eventos (low+)',
-    '  /events high — Filtrar por severidade',
+    '📊 <b>Visão Geral:</b>',
+    '  /status — Resumo de todos os servidores',
+    '  /health — CPU, RAM, disco de cada servidor',
+    '  /scores — Pontuação de segurança (6 dimensões)',
+    '  /servers — Lista de servidores monitorados',
+    '  /events — Últimos eventos de segurança',
     '',
-    '🚨 <b>Incidentes:</b>',
-    '  /incidents — Incidentes abertos',
-    '  /threat ip — Investigar IP',
-    '  /hunt ip|user — Buscar nos logs',
+    '🚨 <b>Incidentes e Ameaças:</b>',
+    '  /incidents — Incidentes abertos (com ações)',
+    '  /threat <code>1.2.3.4</code> — Investigar IP (reputação + recomendação)',
+    '  /hunt <code>1.2.3.4</code> — Buscar IP ou usuário nos logs',
+    '  /block <code>1.2.3.4</code> — Bloquear IP no firewall',
+    '  /unblock <code>1.2.3.4</code> — Desbloquear IP',
     '',
-    '🛡️ <b>Blue Team:</b>',
-    '  /files [server] — Mudanças em arquivos',
-    '  /sudo [hours] — Atividade sudo (default 24h)',
-    '  /crons [server] — Cron jobs / mudanças',
-    '  /keys [server] — SSH keys / mudanças',
-    '  /dns [server] [hours] — DNS / anomalias',
+    '🔍 <b>Investigação:</b>',
+    '  /files — Arquivos modificados (FIM)',
+    '  /sudo — Atividade sudo nas últimas 24h',
+    '  /crons — Cron jobs (mudanças detectadas)',
+    '  /keys — SSH keys (novas/removidas)',
+    '  /dns — Consultas DNS suspeitas',
+    '  /containers — Containers Docker',
+    '  /vulns — Vulnerabilidades (CVE)',
     '',
-    '⚡ <b>Ações:</b>',
-    '  /block ip [server] [duration] — Bloquear IP',
-    '  /unblock ip [server] — Desbloquear IP',
-    '  /firewall [server] — Status do firewall (UFW)',
-    '  /services [server] — Serviços systemd',
-    '  /playbook list — Playbooks disponíveis',
-    '  /playbook run name server [ip]',
-    '  /scan — Forçar análise de abuso',
-    '  /report — Relatório do dia',
-    '  /report full — Relatório acumulado',
+    '🤖 <b>Inteligência:</b>',
+    '  /ask <code>pergunta</code> — Pergunte qualquer coisa à AI',
+    '  /report — Relatório diário de segurança',
+    '  /learn <code>42 resolved "bloqueei"</code> — Ensinar o Guardian',
+    '  /memory — Status da memória RAG',
     '',
     '⚙️ <b>Gestão:</b>',
-    '  /add-server nome host [porta] [user] [key]',
-    '  /rm-server nome',
-    '  /vulns — Vulnerabilidades',
-    '  /ask pergunta — AI analyst',
+    '  /add-server <code>nome host porta user</code>',
+    '  /rm-server <code>nome</code>',
+    '  /firewall — Status UFW',
     '  /ai — Status dos providers AI',
-    '  /learn id outcome — Ensinar o Guardian',
-    '  /memory — Status da memória RAG',
-    '  /apis — Status dos circuitos de API externas',
+    '  /apis — Status das APIs externas',
   ].join('\n');
 }
 

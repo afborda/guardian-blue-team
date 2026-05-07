@@ -2,6 +2,9 @@ import { AbuseIPDBClient } from './abuseipdb.js';
 import { VirusTotalClient } from './virustotal.js';
 import { ThreatIntelCache } from './cache.js';
 import { CircuitBreaker } from '../utils/circuit-breaker.js';
+import { db } from '../database/connection.js';
+import { threatIntelCache } from '../database/schema.js';
+import { eq, and, gte } from 'drizzle-orm';
 import { logger } from '../utils/logger.js';
 
 export interface ThreatReport {
@@ -45,6 +48,24 @@ export class ThreatIntelManager {
     const cached = ThreatIntelCache.get<ThreatReport>(cacheKey);
     if (cached) return { ...cached, cached: true };
 
+    // Check DB cache (survives container restarts)
+    try {
+      const [dbCached] = await db.select()
+        .from(threatIntelCache)
+        .where(and(
+          eq(threatIntelCache.indicator, ip),
+          eq(threatIntelCache.source, 'abuseipdb'),
+          gte(threatIntelCache.expiresAt, new Date()),
+        ))
+        .limit(1);
+
+      if (dbCached?.data) {
+        const restored = dbCached.data as unknown as ThreatReport;
+        ThreatIntelCache.set(cacheKey, restored);
+        return { ...restored, cached: true };
+      }
+    } catch {}
+
     const report = await abuseBreaker.call(() => AbuseIPDBClient.checkIP(ip));
     if (!report) return null;
 
@@ -74,6 +95,19 @@ export class ThreatIntelManager {
     }
 
     ThreatIntelCache.set(cacheKey, result);
+
+    // Persist to DB for cross-restart cache
+    try {
+      await db.insert(threatIntelCache).values({
+        indicator: ip,
+        indicatorType: 'ip',
+        source: 'abuseipdb',
+        reputationScore: result.score,
+        data: result as unknown as Record<string, unknown>,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      }).onConflictDoNothing();
+    } catch {}
+
     return result;
   }
 

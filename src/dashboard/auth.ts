@@ -1,4 +1,5 @@
 import { type Request, type Response, type NextFunction } from 'express';
+import crypto from 'node:crypto';
 import { config } from '../config/environment.js';
 import { safeCompare } from '../utils/sanitize.js';
 
@@ -12,6 +13,26 @@ declare global {
   }
 }
 
+// ─── Rotating Token ─────────────────────────────────────────────────────────
+
+let rotatingToken = crypto.randomBytes(16).toString('hex');
+let rotatingTokenExpiresAt = Date.now() + 5 * 60_000;
+
+export function getRotatingToken(): string {
+  if (Date.now() > rotatingTokenExpiresAt) {
+    rotateToken();
+  }
+  return rotatingToken;
+}
+
+export function rotateToken(): string {
+  rotatingToken = crypto.randomBytes(16).toString('hex');
+  rotatingTokenExpiresAt = Date.now() + 5 * 60_000;
+  return rotatingToken;
+}
+
+// ─── Auth Middleware ─────────────────────────────────────────────────────────
+
 export function dashboardAuth(req: Request, res: Response, next: NextFunction): void {
   if (!config.dashboard.token && config.dashboard.users.length === 0) {
     res.status(503).json({ error: 'Dashboard disabled — set DASHBOARD_TOKEN or DASHBOARD_USERS' });
@@ -23,6 +44,13 @@ export function dashboardAuth(req: Request, res: Response, next: NextFunction): 
 
   if (!token) {
     res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  // Check rotating token
+  if (Date.now() <= rotatingTokenExpiresAt && safeCompare(token, rotatingToken)) {
+    req.dashboardUser = { username: 'admin', role: 'admin' };
+    next();
     return;
   }
 

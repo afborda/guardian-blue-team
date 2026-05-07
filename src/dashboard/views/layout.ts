@@ -443,6 +443,16 @@ export function layout(title: string, content: string): string {
       color: var(--critical);
     }
 
+    .ip-tag-safe {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      background: rgba(16, 185, 129, 0.12);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      padding: 2px 8px;
+      border-radius: 4px;
+      color: var(--success);
+    }
+
     /* ─── ACTION / RESPONSE CARD ──────────────── */
     .action-card {
       background: rgba(0, 102, 204, 0.04);

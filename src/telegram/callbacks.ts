@@ -98,6 +98,42 @@ export async function handleTelegramCallback(callbackQuery: {
     return;
   }
 
+  if (callbackQuery.data.startsWith('incident_block_')) {
+    const parts = callbackQuery.data.replace('incident_block_', '').split('_');
+    const incidentId = parseInt(parts[0]);
+    const ip = parts.slice(1).join('_');
+    await answerCallback(callbackQuery.id, `Bloqueando ${ip}...`);
+
+    const { handleTelegramCommand } = await import('./commands.js');
+    const result = await handleTelegramCommand(`/block ${ip}`);
+
+    if (callbackQuery.message) {
+      await editMessage(callbackQuery.message,
+        `🔒 Incidente #${incidentId} — IP ${ip} bloqueado.\n${result}`);
+    }
+    return;
+  }
+
+  if (callbackQuery.data.startsWith('incident_threat_')) {
+    const parts = callbackQuery.data.replace('incident_threat_', '').split('_');
+    const ip = parts.slice(1).join('_');
+    await answerCallback(callbackQuery.id, `Consultando ${ip}...`);
+
+    const { handleTelegramCommand } = await import('./commands.js');
+    const result = await handleTelegramCommand(`/threat ${ip}`);
+
+    await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: config.telegram.chatId,
+        text: result,
+        parse_mode: 'HTML',
+      }),
+    }).catch(() => {});
+    return;
+  }
+
   logger.debug(`Unknown callback: ${callbackQuery.data}`);
 }
 

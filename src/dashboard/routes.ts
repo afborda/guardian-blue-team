@@ -15,6 +15,16 @@ import { PlaybookRegistry } from '../playbooks/registry.js';
 import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
 import { IncidentMemoryService } from '../services/incident-memory.service.js';
 import { FalsePositiveFilter } from '../intelligence/false-positive-filter.js';
+import { CONSTANTS } from '../config/constants.js';
+
+const TRUSTED_IPS_SET = new Set(CONSTANTS.trustedIps);
+
+function ipTag(ip: string): string {
+  if (TRUSTED_IPS_SET.has(ip) || ip.startsWith('10.') || ip.startsWith('172.') || ip.startsWith('192.168.')) {
+    return `<span class="ip-tag-safe">${escapeHtml(ip)}</span>`;
+  }
+  return `<span class="ip-tag">${escapeHtml(ip)}</span>`;
+}
 
 export const dashboardPages = Router();
 export const dashboardApi = Router();
@@ -304,12 +314,12 @@ dashboardApi.get('/recent-threats', async (_req, res) => {
 
     const html = events.map(({ event: e, serverName }) => {
       const icon = threatIcons[e.eventType] || '&#9888;';
-      const ipTag = e.sourceIp ? ` <span class="ip-tag">${escapeHtml(e.sourceIp)}</span>` : '';
+      const ipLabel = e.sourceIp ? ` ${ipTag(e.sourceIp)}` : '';
       const name = serverName || `Server #${e.serverId}`;
       return `<div class="threat-item">
         <span class="threat-icon">${icon}</span>
         <div style="flex:1">
-          <div style="font-size:0.82rem;"><span class="severity-${e.severity}">${escapeHtml(e.eventType.replace(/_/g, ' '))}</span>${ipTag}</div>
+          <div style="font-size:0.82rem;"><span class="severity-${e.severity}">${escapeHtml(e.eventType.replace(/_/g, ' '))}</span>${ipLabel}</div>
           <div style="font-size:0.7rem; color:var(--text-dim)">${escapeHtml(name)} &middot; ${new Date(e.timestamp).toLocaleTimeString()}</div>
         </div>
       </div>`;
@@ -549,7 +559,7 @@ dashboardApi.get('/events', async (req, res) => {
         <td style="color:var(--text-dim)">${new Date(e.timestamp).toLocaleString()}</td>
         <td>${escapeHtml(e.eventType.replace(/_/g, ' '))}</td>
         <td><span class="severity-${e.severity}">${e.severity}</span></td>
-        <td>${e.sourceIp ? `<span class="ip-tag">${escapeHtml(e.sourceIp)}</span>` : '<span style="color:var(--text-dim)">—</span>'}</td>
+        <td>${e.sourceIp ? ipTag(e.sourceIp) : '<span style="color:var(--text-dim)">—</span>'}</td>
         <td>#${e.serverId}</td>
       </tr>`).join('')
     }</tbody></table>`;
@@ -821,11 +831,11 @@ dashboardApi.get('/timeline', async (_req, res) => {
       for (const e of dayEvents) {
         const time = new Date(e.timestamp).toLocaleTimeString();
         const icon = severityIcon[e.severity] || '&#9898;';
-        const ipTag = e.sourceIp ? ` <span class="ip-tag">${escapeHtml(e.sourceIp)}</span>` : '';
+        const ipLabel = e.sourceIp ? ` ${ipTag(e.sourceIp)}` : '';
         html += `<div style="display:flex;align-items:flex-start;gap:0.5rem;padding:0.35rem 0;font-size:0.8rem;">`
           + `<span style="color:var(--text-dim);min-width:5rem;font-family:var(--font-mono);font-size:0.72rem;">${time}</span>`
           + `<span>${icon}</span>`
-          + `<div><span class="severity-${e.severity}">${escapeHtml(e.eventType.replace(/_/g, ' '))}</span>${ipTag}`
+          + `<div><span class="severity-${e.severity}">${escapeHtml(e.eventType.replace(/_/g, ' '))}</span>${ipLabel}`
           + `<span style="color:var(--text-dim);font-size:0.72rem;margin-left:0.5rem;">#${e.serverId}</span></div>`
           + `</div>`;
       }
@@ -981,7 +991,7 @@ dashboardApi.get('/geo-attacks', async (_req, res) => {
                       ip.severity === 'medium' ? '&#128993;' : '&#128309;';
       return `<tr>
         <td>${sevIcon}</td>
-        <td><code>${escapeHtml(ip.ip)}</code></td>
+        <td>${ipTag(ip.ip)}</td>
         <td>${ip.count}</td>
         <td>${escapeHtml(ip.country)}</td>
         <td>${ip.severity}</td>
@@ -1078,7 +1088,7 @@ dashboardApi.get('/pending-approvals', async (_req, res) => {
       approvals.map(a => `<tr id="approval-${a.id}">
         <td><strong>${escapeHtml(a.playbookName)}</strong></td>
         <td>${escapeHtml(a.serverName)}</td>
-        <td>${a.sourceIp ? `<span class="ip-tag">${escapeHtml(a.sourceIp)}</span>` : '—'}</td>
+        <td>${a.sourceIp ? ipTag(a.sourceIp) : '—'}</td>
         <td style="color:var(--text-dim)">${a.age}min ago</td>
         <td>
           <button class="success" hx-post="/api/dashboard/approvals/${a.id}/approve?token=${token}" hx-target="#approval-${a.id}" hx-swap="outerHTML">Approve</button>

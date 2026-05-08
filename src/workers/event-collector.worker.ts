@@ -100,7 +100,8 @@ export class EventCollectorWorker {
         await EventIngestor.persist(correlated);
 
         totalEvents += correlated.length;
-        newIncidentResults.push(...correlated.filter(r => r.isNewIncident));
+        // Trigger playbooks for new incidents AND for events correlated to existing incidents with a source IP (ensures auto-block)
+        newIncidentResults.push(...correlated.filter(r => r.isNewIncident || (r.incidentId && r.incidentCategory && r.event.sourceIp)));
 
         await ServerService.updateLastSeen(server.id);
       }
@@ -118,8 +119,16 @@ export class EventCollectorWorker {
     }
   }
 
+  private static recentlyTriggered = new Map<string, number>();
+
   private static async triggerPlaybooks(results: CorrelationResult[]): Promise<void> {
     const serverCache = new Map<number, string>();
+    const now = Date.now();
+
+    // Clean stale entries (>5min old)
+    for (const [key, ts] of this.recentlyTriggered) {
+      if (now - ts > 5 * 60_000) this.recentlyTriggered.delete(key);
+    }
 
     for (const result of results) {
       // Match playbooks by event type OR incident category (port_scan incidents come from firewall_block events)
@@ -136,6 +145,10 @@ export class EventCollectorWorker {
       }
 
       for (const playbook of matchingPlaybooks) {
+        // Dedup: skip if same playbook+IP+server triggered in last 5min
+        const dedupKey = `${playbook.name}:${result.event.sourceIp ?? ''}:${result.event.serverId}`;
+        if (this.recentlyTriggered.has(dedupKey)) continue;
+
         const ctx: PlaybookContext = {
           serverId: result.event.serverId,
           serverName,
@@ -189,6 +202,7 @@ export class EventCollectorWorker {
           logger.error({ err, playbook: playbook.name }, 'Auto-triggered playbook failed');
         }
 
+        this.recentlyTriggered.set(dedupKey, now);
         logger.info({ playbook: playbook.name, ip: result.event.sourceIp, incident: result.incidentId }, 'Playbook auto-triggered');
       }
 

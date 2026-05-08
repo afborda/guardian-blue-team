@@ -10,24 +10,22 @@ import { rateLimit, removeRateLimit } from './actions/rate-limit.js';
 const PLAYBOOKS: PlaybookDefinition[] = [
   {
     name: 'ssh-brute-force',
-    description: 'Responds to SSH brute force attacks — enriches IP, blocks if malicious or repeat, notifies',
+    description: 'Responds to SSH brute force attacks — enriches IP, blocks permanently, notifies',
     trigger: { eventType: 'ssh_brute_force', threshold: 10, window: '5m' },
     steps: [
       { action: 'enrich-ip' },
-      { action: 'check-repeat' },
-      { action: 'block-ip', params: { duration: 'permanent' }, condition: 'score > 50 OR repeatCount > 1' },
+      { action: 'block-ip', params: { duration: 'permanent' } },
       { action: 'notify', params: { severity: 'high' } },
     ],
     requiresApproval: false,
   },
   {
     name: 'port-scan-response',
-    description: 'Responds to port scans — enriches IP, checks repeat offenses, blocks if risky or persistent',
+    description: 'Responds to port scans — enriches IP, blocks permanently, notifies',
     trigger: { eventType: 'port_scan', threshold: 5, window: '10m' },
     steps: [
       { action: 'enrich-ip' },
-      { action: 'check-repeat' },
-      { action: 'block-ip', params: { duration: 'permanent' }, condition: 'score > 50 OR repeatCount > 2' },
+      { action: 'block-ip', params: { duration: 'permanent' } },
       { action: 'notify', params: { severity: 'medium' } },
     ],
     requiresApproval: false,
@@ -68,12 +66,11 @@ const PLAYBOOKS: PlaybookDefinition[] = [
   },
   {
     name: 'connection-flood-response',
-    description: 'Responds to high connection floods — enriches IP, blocks if suspicious',
+    description: 'Responds to high connection floods — enriches IP, blocks permanently',
     trigger: { eventType: 'connection_flood' },
     steps: [
       { action: 'enrich-ip' },
-      { action: 'check-repeat' },
-      { action: 'block-ip', params: { duration: 'permanent' }, condition: 'score > 30 OR repeatCount > 1' },
+      { action: 'block-ip', params: { duration: 'permanent' } },
       { action: 'notify', params: { severity: 'high' } },
     ],
     requiresApproval: false,

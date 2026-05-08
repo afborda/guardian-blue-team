@@ -9,6 +9,7 @@ export interface CorrelationResult {
   event: NormalizedEvent;
   incidentId: number | null;
   isNewIncident: boolean;
+  incidentCategory?: string;
 }
 
 const CORRELATION_WINDOW_MS = CONSTANTS.correlation.windowMs;
@@ -34,29 +35,34 @@ export class EventCorrelator {
         event,
         incidentId: incident?.id ?? null,
         isNewIncident: incident?.isNew ?? false,
+        incidentCategory: incident?.category,
       });
     }
 
     return results;
   }
 
-  private static async findOrCreateIncident(event: NormalizedEvent): Promise<{ id: number; isNew: boolean } | null> {
+  private static async findOrCreateIncident(event: NormalizedEvent): Promise<{ id: number; isNew: boolean; category: string } | null> {
     if (event.severity === 'info') return null;
 
     if (event.eventType === 'ssh_failed_password' || event.eventType === 'ssh_invalid_user') {
-      return this.correlateBruteForce(event);
+      const r = await this.correlateBruteForce(event);
+      return r ? { ...r, category: 'brute_force' } : null;
     }
 
     if (event.eventType === 'firewall_block') {
-      return this.correlatePortScan(event);
+      const r = await this.correlatePortScan(event);
+      return r ? { ...r, category: 'port_scan' } : null;
     }
 
     if (event.eventType === 'unauthorized_login' || event.eventType === 'password_login' || event.eventType === 'lateral_movement') {
-      return this.correlateUnauthorizedAccess(event);
+      const r = await this.correlateUnauthorizedAccess(event);
+      return r ? { ...r, category: 'unauthorized_access' } : null;
     }
 
     if (event.eventType === 'syn_flood' || event.eventType === 'connection_rate_spike' || event.eventType === 'bandwidth_spike') {
-      return this.correlateDDoS(event);
+      const r = await this.correlateDDoS(event);
+      return r ? { ...r, category: 'ddos' } : null;
     }
 
     return null;

@@ -122,7 +122,11 @@ export class EventCollectorWorker {
     const serverCache = new Map<number, string>();
 
     for (const result of results) {
-      const matchingPlaybooks = PlaybookRegistry.getByTrigger(result.event.eventType);
+      // Match playbooks by event type OR incident category (port_scan incidents come from firewall_block events)
+      const matchingPlaybooks = [
+        ...PlaybookRegistry.getByTrigger(result.event.eventType),
+        ...(result.incidentCategory ? PlaybookRegistry.getByTrigger(result.incidentCategory) : []),
+      ].filter((p, i, arr) => arr.findIndex(x => x.name === p.name) === i);
 
       let serverName = serverCache.get(result.event.serverId);
       if (!serverName) {

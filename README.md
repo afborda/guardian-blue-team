@@ -6,18 +6,65 @@
   <a href="https://github.com/afborda/guardian-blue-team/actions/workflows/ci.yml"><img src="https://github.com/afborda/guardian-blue-team/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License: AGPL-3.0"></a>
   <a href="https://ghcr.io/afborda/guardian-blue-team"><img src="https://img.shields.io/badge/Docker-ghcr.io-blue" alt="Docker"></a>
-  <img src="https://img.shields.io/badge/version-1.6.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.0.0-blue" alt="Version">
 </p>
 
 <p align="center">
+  <b>Agentless SIEM/SOAR with Local AI</b> — Detect, Analyze, Block, Learn<br>
   <a href="README.pt-BR.md"><strong>Portugues</strong></a> · <a href="docs/getting-started.md">Getting Started</a> · <a href="docs/architecture.md">Architecture</a> · <a href="docs/configuration.md">Configuration</a>
 </p>
 
 ---
 
-**Guardian** is an agentless SIEM/SOAR that monitors your servers via SSH, detects threats in real-time, and responds automatically. No agents to install, no complex setup — just point it at your servers and it starts protecting them.
+**Guardian** is an agentless SIEM/SOAR that monitors your servers via SSH, detects threats in real-time, and responds automatically with permanent blocks. No agents to install, no complex setup — just point it at your servers and it starts protecting them.
 
-It learns from every incident, builds behavioral baselines for users and containers, and improves its detection accuracy over time — all running locally on a single machine.
+It uses local AI (Ollama) for threat analysis, builds semantic memory from every incident (RAG with embeddings), hunts threats proactively every 4 hours, and provides graduated DDoS response with automatic escalation.
+
+---
+
+## How It Works
+
+```mermaid
+flowchart LR
+    subgraph Collection["🛰️ Collection (every 2min)"]
+        SSH[SSH Logs]
+        UFW[Firewall/UFW]
+        NET[Network Stats]
+        PROC[Processes]
+        DOCKER[Docker Events]
+        AUDIT[Audit/Syslog]
+    end
+
+    subgraph Pipeline["⚙️ Processing Pipeline"]
+        NORM[Normalize]
+        DETECT[Detect Rules]
+        ENRICH[Enrich\nGeo + Threat Intel]
+        CORRELATE[Correlate\nIncidents]
+    end
+
+    subgraph AI["🧠 AI Layer"]
+        ADVISOR[Block Advisor\nblock / rate-limit / monitor]
+        HUNTER[Threat Hunter\nProactive 4h scan]
+        RAG[RAG Memory\nEmbeddings + History]
+    end
+
+    subgraph Response["⚡ Automated Response"]
+        BLOCK[Permanent Block\nUFW / fail2ban]
+        RATE[Rate Limit\niptables]
+        ESCALATE[Escalate\nrate-limit → block]
+        NOTIFY[Telegram Alert]
+    end
+
+    Collection --> NORM --> DETECT --> ENRICH --> CORRELATE
+    CORRELATE --> ADVISOR
+    ADVISOR -->|"block"| BLOCK
+    ADVISOR -->|"rate_limit"| RATE
+    ADVISOR -->|"monitor"| NOTIFY
+    RATE -->|"attack continues"| ESCALATE --> BLOCK
+    HUNTER --> RAG
+    CORRELATE --> NOTIFY
+    BLOCK --> NOTIFY
+```
 
 ---
 
@@ -27,10 +74,164 @@ It learns from every incident, builds behavioral baselines for users and contain
 |-|----------|----------|-------|:------------:|
 | Setup | 5 min | 30 min | 2+ hours | **30 seconds** |
 | Agents on targets | Yes | Yes | Yes | **No** |
-| AI analysis | — | — | — | **Local-first** |
-| Learns from incidents | — | — | — | **Yes (RAG)** |
+| AI-powered decisions | — | — | — | **Local-first** |
+| Learns from incidents | — | — | — | **RAG + Embeddings** |
+| DDoS detection | — | Partial | — | **SYN/Rate/Bandwidth** |
+| Proactive threat hunting | — | — | — | **Every 4 hours** |
 | Behavioral ML | — | — | — | **Yes** |
 | Mobile-first alerts | — | — | — | **Telegram** |
+| Blocks are permanent | Config | Config | — | **Always** |
+
+---
+
+## Architecture Overview
+
+```mermaid
+graph TB
+    subgraph Servers["Monitored Servers (SSH)"]
+        S1[Server A]
+        S2[Server B]
+        S3[Server C]
+    end
+
+    subgraph Guardian["Guardian (Docker)"]
+        COLLECT[Collectors\n12 types]
+        PIPE[Pipeline\nNormalize → Detect → Enrich → Correlate]
+        ENGINE[Playbook Engine\n15+ automated playbooks]
+        AI_LAYER[AI Layer\nOllama qwen3 + nomic-embed-text]
+        DB[(PostgreSQL\nEvents, Incidents, Blocks, Memory)]
+        WORKERS[Workers\n12 background processes]
+    end
+
+    subgraph External["Integrations"]
+        TG[Telegram Bot\n30+ commands]
+        DASH[Web Dashboard\n12 pages]
+        INTEL[Threat Intel\nAbuseIPDB + VirusTotal]
+    end
+
+    S1 & S2 & S3 -->|"SSH (read-only)"| COLLECT
+    COLLECT --> PIPE --> ENGINE
+    ENGINE -->|"block/rate-limit"| S1 & S2 & S3
+    PIPE --> DB
+    AI_LAYER --> ENGINE
+    AI_LAYER --> DB
+    WORKERS --> PIPE
+    Guardian --> TG & DASH
+    INTEL --> PIPE
+```
+
+---
+
+## Key Features (v2.0)
+
+### Permanent Blocking — Once Blocked, Always Blocked
+
+Every detected threat is permanently blocked across all servers. No TTL, no auto-unblock. Unblocking is manual only (via dashboard or `/unblock` command).
+
+```mermaid
+flowchart LR
+    THREAT[Threat Detected] --> BLOCK[Permanent Block]
+    BLOCK --> VERIFY{Verify in\nfirewall}
+    VERIFY -->|confirmed| DB[(Record in DB\nverified: true)]
+    VERIFY -->|failed| RETRY[Retry via\nalternative method]
+    RETRY --> DB
+```
+
+### DDoS Detection & Graduated Response
+
+```mermaid
+flowchart TD
+    ATTACK[DDoS Attack] --> DETECT_SYN{SYN Flood?\n>50 SYN_RECV}
+    ATTACK --> DETECT_RATE{Connection Rate?\n>100/sec}
+    ATTACK --> DETECT_BW{Bandwidth?\n>3σ from baseline}
+    
+    DETECT_SYN & DETECT_RATE & DETECT_BW -->|yes| RATE_LIMIT[Rate Limit\n10 req/sec, burst 20]
+    RATE_LIMIT --> WATCH{Still attacking?\n2min check}
+    WATCH -->|yes| PERMANENT[Permanent Block\n+ Telegram Alert]
+    WATCH -->|no| KEEP[Keep Rate Limit]
+```
+
+### AI-Powered Decision Making
+
+```mermaid
+flowchart LR
+    EVENT[Security Event] --> ADVISOR[AI Block Advisor]
+    ADVISOR --> HISTORY[Query RAG Memory\nSemantic search]
+    ADVISOR --> INTEL[Check Threat Intel]
+    HISTORY & INTEL --> DECISION{AI Decision\n+ confidence %}
+    DECISION -->|"≥70% block"| BLOCK[Block Permanent]
+    DECISION -->|"≥70% rate_limit"| RATE[Rate Limit]
+    DECISION -->|"≥70% monitor"| MONITOR[Monitor Only]
+    DECISION -->|"<70% confidence"| DEFAULT[Rule-Based Default\n= Block]
+```
+
+### Proactive Threat Hunting
+
+Every 4 hours, Guardian's AI analyzes the last 6 hours of events looking for:
+- Coordinated attacks from multiple IPs
+- Slow-roll APT patterns
+- Active reconnaissance/scanning
+- Lateral movement indicators
+- Unusual activity patterns
+
+Findings are stored in `threat_hunt_findings` and high/critical ones are sent to Telegram immediately.
+
+### Login Verification with IP Intelligence
+
+When an SSH login is detected, Guardian sends a Telegram notification with:
+- Server, user, auth method, fingerprint
+- **IP geolocation** (country, ISP)
+- **Reputation score** (AbuseIPDB + VirusTotal)
+- Risk level (Clean / Suspicious / High Risk)
+- One-tap buttons: ✅ It's me | ❌ Not me | 👁️ Monitor
+
+### RAG — Learns from Every Incident
+
+```mermaid
+flowchart LR
+    INCIDENT[New Incident] --> EMBED[Generate Embedding\nnomic-embed-text]
+    EMBED --> STORE[(Vector Store\nPostgreSQL)]
+    
+    NEXT[Next Similar\nIncident] --> SEARCH[Semantic Search\nCosine Similarity]
+    STORE --> SEARCH
+    SEARCH --> CONTEXT[Historical Context\nPast resolutions, outcomes]
+    CONTEXT --> AI[AI uses history\nfor better decisions]
+```
+
+---
+
+## What It Protects Against
+
+| Category | Threats | Response |
+|----------|---------|----------|
+| **SSH** | Brute force, invalid users, unauthorized logins, unusual hours, lateral movement | Permanent block |
+| **DDoS** | SYN flood, connection rate spike, bandwidth anomaly | Rate-limit → Escalate → Block |
+| **Network** | Port scanning, DNS DGA (C2), suspicious TLDs, connection flood | Permanent block |
+| **Containers** | Escape attempts, crypto mining, crashloops, resource abuse | Kill + block + isolate |
+| **File Integrity** | /etc/passwd, sudoers, sshd_config, authorized_keys tampering | Critical alert |
+| **Supply Chain** | CVE on installed packages (OSV.dev) | Alert + remediation steps |
+| **Persistence** | Malicious cron jobs, reverse shells, unauthorized SSH keys | Alert + block |
+
+15+ detection rules, 15+ automated playbooks.
+
+---
+
+## Workers (Background Processes)
+
+| Worker | Interval | Purpose |
+|--------|----------|---------|
+| Event Collector | 2 min | Collects logs from all servers, runs pipeline |
+| DDoS Escalation | 2 min | Checks rate-limited IPs, escalates to block |
+| Score Calculator | 5 min (metrics), 1h (scores) | Health + security scores |
+| Threat Hunter | 4 hours | Proactive AI analysis of patterns |
+| Intelligence | 1 hour | ML behavioral profiling |
+| FIM | 4 hours | File integrity monitoring |
+| CVE Monitor | 6 hours | Vulnerability scanning |
+| Block Cleanup | 5 min | Ensures all blocks are permanent |
+| Daily Report | 08:00 BRT | Summary to Telegram |
+| Metrics Retention | 24 hours | Deletes data older than 30 days |
+| Discovery | 24 hours | Auto-discovers new services |
+| Vuln Scanner | Weekly (Sat 09:00) | Deep vulnerability scan |
 
 ---
 
@@ -38,59 +239,19 @@ It learns from every incident, builds behavioral baselines for users and contain
 
 | Component | RAM | Disk | CPU |
 |-----------|-----|------|-----|
-| Guardian (app) | 50-100MB | 200MB | 0.5 core |
-| PostgreSQL | 64-256MB | 500MB-2GB | 0.2 core |
-| Ollama (optional, local AI) | 4-6GB | 3GB | 2 cores (peak) |
-| **Total without local AI** | **~300MB** | **~2GB** | **1 core** |
-| **Total with local AI** | **~6GB** | **~5GB** | **2 cores** |
+| Guardian (app) | 50-100 MB | 200 MB | 0.5 core |
+| PostgreSQL | 64-256 MB | 500 MB-2 GB | 0.2 core |
+| Ollama (local AI) | 4-6 GB | 3 GB | 2 cores (peak) |
+| **Total without AI** | **~300 MB** | **~2 GB** | **1 core** |
+| **Total with AI** | **~6 GB** | **~5 GB** | **2 cores** |
 
-No local AI? Just set `GEMINI_API_KEY` — Google's free tier handles it.
-
----
-
-## What It Protects Against
-
-- **SSH**: brute force, unauthorized logins, lateral movement, unusual hours
-- **Containers**: escape attempts, crashloops, crypto mining, resource abuse
-- **File Integrity**: /etc/passwd, sudoers, sshd_config, authorized_keys tampering
-- **Network**: port scanning, DNS DGA (C2 detection), suspicious TLDs
-- **Supply Chain**: CVE monitoring on installed packages (OSV.dev)
-- **Persistence**: malicious cron jobs, reverse shells, unauthorized SSH keys
-
-15+ detection rules, 15 automated playbooks. [Full details →](docs/security-features.md)
-
----
-
-## Why ML and RAG?
-
-**ML Behavioral Baselines** — Guardian learns what "normal" looks like for each SSH user (login hours, IPs, keys) and each container (CPU, memory, restarts). When something deviates, it scores the anomaly 0-1 instead of firing a binary alert. Result: ~50% fewer false positives after 7 days.
-
-**RAG Incident Memory** — Every resolved incident is stored. Next time something similar happens, Guardian tells the AI: "Last time this IP attacked, we blocked for 24h and it came back. Recommend permanent block." It gets smarter every week without manual training.
-
-- Detection latency: ~2 minutes
-- Automated response: ~5 seconds (playbook execution)
-- Zero external dependencies for ML (pure TypeScript statistics)
-
-[ML details →](docs/ml-intelligence.md) · [RAG details →](docs/rag-memory.md)
+No local AI? Set `GEMINI_API_KEY` — Google's free tier works. Or set `AI_STRATEGY=api-only`.
 
 ---
 
 ## Quick Start (5 minutes)
 
-> **One clone, one `.env`, one `docker compose up`. That's it.**
-> All database tables, AI models, and workers start automatically.
-
-### Prerequisites
-
-| Data | How to get it | Required? |
-|------|--------------|:---------:|
-| Telegram Bot Token | [@BotFather](https://t.me/BotFather) → `/newbot` | Yes |
-| Telegram Chat ID | Send anything to [@userinfobot](https://t.me/userinfobot) | Yes |
-| Public domain (HTTPS) | DNS pointing to your server + Traefik/nginx | Yes |
-| SSH access to targets | Key-based auth to the servers you want to monitor | Yes |
-| AI API key | [aistudio.google.com](https://aistudio.google.com/) (free) or skip (Ollama runs locally) | No |
-
-### Step 1: Clone & Configure
+### 1. Clone & Configure
 
 ```bash
 git clone https://github.com/afborda/guardian-blue-team.git
@@ -98,7 +259,7 @@ cd guardian-blue-team
 cp .env.example .env
 ```
 
-Edit `.env` — fill **only these values**:
+Edit `.env`:
 
 ```env
 TELEGRAM_BOT_TOKEN=your_token_from_botfather
@@ -107,109 +268,179 @@ GUARDIAN_BASE_URL=https://guardian.yourdomain.com
 GUARDIAN_DB_PASSWORD=strong_password_here
 DASHBOARD_TOKEN=random_string_for_web_access
 
-# Optional but recommended:
-GEMINI_API_KEY=your_free_google_ai_key
-ABUSEIPDB_API_KEY=your_free_abuseipdb_key
+# AI (choose one or both):
+GEMINI_API_KEY=your_free_google_ai_key    # API fallback
+AI_STRATEGY=auto                           # auto | local-only | api-only
+
+# Threat Intel (optional but recommended):
+ABUSEIPDB_API_KEY=your_free_key
 ```
 
-### Step 2: Start
+### 2. Start
 
 ```bash
 docker compose up -d
 ```
 
-That's it. Wait 2-3 minutes for Ollama to download AI models on first run.
+Wait 2-3 minutes for Ollama to pull AI models (`qwen3:4b` + `nomic-embed-text`).
 
-### Step 3: Verify & Add Servers
+### 3. Add Servers
 
-Send `/help` to your bot on Telegram. If it responds, Guardian is running.
+Send `/help` to your Telegram bot. Then:
 
 ```
 /add-server myserver 1.2.3.4 22 root
 ```
 
-Guardian will:
-1. Generate an SSH key if needed
-2. Show you the public key to add to the target's `~/.ssh/authorized_keys`
-3. Start collecting events, metrics, and building ML profiles automatically
+Guardian generates an SSH key, shows you the public key to add to the target, and starts monitoring immediately.
 
-Within 5 minutes you'll see:
+### What Happens Automatically
+
+```mermaid
+gantt
+    title Guardian Startup Timeline
+    dateFormat X
+    axisFormat %s
+
+    section Immediate
+    Health check : 0, 5
+    Telegram webhook : 0, 3
+    
+    section 30 seconds
+    Event collection : 10, 30
+    Metrics collection : 10, 30
+    
+    section 5 minutes
+    First threat hunt : 300, 360
+    Score calculation : 300, 360
+    
+    section Ongoing
+    Collection every 2min : 120, 900
+    DDoS check every 2min : 120, 900
+    AI hunting every 4h : 600, 900
 ```
-/status     → server metrics and health
-/events     → security events being collected
-/scores     → security scores (calculated after 1h)
-```
-
-### What happens automatically after start
-
-| System | Interval | First Run |
-|--------|----------|-----------|
-| Event collection (SSH/Docker/UFW) | 2 min | 30s after start |
-| Metrics (CPU/RAM/Disk) | 5 min | 30s after start |
-| ML behavioral profiling | 1 hour | 10 min after start |
-| Security scores | 1 hour | 5 min after start |
-| File integrity monitoring (FIM) | 4 hours | 4h after start |
-| CVE vulnerability scanner | 6 hours | 6h after start |
-| Daily Telegram report | 08:00 BRT | Next day |
-
-### SSH Key Setup (for target servers)
-
-Guardian connects to your servers **via SSH** — no agents needed. The target server only needs:
-
-1. SSH accessible (any port)
-2. User with read access to logs (`/var/log/auth.log`, `journalctl`)
-3. Guardian's public key in `~/.ssh/authorized_keys`
-
-```bash
-# Get Guardian's public key (run after first start):
-docker exec guardian cat /home/node/.ssh/id_ed25519.pub
-
-# Add it to your target server:
-ssh user@target "echo 'PASTE_KEY_HERE' >> ~/.ssh/authorized_keys"
-```
-
-> **Tip:** If your server uses fail2ban with nftables, add Guardian's container subnet to the ignore list:
-> ```bash
-> # On the TARGET server, in /etc/fail2ban/jail.local:
-> [DEFAULT]
-> ignoreip = 127.0.0.1/8 ::1 172.16.0.0/12
-> ```
-
-### Accessing the Dashboard
-
-```
-https://your-domain/dashboard?token=YOUR_DASHBOARD_TOKEN
-```
-
-12 pages: Overview · Fleet Health · Scores · Incidents · Servers · CVE · Blocks · Logs · Timeline · Attack Map · APIs · Intelligence
-
-[Full installation guide with troubleshooting →](docs/getting-started.md)
 
 ---
 
-## Telegram (30+ commands)
+## Telegram Bot — 30+ Commands
+
+### Incident Response (Action Buttons)
+
+Every incident comes with inline buttons:
+
+| Button | Action |
+|--------|--------|
+| ✅ Resolver | Mark as handled |
+| 🚫 Falso Positivo | Dismiss + Guardian learns (RAG) |
+| 🔒 Bloquear IP | Permanent firewall block |
+| 🔍 Threat Intel | IP reputation + AI recommendation |
+
+### Key Commands
 
 | Command | What it does |
 |---------|-------------|
 | `/status` | All servers at a glance |
-| `/block <ip>` | Block IP immediately via UFW |
-| `/ask <question>` | AI-powered natural language query |
+| `/incidents` | Open incidents with action buttons |
+| `/threat 1.2.3.4` | IP reputation + geo + recommendation |
+| `/block 1.2.3.4` | Permanent block on all servers |
+| `/unblock 1.2.3.4` | Remove block (manual only) |
+| `/verify-blocks` | Check all blocks exist in firewalls |
+| `/ask any question` | AI analyst answers in context |
 | `/events` | Recent security events |
-| `/memory` | Incident memory stats (RAG) |
-
-[All 30+ commands with examples →](docs/telegram-commands.md)
+| `/scores` | Security scores per server |
+| `/report` | Security report |
+| `/vulns` | CVE vulnerabilities |
+| `/dashboard` | Temporary access token |
+| `/help` | All commands |
 
 ---
 
 ## Dashboard
 
-12-page web dashboard at `https://your-domain/dashboard?token=TOKEN`
+12-page web dashboard:
 
-Overview · Fleet Health · Scores · Incidents · Servers · CVE · Blocks · Logs · Timeline · Attack Map · API Status · **Intelligence**
+**Overview** · **Fleet Health** · **Scores** · **Incidents** · **Servers** · **CVE** · **Blocks** · **Logs** · **Timeline** · **Attack Map** · **API Status** · **Intelligence**
 
-The Intelligence page shows ML training status, RAG memory, data freshness, and has a "Recalculate Now" button to force-update all systems.
+Access: `https://your-domain/dashboard?token=TOKEN`
 
-[Dashboard details →](docs/dashboard.md)
+---
+
+## AI Strategy Configuration
+
+Guardian supports three AI modes via `AI_STRATEGY`:
+
+| Mode | Behavior |
+|------|----------|
+| `auto` (default) | Ollama first → Gemini → OpenAI → Claude |
+| `local-only` | Only Ollama (fully offline, no data leaves your server) |
+| `api-only` | Only cloud APIs (when you don't have GPU for Ollama) |
+
+AI is used for:
+- Block decisions (AI Block Advisor)
+- Proactive threat hunting (4-hourly)
+- Incident analysis (`/ask` command)
+- Daily reports
+- Login verification context
+
+If AI is completely unavailable, Guardian falls back to rule-based defaults (always blocks).
+
+---
+
+## Data Flow — End to End
+
+```mermaid
+sequenceDiagram
+    participant S as Servers (SSH)
+    participant C as Collectors
+    participant P as Pipeline
+    participant AI as AI Layer
+    participant DB as PostgreSQL
+    participant T as Telegram
+    participant FW as Firewall
+
+    loop Every 2 minutes
+        C->>S: SSH commands (read-only)
+        S-->>C: Logs, metrics, network state
+        C->>P: Raw events
+        P->>P: Normalize → Detect → Enrich (GeoIP)
+        P->>DB: Store events
+        P->>P: Correlate → Create incidents
+        
+        alt New incident detected
+            P->>AI: Should we block this IP?
+            AI->>DB: Query RAG memory (similar incidents)
+            AI-->>P: Decision (block/rate-limit/monitor)
+            P->>FW: Apply firewall rule
+            FW-->>DB: Record block (verified)
+            P->>T: Alert notification
+        end
+    end
+
+    loop Every 4 hours
+        AI->>DB: Query last 6h of events
+        AI->>AI: Pattern analysis
+        alt Findings
+            AI->>T: Threat hunt alert
+            AI->>DB: Store findings
+        end
+    end
+```
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Runtime | Node.js 20 + TypeScript |
+| Database | PostgreSQL 16 |
+| AI (local) | Ollama + qwen3:4b + nomic-embed-text |
+| AI (cloud) | Gemini / OpenAI / Claude (failover) |
+| Firewall | UFW + fail2ban + iptables |
+| Alerts | Telegram Bot API |
+| Monitoring | SSH (agentless) |
+| Container | Docker + Docker Compose |
+| Reverse Proxy | Traefik (HTTPS) |
 
 ---
 
@@ -217,14 +448,14 @@ The Intelligence page shows ML training status, RAG memory, data freshness, and 
 
 | Doc | Description |
 |-----|-------------|
-| [Getting Started](docs/getting-started.md) | Requirements, step-by-step install, troubleshooting |
-| [Architecture](docs/architecture.md) | Pipeline diagrams, folder structure, data flow |
-| [Configuration](docs/configuration.md) | All environment variables with examples |
-| [Security Features](docs/security-features.md) | Detection rules, playbooks, CVE monitoring |
-| [ML Intelligence](docs/ml-intelligence.md) | Behavioral baselines, scoring, resource usage |
-| [RAG Memory](docs/rag-memory.md) | How Guardian learns from past incidents |
-| [Telegram Commands](docs/telegram-commands.md) | All commands with usage examples |
-| [Dashboard](docs/dashboard.md) | Pages, access, technical stack |
+| [Getting Started](docs/getting-started.md) | Requirements, install, troubleshooting |
+| [Architecture](docs/architecture.md) | Pipeline diagrams, folder structure |
+| [Configuration](docs/configuration.md) | All environment variables |
+| [Security Features](docs/security-features.md) | Detection rules, playbooks |
+| [ML Intelligence](docs/ml-intelligence.md) | Behavioral baselines, scoring |
+| [RAG Memory](docs/rag-memory.md) | How Guardian learns from incidents |
+| [Telegram Commands](docs/telegram-commands.md) | All commands with examples |
+| [Dashboard](docs/dashboard.md) | Pages, access, features |
 
 ---
 

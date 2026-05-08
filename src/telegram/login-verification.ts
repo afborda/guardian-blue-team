@@ -1,5 +1,6 @@
 import { config } from '../config/environment.js';
 import { addTrustedIp, addTrustedFingerprint } from '../pipeline/detector.js';
+import { ThreatIntelManager } from '../threat-intel/manager.js';
 import { db, dbNow } from '../database/connection.js';
 import { socIncidents } from '../database/schema.js';
 import { eq } from 'drizzle-orm';
@@ -17,6 +18,7 @@ interface PendingVerification {
 }
 
 const pendingVerifications = new Map<string, PendingVerification>();
+const processedCallbacks = new Set<string>();
 
 export function requestLoginVerification(data: {
   incidentId: number;
@@ -39,39 +41,87 @@ export function requestLoginVerification(data: {
 
   const methodLabel = data.authMethod === 'publickey' ? '🔑 Chave pública' : '🔓 Senha';
 
-  const lines = [
-    `🔐 <b>Login SSH — Verificação</b>`,
-    ``,
-    `🖥️ Servidor: <b>${data.serverName}</b>`,
-    `👤 Usuário: <code>${data.userName}</code>`,
-    `🌐 IP: <code>${data.sourceIp}</code>`,
-    `${methodLabel}`,
-  ];
+  // Enrich IP in background and send message with geo/reputation
+  ThreatIntelManager.lookupIP(data.sourceIp).then(report => {
+    const lines = [
+      `🔐 <b>Login SSH — Verificação</b>`,
+      ``,
+      `🖥️ Servidor: <b>${data.serverName}</b>`,
+      `👤 Usuário: <code>${data.userName}</code>`,
+      `🌐 IP: <code>${data.sourceIp}</code>`,
+      `${methodLabel}`,
+    ];
 
-  if (data.fingerprint) {
-    lines.push(`🔏 <code>${data.fingerprint}</code>`);
-  }
+    if (report) {
+      const riskLabel = report.score >= 80 ? '🔴 ALTO RISCO' : report.score >= 40 ? '🟡 Suspeito' : '🟢 Limpo';
+      lines.push(``);
+      lines.push(`📍 <b>${report.country}</b> | ${report.isp}`);
+      lines.push(`⚠️ Reputação: ${riskLabel} (${report.score}/100, ${report.totalReports} reports)`);
+      if (report.usageType && report.usageType !== 'unknown') {
+        lines.push(`🏷️ Tipo: ${report.usageType}`);
+      }
+    }
 
-  lines.push(`🕐 ${brtTime} BRT`, ``, `<b>Foi você?</b>`);
+    if (data.fingerprint) {
+      lines.push(`🔏 <code>${data.fingerprint}</code>`);
+    }
 
-  const keyboard = {
-    inline_keyboard: [[
-      { text: '✅ Sou eu', callback_data: `login_yes_${verificationId}` },
-      { text: '❌ NÃO sou eu', callback_data: `login_no_${verificationId}` },
-      { text: '👁️ Monitorar', callback_data: `login_watch_${verificationId}` },
-    ]],
-  };
+    lines.push(`🕐 ${brtTime} BRT`, ``, `<b>Foi você?</b>`);
 
-  fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: config.telegram.chatId,
-      text: lines.join('\n'),
-      parse_mode: 'HTML',
-      reply_markup: keyboard,
-    }),
-  }).catch(err => logger.error({ err }, 'Failed to send login verification'));
+    const keyboard = {
+      inline_keyboard: [[
+        { text: '✅ Sou eu', callback_data: `login_yes_${verificationId}` },
+        { text: '❌ NÃO sou eu', callback_data: `login_no_${verificationId}` },
+        { text: '👁️ Monitorar', callback_data: `login_watch_${verificationId}` },
+      ]],
+    };
+
+    fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: config.telegram.chatId,
+        text: lines.join('\n'),
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      }),
+    }).catch(err => logger.error({ err }, 'Failed to send login verification'));
+  }).catch(() => {
+    // Fallback: send without enrichment
+    const lines = [
+      `🔐 <b>Login SSH — Verificação</b>`,
+      ``,
+      `🖥️ Servidor: <b>${data.serverName}</b>`,
+      `👤 Usuário: <code>${data.userName}</code>`,
+      `🌐 IP: <code>${data.sourceIp}</code>`,
+      `${methodLabel}`,
+    ];
+
+    if (data.fingerprint) {
+      lines.push(`🔏 <code>${data.fingerprint}</code>`);
+    }
+
+    lines.push(`🕐 ${brtTime} BRT`, ``, `<b>Foi você?</b>`);
+
+    const keyboard = {
+      inline_keyboard: [[
+        { text: '✅ Sou eu', callback_data: `login_yes_${verificationId}` },
+        { text: '❌ NÃO sou eu', callback_data: `login_no_${verificationId}` },
+        { text: '👁️ Monitorar', callback_data: `login_watch_${verificationId}` },
+      ]],
+    };
+
+    fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: config.telegram.chatId,
+        text: lines.join('\n'),
+        parse_mode: 'HTML',
+        reply_markup: keyboard,
+      }),
+    }).catch(err => logger.error({ err }, 'Failed to send login verification'));
+  });
 
   setTimeout(() => {
     pendingVerifications.delete(verificationId);
@@ -87,6 +137,15 @@ export async function handleLoginVerification(
     from?: { first_name?: string };
   },
 ): Promise<void> {
+  // Prevent duplicate processing (Telegram can send same callback multiple times)
+  const callbackKey = `${verificationId}:${action}`;
+  if (processedCallbacks.has(callbackKey)) {
+    await answerCallback(callbackQuery.id, 'Já processado');
+    return;
+  }
+  processedCallbacks.add(callbackKey);
+  setTimeout(() => processedCallbacks.delete(callbackKey), 5 * 60_000);
+
   const pending = pendingVerifications.get(verificationId);
 
   const labels: Record<string, string> = { yes: 'Confirmado!', no: 'Escalado!', watch: 'Monitorando' };
@@ -97,6 +156,7 @@ export async function handleLoginVerification(
     return;
   }
 
+  // Delete BEFORE processing to prevent race conditions
   pendingVerifications.delete(verificationId);
   const operator = callbackQuery.from?.first_name ?? 'unknown';
 
@@ -156,6 +216,7 @@ async function answerCallback(callbackId: string, text: string): Promise<void> {
 async function editMessage(message: { message_id: number; chat: { id: number } } | undefined, text: string): Promise<void> {
   if (!message) return;
   try {
+    // Remove inline keyboard (buttons) when editing to prevent further clicks
     await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/editMessageText`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -164,6 +225,7 @@ async function editMessage(message: { message_id: number; chat: { id: number } }
         message_id: message.message_id,
         text,
         parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: [] },
       }),
     });
   } catch (err) {

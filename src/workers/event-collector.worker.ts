@@ -21,7 +21,7 @@ import { blockIP } from '../playbooks/actions/block-ip.js';
 import { requestPlaybookApproval } from '../telegram/callbacks.js';
 import { addWebPendingApproval } from '../dashboard/routes.js';
 import { requestLoginVerification } from '../telegram/login-verification.js';
-import { db, dbTrue } from '../database/connection.js';
+import { db, dbTrue, dbNow } from '../database/connection.js';
 import { socIncidents, blockedIps } from '../database/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { config } from '../config/environment.js';
@@ -139,8 +139,9 @@ export class EventCollectorWorker {
         const ips = (incident.sourceIps ?? []) as string[];
         if (ips.length === 0) continue;
 
+        let allBlocked = true;
+
         for (const ip of ips) {
-          // Check if already blocked on all affected servers
           const affectedServerIds = (incident.affectedServers ?? []) as number[];
           for (const serverId of affectedServerIds) {
             const existing = await db.select({ id: blockedIps.id }).from(blockedIps)
@@ -154,7 +155,7 @@ export class EventCollectorWorker {
             if (existing) continue;
 
             const server = servers.find(s => s.id === serverId);
-            if (!server) continue;
+            if (!server) { allBlocked = false; continue; }
 
             const ctx: PlaybookContext = {
               serverId,
@@ -168,8 +169,17 @@ export class EventCollectorWorker {
             const result = await blockIP(ctx, { duration: 'permanent' });
             if (result.success && !result.message.includes('already blocked')) {
               logger.info({ ip, server: server.name, incidentId: incident.id }, 'Auto-enforced block for open incident');
+            } else if (!result.success) {
+              allBlocked = false;
             }
           }
+        }
+
+        if (allBlocked) {
+          await db.update(socIncidents)
+            .set({ status: 'resolved', resolvedAt: dbNow() })
+            .where(eq(socIncidents.id, incident.id));
+          logger.info({ incidentId: incident.id, ips }, 'Incident auto-resolved — all IPs blocked');
         }
       }
     } catch (err) {
@@ -222,9 +232,10 @@ export class EventCollectorWorker {
           continue;
         }
 
-        // Consult AI before auto-executing blocking playbooks
+        // Consult AI before auto-executing blocking playbooks (skip for clear-cut threats)
         const hasBlockAction = playbook.steps.some(s => s.action === 'block-ip');
-        if (hasBlockAction && result.event.sourceIp) {
+        const alwaysBlock = ['port_scan', 'brute_force', 'ddos', 'crypto_mining', 'lateral_movement'].includes(result.incidentCategory ?? '');
+        if (hasBlockAction && result.event.sourceIp && !alwaysBlock) {
           try {
             const recommendation = await AIBlockAdvisor.getRecommendation(ctx, {
               eventType: result.event.eventType,

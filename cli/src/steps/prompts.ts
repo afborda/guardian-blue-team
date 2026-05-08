@@ -26,7 +26,7 @@ export async function collectConfig(info: SystemInfo): Promise<UserConfig> {
       telegramChatId: () =>
         p.text({
           message: 'Telegram Chat ID',
-          placeholder: '136236067',
+          placeholder: '123456789',
           validate: (v) => {
             if (!v || !/^-?\d+$/.test(v)) return 'Chat ID deve ser numérico.';
           },

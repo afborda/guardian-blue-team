@@ -17,9 +17,13 @@ import { EventIngestor } from '../pipeline/ingestor.js';
 import { PlaybookRegistry } from '../playbooks/registry.js';
 import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
 import { AIBlockAdvisor } from '../services/ai-block-advisor.service.js';
+import { blockIP } from '../playbooks/actions/block-ip.js';
 import { requestPlaybookApproval } from '../telegram/callbacks.js';
 import { addWebPendingApproval } from '../dashboard/routes.js';
 import { requestLoginVerification } from '../telegram/login-verification.js';
+import { db, dbTrue } from '../database/connection.js';
+import { socIncidents, blockedIps } from '../database/schema.js';
+import { eq, and } from 'drizzle-orm';
 import { config } from '../config/environment.js';
 import { CONSTANTS } from '../config/constants.js';
 import { logger } from '../utils/logger.js';
@@ -111,11 +115,65 @@ export class EventCollectorWorker {
       }
 
       if (newIncidentResults.length > 0) {
-        await this.notifyNewIncidents(newIncidentResults.length);
+        await this.notifyNewIncidents(newIncidentResults.filter(r => r.isNewIncident).length);
         await this.triggerPlaybooks(newIncidentResults);
       }
+
+      // Ensure all open incidents with IPs have those IPs blocked
+      await this.enforceBlocks();
     } finally {
       this.running = false;
+    }
+  }
+
+  private static async enforceBlocks(): Promise<void> {
+    try {
+      const openIncidents = await db.select().from(socIncidents)
+        .where(eq(socIncidents.status, 'open'));
+
+      if (openIncidents.length === 0) return;
+
+      const servers = await ServerService.getEnabled();
+
+      for (const incident of openIncidents) {
+        const ips = (incident.sourceIps ?? []) as string[];
+        if (ips.length === 0) continue;
+
+        for (const ip of ips) {
+          // Check if already blocked on all affected servers
+          const affectedServerIds = (incident.affectedServers ?? []) as number[];
+          for (const serverId of affectedServerIds) {
+            const existing = await db.select({ id: blockedIps.id }).from(blockedIps)
+              .where(and(
+                eq(blockedIps.ip, ip),
+                eq(blockedIps.serverId, serverId),
+                eq(blockedIps.active, dbTrue),
+              ))
+              .then(rows => rows[0]);
+
+            if (existing) continue;
+
+            const server = servers.find(s => s.id === serverId);
+            if (!server) continue;
+
+            const ctx: PlaybookContext = {
+              serverId,
+              serverName: server.name,
+              incidentId: incident.id,
+              sourceIp: ip,
+              triggeredBy: 'auto-enforce',
+              variables: {},
+            };
+
+            const result = await blockIP(ctx, { duration: 'permanent' });
+            if (result.success && !result.message.includes('already blocked')) {
+              logger.info({ ip, server: server.name, incidentId: incident.id }, 'Auto-enforced block for open incident');
+            }
+          }
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, 'enforceBlocks failed');
     }
   }
 

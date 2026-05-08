@@ -85,8 +85,8 @@ nano .env  # ou seu editor preferido
 **Preencha APENAS estas 4 variaveis** (o resto tem defaults seguros):
 
 ```env
-TELEGRAM_BOT_TOKEN=8300199343:AAFi_seu_token_aqui
-TELEGRAM_CHAT_ID=136236067
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+TELEGRAM_CHAT_ID=your_chat_id_here
 GUARDIAN_BASE_URL=https://guardian.seudominio.com
 GUARDIAN_DB_PASSWORD=uma_senha_forte_aqui
 ```

@@ -138,7 +138,123 @@ export async function blockIP(ctx: PlaybookContext, params?: Record<string, unkn
   const expiresLabel = expiresAt ? `expires in ${duration}` : 'permanent';
   const verifiedLabel = verified ? 'verified' : 'unverified';
   logger.info({ ip: ctx.sourceIp, server: ctx.serverName, duration, method, expiresAt, verified }, 'IP blocked via playbook');
+
+  if (isPermanent(duration)) {
+    propagateBlock(ctx.sourceIp, ctx.serverId, ctx.incidentId);
+  }
+
   return { success: true, message: `Blocked ${ctx.sourceIp} on ${ctx.serverName} via ${method} (${expiresLabel}, ${verifiedLabel})` };
+}
+
+export function propagateBlock(ip: string, excludeServerId: number, incidentId?: number): void {
+  ServerService.getEnabled().then(async (servers) => {
+    for (const server of servers) {
+      if (server.id === excludeServerId) continue;
+
+      const existing = await db.select({ id: blockedIps.id }).from(blockedIps)
+        .where(and(
+          eq(blockedIps.ip, ip),
+          eq(blockedIps.serverId, server.id),
+          eq(blockedIps.active, dbTrue),
+        ))
+        .then(rows => rows[0]);
+
+      if (existing) continue;
+
+      const target = ServerService.toSSHTarget(server);
+      let method: 'fail2ban' | 'ufw';
+      const f2bSuccess = await tryFail2ban(target, ip, 'permanent');
+
+      if (f2bSuccess) {
+        method = 'fail2ban';
+      } else {
+        const ufwSuccess = await tryUfw(target, ip);
+        if (!ufwSuccess) {
+          logger.warn({ ip, server: server.name }, 'Propagate block failed (both methods)');
+          continue;
+        }
+        method = 'ufw';
+      }
+
+      const verified = await verifyBlock(target, ip, method);
+
+      try {
+        await db.insert(blockedIps).values({
+          ip,
+          serverId: server.id,
+          reason: `Propagated block (incident #${incidentId ?? 'n/a'})`,
+          playbookExecutionId: null,
+          incidentId: incidentId ?? null,
+          expiresAt: null,
+          verified,
+          method,
+        });
+      } catch (err: any) {
+        if (err?.code === '23505' || err?.message?.includes('UNIQUE constraint')) continue;
+        logger.error({ err, ip, server: server.name }, 'Propagate block DB insert failed');
+      }
+
+      logger.info({ ip, server: server.name, method, verified }, 'Block propagated');
+    }
+  }).catch(err => logger.error({ err, ip }, 'propagateBlock failed'));
+}
+
+export async function syncBlocksToServer(serverId: number): Promise<number> {
+  const server = await ServerService.getEnabled().then(s => s.find(sv => sv.id === serverId));
+  if (!server) return 0;
+
+  const allBlocked = await db.selectDistinct({ ip: blockedIps.ip }).from(blockedIps)
+    .where(eq(blockedIps.active, dbTrue));
+
+  const uniqueIps = [...new Set(allBlocked.map(r => r.ip))];
+  let synced = 0;
+
+  for (const ip of uniqueIps) {
+    if (!isValidIp(ip)) continue;
+
+    const existing = await db.select({ id: blockedIps.id }).from(blockedIps)
+      .where(and(
+        eq(blockedIps.ip, ip),
+        eq(blockedIps.serverId, serverId),
+        eq(blockedIps.active, dbTrue),
+      ))
+      .then(rows => rows[0]);
+
+    if (existing) continue;
+
+    const target = ServerService.toSSHTarget(server);
+    let method: 'fail2ban' | 'ufw';
+    const f2bSuccess = await tryFail2ban(target, ip, 'permanent');
+
+    if (f2bSuccess) {
+      method = 'fail2ban';
+    } else {
+      const ufwSuccess = await tryUfw(target, ip);
+      if (!ufwSuccess) continue;
+      method = 'ufw';
+    }
+
+    const verified = await verifyBlock(target, ip, method);
+
+    try {
+      await db.insert(blockedIps).values({
+        ip,
+        serverId,
+        reason: 'Synced from existing blocks',
+        playbookExecutionId: null,
+        incidentId: null,
+        expiresAt: null,
+        verified,
+        method,
+      });
+      synced++;
+    } catch {
+      // duplicate — skip
+    }
+  }
+
+  logger.info({ serverId, server: server.name, synced, total: uniqueIps.length }, 'Blocks synced to server');
+  return synced;
 }
 
 export async function unblockIP(ctx: PlaybookContext, params?: Record<string, unknown>): Promise<{ success: boolean; message: string }> {

@@ -142,23 +142,19 @@ export class EventCollectorWorker {
         let allBlocked = true;
 
         for (const ip of ips) {
-          const affectedServerIds = (incident.affectedServers ?? []) as number[];
-          for (const serverId of affectedServerIds) {
+          for (const server of servers) {
             const existing = await db.select({ id: blockedIps.id }).from(blockedIps)
               .where(and(
                 eq(blockedIps.ip, ip),
-                eq(blockedIps.serverId, serverId),
+                eq(blockedIps.serverId, server.id),
                 eq(blockedIps.active, dbTrue),
               ))
               .then(rows => rows[0]);
 
             if (existing) continue;
 
-            const server = servers.find(s => s.id === serverId);
-            if (!server) { allBlocked = false; continue; }
-
             const ctx: PlaybookContext = {
-              serverId,
+              serverId: server.id,
               serverName: server.name,
               incidentId: incident.id,
               sourceIp: ip,

@@ -14,13 +14,17 @@ import { VulnScanner } from '../vuln-scanner/scanner.js';
 import { SOCAnalystService } from '../services/soc-analyst.service.js';
 import { AIProvider } from '../services/ai-provider.js';
 import { IncidentMemoryService } from '../services/incident-memory.service.js';
-import { blockIP, unblockIP, verifyBlock } from '../playbooks/actions/block-ip.js';
+import { blockIP, unblockIP, verifyBlock, syncBlocksToServer } from '../playbooks/actions/block-ip.js';
 import { isValidHostname, isValidIp, isValidSshUser, isValidKeyPath, isValidServerName } from '../utils/sanitize.js';
 import { discoverRemoteServer, formatDiscoveryApprovalKeyboard } from '../discovery/remote.js';
+import { ServerReadinessService } from '../services/server-readiness.service.js';
 import { rotateToken } from '../dashboard/auth.js';
 import { config } from '../config/environment.js';
 
 const pendingDiscoveries = new Map<number, { analysis: import('../discovery/types.js').DiscoveryResult; serverName: string }>();
+const pendingReadiness = new Map<number, { target: ReturnType<typeof ServerService.toSSHTarget>; missing: import('../services/server-readiness.service.js').ReadinessCheck[]; serverName: string }>();
+
+export { pendingDiscoveries, pendingReadiness };
 
 export async function handleTelegramCommand(text: string): Promise<string> {
   const parts = text.split(/\s+/);
@@ -635,6 +639,58 @@ async function addServer(args: string[]): Promise<string> {
     return `❌ Não foi possível conectar a ${host}:${sshPort}. Servidor não adicionado.`;
   }
 
+  // Readiness check in background
+  ServerReadinessService.check(target).then(async (readiness) => {
+    if (readiness.missing.length === 0) {
+      // All tools present — sync blocks and start discovery
+      const synced = await syncBlocksToServer(server.id);
+      const syncMsg = synced > 0 ? `\n🔒 ${synced} IPs bloqueados sincronizados.` : '';
+
+      await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: config.telegram.chatId,
+          text: `✅ <b>${name}</b> — todas ferramentas OK!\n\n🛠️ Instalados: ${readiness.installed.join(', ')}${syncMsg}`,
+          parse_mode: 'HTML',
+        }),
+      }).catch(() => {});
+    } else {
+      // Missing tools — ask user
+      pendingReadiness.set(server.id, { target, missing: readiness.missing, serverName: name });
+      setTimeout(() => pendingReadiness.delete(server.id), 30 * 60_000);
+
+      const lines = [`⚠️ <b>${name}</b> — ferramentas faltando:\n`];
+      for (const m of readiness.missing) {
+        const icon = m.required ? '🔴' : '🟡';
+        lines.push(`${icon} <b>${m.tool}</b> — ${m.description}`);
+      }
+      if (readiness.installed.length > 0) {
+        lines.push(`\n✅ Já instalados: ${readiness.installed.join(', ')}`);
+      }
+      lines.push(`\nDeseja instalar e configurar automaticamente?`);
+
+      const keyboard = {
+        inline_keyboard: [[
+          { text: '✅ Instalar e configurar', callback_data: `readiness_install_${server.id}` },
+          { text: '⏭️ Pular', callback_data: `readiness_skip_${server.id}` },
+        ]],
+      };
+
+      await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: config.telegram.chatId,
+          text: lines.join('\n'),
+          parse_mode: 'HTML',
+          reply_markup: keyboard,
+        }),
+      }).catch(err => logger.warn({ err }, 'Failed to send readiness message'));
+    }
+  }).catch(err => logger.warn({ err }, 'Readiness check failed'));
+
+  // Discovery in background (parallel to readiness)
   discoverRemoteServer(target).then(async discoveryResult => {
     if (!discoveryResult) return;
 
@@ -655,7 +711,7 @@ async function addServer(args: string[]): Promise<string> {
     setTimeout(() => pendingDiscoveries.delete(server.id), 30 * 60_000);
   }).catch(err => logger.warn({ err }, 'Background discovery failed'));
 
-  return `✅ <b>${name}</b> adicionado (${user || 'ubuntu'}@${host}:${sshPort}) 🟢\n\n🔍 Auto-discovery em andamento...`;
+  return `✅ <b>${name}</b> adicionado (${user || 'ubuntu'}@${host}:${sshPort}) 🟢\n\n🔍 Verificando ferramentas e auto-discovery...`;
 }
 
 async function removeServer(name: string | undefined): Promise<string> {
@@ -1305,5 +1361,3 @@ async function getServerNameMap(): Promise<Map<number, string>> {
   const servers = await db.select({ id: socServers.id, name: socServers.name }).from(socServers);
   return new Map(servers.map(s => [s.id, s.name]));
 }
-
-export { pendingDiscoveries };

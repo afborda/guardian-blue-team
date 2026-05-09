@@ -17,7 +17,7 @@ import { EventIngestor } from '../pipeline/ingestor.js';
 import { PlaybookRegistry } from '../playbooks/registry.js';
 import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
 import { AIBlockAdvisor } from '../services/ai-block-advisor.service.js';
-import { blockIP } from '../playbooks/actions/block-ip.js';
+import { blockIP, syncBlocksToServer } from '../playbooks/actions/block-ip.js';
 import { requestPlaybookApproval } from '../telegram/callbacks.js';
 import { addWebPendingApproval } from '../dashboard/routes.js';
 import { requestLoginVerification } from '../telegram/login-verification.js';
@@ -39,6 +39,11 @@ export class EventCollectorWorker {
     setTimeout(() => {
       this.collect().catch(err => logger.error({ err }, 'Event collector error'));
     }, 10_000);
+
+    // One-time global block sync on startup
+    setTimeout(() => {
+      this.syncAllBlocks().catch(err => logger.error({ err }, 'Startup block sync failed'));
+    }, 20_000);
 
     this.intervalId = setInterval(() => {
       this.collect().catch(err => logger.error({ err }, 'Event collector error'));
@@ -298,6 +303,22 @@ export class EventCollectorWorker {
       });
     } catch {
       logger.warn('Failed to notify new incidents');
+    }
+  }
+
+  private static async syncAllBlocks(): Promise<void> {
+    try {
+      const servers = await ServerService.getEnabled();
+      let totalSynced = 0;
+      for (const server of servers) {
+        const synced = await syncBlocksToServer(server.id);
+        totalSynced += synced;
+      }
+      if (totalSynced > 0) {
+        logger.info({ totalSynced, servers: servers.length }, 'Startup block sync complete');
+      }
+    } catch (err) {
+      logger.error({ err }, 'syncAllBlocks failed');
     }
   }
 

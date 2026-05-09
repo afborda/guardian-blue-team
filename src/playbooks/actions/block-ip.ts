@@ -230,7 +230,10 @@ export async function syncBlocksToServer(serverId: number): Promise<number> {
       method = 'fail2ban';
     } else {
       const ufwSuccess = await tryUfw(target, ip);
-      if (!ufwSuccess) continue;
+      if (!ufwSuccess) {
+        logger.debug({ ip, server: server.name }, 'Sync block skipped (both methods failed)');
+        continue;
+      }
       method = 'ufw';
     }
 

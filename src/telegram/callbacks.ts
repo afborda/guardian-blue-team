@@ -6,7 +6,9 @@ import { IncidentMemoryService } from '../services/incident-memory.service.js';
 import { FalsePositiveFilter } from '../intelligence/false-positive-filter.js';
 import { config } from '../config/environment.js';
 import { logger } from '../utils/logger.js';
-import { pendingDiscoveries } from './commands.js';
+import { pendingDiscoveries, pendingReadiness } from './commands.js';
+import { ServerReadinessService } from '../services/server-readiness.service.js';
+import { syncBlocksToServer } from '../playbooks/actions/block-ip.js';
 
 interface PendingApproval {
   playbookName: string;
@@ -72,6 +74,50 @@ export async function handleTelegramCallback(callbackQuery: {
     await answerCallback(callbackQuery.id, 'Discovery cancelado');
     if (callbackQuery.message) {
       await editMessage(callbackQuery.message, '❌ Discovery cancelado.');
+    }
+    return;
+  }
+
+  if (callbackQuery.data.startsWith('readiness_install_')) {
+    const serverId = parseInt(callbackQuery.data.replace('readiness_install_', ''));
+    const pending = pendingReadiness.get(serverId);
+    if (!pending) {
+      await answerCallback(callbackQuery.id, 'Expirado');
+      return;
+    }
+    pendingReadiness.delete(serverId);
+    await answerCallback(callbackQuery.id, 'Instalando...');
+
+    if (callbackQuery.message) {
+      await editMessage(callbackQuery.message, `⏳ Instalando ${pending.missing.length} ferramenta(s) em <b>${pending.serverName}</b>...`);
+    }
+
+    const result = await ServerReadinessService.install(pending.target, pending.missing);
+
+    let msg = `🛠️ <b>${pending.serverName}</b> — instalação concluída\n\n`;
+    if (result.success.length > 0) msg += `✅ Instalados: ${result.success.join(', ')}\n`;
+    if (result.failed.length > 0) msg += `❌ Falharam: ${result.failed.join(', ')}\n`;
+
+    const synced = await syncBlocksToServer(serverId);
+    if (synced > 0) msg += `\n🔒 ${synced} IPs bloqueados sincronizados.`;
+
+    if (callbackQuery.message) {
+      await editMessage(callbackQuery.message, msg);
+    }
+    return;
+  }
+
+  if (callbackQuery.data.startsWith('readiness_skip_')) {
+    const serverId = parseInt(callbackQuery.data.replace('readiness_skip_', ''));
+    pendingReadiness.delete(serverId);
+    await answerCallback(callbackQuery.id, 'Pulado');
+
+    // Still sync blocks even if skipping tool installation
+    const synced = await syncBlocksToServer(serverId);
+    const syncMsg = synced > 0 ? `\n🔒 ${synced} IPs bloqueados sincronizados.` : '';
+
+    if (callbackQuery.message) {
+      await editMessage(callbackQuery.message, `⏭️ Instalação pulada.${syncMsg}\n⚠️ Algumas coletas podem falhar sem as ferramentas.`);
     }
     return;
   }

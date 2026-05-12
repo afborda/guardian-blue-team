@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db, dbFalse, dbNow } from '../database/connection.js';
-import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts, serverMetrics, serverScores, behaviorProfiles } from '../database/schema.js';
+import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts, serverMetrics, serverScores, behaviorProfiles, containerSnapshots } from '../database/schema.js';
 import { IntelligenceWorker } from '../workers/intelligence.worker.js';
 import { ScoreCalculatorWorker } from '../workers/score-calculator.worker.js';
 import { CVEMonitorWorker } from '../workers/cve-monitor.worker.js';
@@ -16,6 +16,8 @@ import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
 import { IncidentMemoryService } from '../services/incident-memory.service.js';
 import { FalsePositiveFilter } from '../intelligence/false-positive-filter.js';
 import { CONSTANTS } from '../config/constants.js';
+import { ServerService } from '../services/server.service.js';
+import { killContainerProcess, restartContainer, disconnectContainer, pullContainerImage, recreateContainer } from '../playbooks/actions/container-actions.js';
 
 const TRUSTED_IPS_SET = new Set(CONSTANTS.trustedIps);
 
@@ -252,6 +254,24 @@ dashboardPages.get('/approvals', (_req, res) => {
     </div>
   `;
   res.send(layout('Approvals', content));
+});
+
+dashboardPages.get('/containers', (_req, res) => {
+  const token = config.dashboard.token || '';
+  const content = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;">
+      <div>
+        <h2 style="margin-bottom:0.25rem;">Container Security</h2>
+        <p style="color:var(--text-muted);font-size:0.82rem;">
+          Runtime monitoring: processes, network, filesystem, CVEs, and hardening status across all servers.
+        </p>
+      </div>
+    </div>
+    <div hx-get="/api/dashboard/containers?token=${token}" hx-trigger="load, every 60s" hx-swap="innerHTML">
+      <p aria-busy="true">Loading container security data...</p>
+    </div>
+  `;
+  res.send(layout('Containers', content));
 });
 
 // ─── API Routes (HTML fragments for HTMX) ─────────────────────────────────
@@ -1395,4 +1415,563 @@ dashboardApi.post('/run-workers', async (_req, res) => {
       &#10007; Erro ao recalcular
     </button>`);
   }
+});
+
+// ─── Container Alert Description Helper ──────────────────────────────────────
+
+interface AlertDescription {
+  icon: string;
+  title: string;
+  description: string;
+  extraTag: string;
+  actions: string;
+}
+
+function describeContainerAlert(
+  eventType: string,
+  containerName: string,
+  serverName: string,
+  meta: Record<string, unknown> | null,
+): AlertDescription {
+  const token = config.dashboard.token || '';
+  const safeContainer = encodeURIComponent(containerName);
+
+  switch (eventType) {
+    case 'container_crypto_process':
+      return {
+        icon: '&#9888;&#65039;',
+        title: 'Minerador de Cripto Detectado',
+        description: `Processo de mineracao (${escapeHtml((meta?.command as string) ?? 'xmrig/similar')}) rodando dentro do container. Guardian ja matou o processo e reiniciou o container automaticamente.`,
+        extraTag: meta?.command ? `<code style="font-size:0.7rem;color:var(--critical);">${escapeHtml(String(meta.command).slice(0, 40))}</code>` : '',
+        actions: `
+          <button class="danger" style="font-size:0.72rem;padding:3px 8px;"
+            hx-post="/api/dashboard/containers/restart?token=${token}&container=${safeContainer}&server=${encodeURIComponent(serverName)}"
+            hx-confirm="Reiniciar '${escapeHtml(containerName)}'? Isso vai parar e recriar o container."
+            hx-target="closest div[style]"
+            hx-swap="outerHTML">&#8635; Reiniciar</button>
+          <button style="font-size:0.72rem;padding:3px 8px;"
+            hx-post="/api/dashboard/containers/disconnect?token=${token}&container=${safeContainer}&server=${encodeURIComponent(serverName)}"
+            hx-confirm="Isolar '${escapeHtml(containerName)}' da rede? O container continuara rodando mas sem acesso externo."
+            hx-target="closest div[style]"
+            hx-swap="outerHTML">&#128274; Isolar Rede</button>`,
+      };
+
+    case 'container_mining_network':
+      return {
+        icon: '&#128279;',
+        title: 'Conexao com Pool de Mineracao',
+        description: `Container conectado a porta de mining pool (${meta?.remotePort ?? 'desconhecida'}). Isso indica que um minerador esta ativo e exfiltrando. Guardian isolou o container da rede.`,
+        extraTag: meta?.remoteIp ? `<span class="ip-tag">${escapeHtml(String(meta.remoteIp))}:${meta.remotePort ?? ''}</span>` : '',
+        actions: `
+          <button class="danger" style="font-size:0.72rem;padding:3px 8px;"
+            hx-post="/api/dashboard/containers/restart?token=${token}&container=${safeContainer}&server=${encodeURIComponent(serverName)}"
+            hx-confirm="Reiniciar '${escapeHtml(containerName)}'?"
+            hx-target="closest div[style]"
+            hx-swap="outerHTML">&#8635; Reiniciar</button>
+          <button style="font-size:0.72rem;padding:3px 8px;"
+            hx-post="/api/dashboard/containers/kill-procs?token=${token}&container=${safeContainer}&server=${encodeURIComponent(serverName)}"
+            hx-confirm="Matar processos suspeitos dentro de '${escapeHtml(containerName)}'?"
+            hx-target="closest div[style]"
+            hx-swap="outerHTML">&#9760; Kill Procs</button>`,
+      };
+
+    case 'container_suspicious_exec':
+      return {
+        icon: '&#128065;',
+        title: 'Execucao Suspeita em Container',
+        description: `Processo iniciado de caminho suspeito (/tmp, /dev/shm) dentro do container. Pode indicar exploit ou backdoor. Investigue o processo antes de tomar acao.`,
+        extraTag: meta?.command ? `<code style="font-size:0.7rem;">${escapeHtml(String(meta.command).slice(0, 50))}</code>` : '',
+        actions: `
+          <button class="danger" style="font-size:0.72rem;padding:3px 8px;"
+            hx-post="/api/dashboard/containers/kill-procs?token=${token}&container=${safeContainer}&server=${encodeURIComponent(serverName)}"
+            hx-confirm="Matar processos suspeitos dentro de '${escapeHtml(containerName)}'?"
+            hx-target="closest div[style]"
+            hx-swap="outerHTML">&#9760; Kill Procs</button>
+          <button style="font-size:0.72rem;padding:3px 8px;"
+            hx-post="/api/dashboard/containers/disconnect?token=${token}&container=${safeContainer}&server=${encodeURIComponent(serverName)}"
+            hx-confirm="Isolar '${escapeHtml(containerName)}' da rede?"
+            hx-target="closest div[style]"
+            hx-swap="outerHTML">&#128274; Isolar</button>`,
+      };
+
+    case 'container_fs_tampering':
+      return {
+        icon: '&#128193;',
+        title: 'Arquivo Suspeito Criado em Container',
+        description: `Novo binario ou arquivo detectado em caminho suspeito (${escapeHtml((meta?.filePath as string) ?? '/tmp ou /dev/shm')}). Se o container deveria ser imutavel, isso e anomalo.`,
+        extraTag: meta?.filePath ? `<code style="font-size:0.7rem;">${escapeHtml(String(meta.filePath).slice(0, 60))}</code>` : '',
+        actions: `
+          <button style="font-size:0.72rem;padding:3px 8px;"
+            hx-post="/api/dashboard/containers/restart?token=${token}&container=${safeContainer}&server=${encodeURIComponent(serverName)}"
+            hx-confirm="Reiniciar '${escapeHtml(containerName)}'? Isso descarta alteracoes no filesystem."
+            hx-target="closest div[style]"
+            hx-swap="outerHTML">&#8635; Reiniciar (descarta mudancas)</button>`,
+      };
+
+    case 'container_critical_cve':
+      return {
+        icon: '&#128736;',
+        title: 'CVE Critica em Imagem Docker',
+        description: `Vulnerabilidade critica (CVSS >= 9.0) encontrada na imagem deste container. Se existe fix disponivel, atualize a imagem o mais rapido possivel.`,
+        extraTag: meta?.cveId ? `<code style="font-size:0.7rem;color:var(--critical);">${escapeHtml(String(meta.cveId))}</code>` : '',
+        actions: `
+          <button class="success" style="font-size:0.72rem;padding:3px 8px;"
+            hx-post="/api/dashboard/containers/update-image?token=${token}&container=${safeContainer}&server=${encodeURIComponent(serverName)}"
+            hx-confirm="Atualizar imagem de '${escapeHtml(containerName)}'? Vai puxar a ultima versao e recriar o container."
+            hx-target="closest div[style]"
+            hx-swap="outerHTML">&#8635; Atualizar Imagem</button>`,
+      };
+
+    case 'container_insecure_config':
+      return {
+        icon: '&#9881;',
+        title: 'Container Sem Hardening',
+        description: `Container rodando sem protecoes basicas (read_only, cap_drop, no-new-privileges). Nao requer acao imediata, mas deve ser corrigido no docker-compose.yml.`,
+        extraTag: '',
+        actions: '',
+      };
+
+    default:
+      return {
+        icon: '&#128196;',
+        title: eventType.replace(/_/g, ' '),
+        description: `Evento de seguranca de container. Verifique os logs para mais detalhes.`,
+        extraTag: '',
+        actions: '',
+      };
+  }
+}
+
+// ─── Container Security Dashboard API ──────────────────────────────────────
+
+dashboardApi.get('/containers', async (_req, res) => {
+  try {
+    // Get all container snapshots joined with server names
+    const snapshots = await db.select({
+      id: containerSnapshots.id,
+      serverId: containerSnapshots.serverId,
+      containerName: containerSnapshots.containerName,
+      imageName: containerSnapshots.imageName,
+      processes: containerSnapshots.processes,
+      network: containerSnapshots.network,
+      filesystemChanges: containerSnapshots.filesystemChanges,
+      securityConfig: containerSnapshots.securityConfig,
+      cveCount: containerSnapshots.cveCount,
+      status: containerSnapshots.status,
+      collectedAt: containerSnapshots.collectedAt,
+      serverName: socServers.name,
+    })
+      .from(containerSnapshots)
+      .leftJoin(socServers, eq(containerSnapshots.serverId, socServers.id))
+      .orderBy(desc(containerSnapshots.collectedAt))
+      .limit(200);
+
+    // Get container-related security events (last 24h)
+    const containerAlerts = await db.select()
+      .from(securityEvents)
+      .where(and(
+        gte(securityEvents.timestamp, new Date(Date.now() - 24 * 60 * 60 * 1000)),
+        sql`${securityEvents.source} LIKE 'container_%'`,
+        ne(securityEvents.severity, 'info'),
+      ))
+      .orderBy(desc(securityEvents.timestamp))
+      .limit(50);
+
+    // Get container image CVE alerts
+    const imageCves = await db.select()
+      .from(cveAlerts)
+      .where(eq(cveAlerts.ecosystem, 'docker'))
+      .orderBy(desc(cveAlerts.createdAt))
+      .limit(20);
+
+    if (snapshots.length === 0 && containerAlerts.length === 0) {
+      res.send(`
+        <div class="card" style="text-align:center;padding:3rem;">
+          <p style="font-size:1.5rem;margin-bottom:0.5rem;">&#128230;</p>
+          <p style="color:var(--text-muted);">No container data collected yet.</p>
+          <p style="color:var(--text-dim);font-size:0.8rem;margin-top:0.5rem;">
+            Container process monitoring starts on next collection cycle (every 2 minutes).
+          </p>
+        </div>
+      `);
+      return;
+    }
+
+    // Calculate KPIs
+    const totalContainers = snapshots.length;
+    const hardened = snapshots.filter(s => {
+      const cfg = s.securityConfig as { readOnly?: boolean; capDrop?: string[] } | null;
+      return cfg && (cfg.readOnly || (cfg.capDrop && cfg.capDrop.length > 0));
+    }).length;
+    const insecure = totalContainers - hardened;
+    const hardenedPct = totalContainers > 0 ? Math.round((hardened / totalContainers) * 100) : 0;
+    const alertCount24h = containerAlerts.length;
+    const criticalCves = imageCves.filter(c => (c.cvssScore ?? 0) >= 90).length;
+
+    // ── KPI Cards ──
+    let html = `
+    <div class="kpi-grid" style="margin-bottom:1.5rem;">
+      <div class="card">
+        <div class="card-header"><span class="dot dot-blue"></span> Total Containers</div>
+        <div style="font-size:1.8rem;font-weight:700;font-family:var(--font-mono);">${totalContainers}</div>
+        <div style="color:var(--text-dim);font-size:0.75rem;">Across ${new Set(snapshots.map(s => s.serverId)).size} servers</div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="dot dot-green"></span> Hardened</div>
+        <div style="font-size:1.8rem;font-weight:700;font-family:var(--font-mono);color:var(--success);">${hardened}</div>
+        <div style="color:var(--text-dim);font-size:0.75rem;">${hardenedPct}% of fleet</div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="dot dot-yellow"></span> Insecure</div>
+        <div style="font-size:1.8rem;font-weight:700;font-family:var(--font-mono);color:${insecure > 0 ? 'var(--warning)' : 'var(--text-dim)'};">${insecure}</div>
+        <div style="color:var(--text-dim);font-size:0.75rem;">Missing hardening</div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="dot dot-red"></span> Critical CVEs</div>
+        <div style="font-size:1.8rem;font-weight:700;font-family:var(--font-mono);color:${criticalCves > 0 ? 'var(--critical)' : 'var(--text-dim)'};">${criticalCves}</div>
+        <div style="color:var(--text-dim);font-size:0.75rem;">In running images</div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="dot ${alertCount24h > 0 ? 'dot-red' : 'dot-cyan'}"></span> Alerts (24h)</div>
+        <div style="font-size:1.8rem;font-weight:700;font-family:var(--font-mono);color:${alertCount24h > 0 ? 'var(--critical)' : 'var(--success)'};">${alertCount24h}</div>
+        <div style="color:var(--text-dim);font-size:0.75rem;">Security events</div>
+      </div>
+    </div>`;
+
+    // ── Container Fleet Table ──
+    const token = config.dashboard.token || '';
+    html += `
+    <div class="card" style="margin-bottom:1.5rem;">
+      <div class="card-header"><span class="dot dot-cyan"></span> Container Fleet</div>
+      <p style="color:var(--text-muted);font-size:0.8rem;margin-bottom:0.75rem;">
+        Todos os containers em execucao. Use as acoes para intervir diretamente.
+      </p>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Server</th>
+              <th>Container</th>
+              <th>Image</th>
+              <th>Procs</th>
+              <th>Net</th>
+              <th>Config</th>
+              <th>Ultimo</th>
+              <th>Acoes</th>
+            </tr>
+          </thead>
+          <tbody>`;
+
+    for (const snap of snapshots) {
+      const procs = (snap.processes as Array<unknown>) ?? [];
+      const conns = (snap.network as Array<unknown>) ?? [];
+      const cfg = snap.securityConfig as { readOnly?: boolean; noNewPrivs?: boolean; capDrop?: string[] } | null;
+
+      let configBadge: string;
+      if (cfg && cfg.readOnly && cfg.noNewPrivs) {
+        configBadge = '<span style="color:var(--success);" title="read_only + no-new-privileges + cap_drop">&#10003; Hardened</span>';
+      } else if (cfg && (cfg.readOnly || (cfg.capDrop && cfg.capDrop.length > 0))) {
+        configBadge = '<span style="color:var(--warning);" title="Parcialmente protegido — faltam configs">&#9888; Parcial</span>';
+      } else if (cfg) {
+        configBadge = '<span style="color:var(--critical);" title="Sem protecoes de security — veja recomendacoes abaixo">&#10007; Inseguro</span>';
+      } else {
+        configBadge = '<span style="color:var(--text-dim);">—</span>';
+      }
+
+      const imageShort = (snap.imageName ?? '').split('/').pop()?.slice(0, 30) ?? '—';
+      const lastSeen = snap.collectedAt ? new Date(snap.collectedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '—';
+      const safeContainer = encodeURIComponent(snap.containerName);
+      const safeServer = encodeURIComponent(snap.serverName ?? '');
+
+      html += `
+            <tr id="fleet-${safeContainer}">
+              <td><code>${escapeHtml(snap.serverName ?? `#${snap.serverId}`)}</code></td>
+              <td><strong>${escapeHtml(snap.containerName)}</strong></td>
+              <td style="color:var(--text-muted);font-size:0.78rem;" title="${escapeHtml(snap.imageName ?? '')}">${escapeHtml(imageShort)}</td>
+              <td style="text-align:center;" title="${procs.length} processos rodando">${procs.length}</td>
+              <td style="text-align:center;" title="${conns.length} conexoes de rede ativas">${conns.length}</td>
+              <td>${configBadge}</td>
+              <td style="color:var(--text-dim);font-size:0.78rem;">${lastSeen}</td>
+              <td style="white-space:nowrap;">
+                <button style="font-size:0.68rem;padding:2px 6px;" title="Reiniciar container (para limpar processos maliciosos)"
+                  hx-post="/api/dashboard/containers/restart?token=${token}&container=${safeContainer}&server=${safeServer}"
+                  hx-confirm="Reiniciar '${escapeHtml(snap.containerName)}'?"
+                  hx-target="#fleet-${safeContainer}"
+                  hx-swap="outerHTML">&#8635;</button>
+                <button style="font-size:0.68rem;padding:2px 6px;" title="Isolar da rede (corta todas conexoes externas)"
+                  hx-post="/api/dashboard/containers/disconnect?token=${token}&container=${safeContainer}&server=${safeServer}"
+                  hx-confirm="Isolar '${escapeHtml(snap.containerName)}' da rede?"
+                  hx-target="#fleet-${safeContainer}"
+                  hx-swap="outerHTML">&#128274;</button>
+              </td>
+            </tr>`;
+    }
+
+    html += `
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+
+    // ── Security Alerts (last 24h) ──
+    if (containerAlerts.length > 0) {
+      html += `
+      <div class="card" style="margin-bottom:1.5rem;">
+        <div class="card-header"><span class="dot dot-red"></span> Security Alerts (24h)</div>
+        <div style="display:grid;gap:0.75rem;margin-top:0.5rem;">`;
+
+      for (const alert of containerAlerts.slice(0, 15)) {
+        const time = new Date(alert.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        const serverName = snapshots.find(s => s.serverId === alert.serverId)?.serverName ?? `#${alert.serverId}`;
+        const meta = alert.metadata as Record<string, unknown> | null;
+        const containerName = (meta?.containerName as string) ?? alert.processName ?? '—';
+        const alertInfo = describeContainerAlert(alert.eventType, containerName, serverName, meta);
+        const borderColor = alert.severity === 'critical' ? 'rgba(239,68,68,0.4)' : 'rgba(245,158,11,0.3)';
+        const bgColor = alert.severity === 'critical' ? 'rgba(239,68,68,0.04)' : 'rgba(245,158,11,0.03)';
+
+        html += `
+          <div style="background:${bgColor};border:1px solid ${borderColor};border-radius:var(--radius-sm);padding:1rem;">
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
+              <div style="flex:1;min-width:200px;">
+                <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.4rem;">
+                  <span style="font-size:1.1rem;">${alertInfo.icon}</span>
+                  <strong class="severity-${alert.severity}" style="font-size:0.88rem;">${alertInfo.title}</strong>
+                  <span style="font-family:var(--font-mono);font-size:0.7rem;color:var(--text-dim);">${time}</span>
+                </div>
+                <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:0.4rem;line-height:1.5;">${alertInfo.description}</p>
+                <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
+                  <code style="font-size:0.72rem;">${escapeHtml(serverName)}</code>
+                  <span style="color:var(--text-dim);">&rarr;</span>
+                  <code style="font-size:0.72rem;">${escapeHtml(containerName)}</code>
+                  ${alertInfo.extraTag}
+                </div>
+              </div>
+              <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:flex-start;">
+                ${alertInfo.actions}
+              </div>
+            </div>
+          </div>`;
+      }
+
+      html += `
+        </div>
+      </div>`;
+    }
+
+    // ── Image CVEs ──
+    if (imageCves.length > 0) {
+      html += `
+      <div class="card" style="margin-bottom:1.5rem;">
+        <div class="card-header"><span class="dot dot-yellow"></span> Image Vulnerabilities</div>
+        <p style="color:var(--text-muted);font-size:0.8rem;margin-bottom:1rem;">
+          CVEs encontradas em imagens Docker em uso. Imagens com fix disponivel podem ser atualizadas automaticamente.
+        </p>
+        <div style="overflow-x:auto;">
+          <table>
+            <thead>
+              <tr><th>Image/Package</th><th>CVE</th><th>CVSS</th><th>Instalada</th><th>Fix</th><th>Acao</th></tr>
+            </thead>
+            <tbody>`;
+
+      for (const cve of imageCves) {
+        const cvssVal = (cve.cvssScore ?? 0) / 10;
+        const cvssColor = cvssVal >= 9 ? 'var(--critical)' : cvssVal >= 7 ? 'var(--warning)' : 'var(--text-muted)';
+        const hasFixAvailable = !!cve.fixedVersion;
+
+        html += `
+              <tr>
+                <td><code>${escapeHtml(cve.packageName)}</code></td>
+                <td style="font-family:var(--font-mono);font-size:0.78rem;">${escapeHtml(cve.cveId)}</td>
+                <td style="color:${cvssColor};font-weight:600;">${cvssVal.toFixed(1)}</td>
+                <td style="font-size:0.78rem;">${escapeHtml(cve.installedVersion ?? '—')}</td>
+                <td style="font-size:0.78rem;color:${hasFixAvailable ? 'var(--success)' : 'var(--text-dim)'};">
+                  ${hasFixAvailable ? `&#10003; ${escapeHtml(cve.fixedVersion!)}` : 'Sem fix'}
+                </td>
+                <td>
+                  ${hasFixAvailable && cve.status !== 'resolved'
+                    ? `<button class="success" style="font-size:0.72rem;padding:3px 8px;"
+                        hx-post="/api/dashboard/containers/update-image?token=${token}&cveId=${encodeURIComponent(cve.cveId)}&serverId=${cve.serverId}&pkg=${encodeURIComponent(cve.packageName)}"
+                        hx-confirm="Atualizar imagem para corrigir ${escapeHtml(cve.cveId)}? Isso vai recriar o container."
+                        hx-target="closest tr"
+                        hx-swap="outerHTML">
+                        &#8635; Atualizar</button>`
+                    : cve.status === 'resolved'
+                      ? '<span style="color:var(--success);font-size:0.78rem;">&#10003; Resolvido</span>'
+                      : '<span style="color:var(--text-dim);font-size:0.78rem;">Aguardando fix</span>'}
+                </td>
+              </tr>`;
+      }
+
+      html += `
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+    }
+
+    // ── Insecure Containers (recommendations) ──
+    const insecureContainers = snapshots.filter(s => {
+      const cfg = s.securityConfig as { readOnly?: boolean; capDrop?: string[] } | null;
+      return cfg && !cfg.readOnly && (!cfg.capDrop || cfg.capDrop.length === 0);
+    });
+
+    if (insecureContainers.length > 0) {
+      html += `
+      <div class="card">
+        <div class="card-header"><span class="dot dot-yellow"></span> Hardening Recommendations</div>
+        <p style="color:var(--text-muted);font-size:0.8rem;margin-bottom:1rem;">
+          Containers abaixo estao rodando sem protecoes basicas. Adicione as configs no docker-compose.yml ou docker run.
+        </p>
+        <div style="display:grid;gap:0.75rem;">`;
+
+      for (const c of insecureContainers.slice(0, 10)) {
+        const cfg = c.securityConfig as { readOnly?: boolean; noNewPrivs?: boolean; capDrop?: string[]; memoryLimit?: number } | null;
+        const fixes: Array<{ label: string; compose: string }> = [];
+        if (!cfg?.readOnly) fixes.push({ label: 'Filesystem gravavel', compose: 'read_only: true' });
+        if (!cfg?.noNewPrivs) fixes.push({ label: 'Permite escalacao', compose: 'security_opt: [no-new-privileges:true]' });
+        if (!cfg?.capDrop || cfg.capDrop.length === 0) fixes.push({ label: 'Capabilities abertas', compose: 'cap_drop: [ALL]' });
+        if (!cfg?.memoryLimit) fixes.push({ label: 'Sem limite de memoria', compose: 'mem_limit: 512m' });
+
+        html += `
+          <div style="background:rgba(245,158,11,0.05);border:1px solid rgba(245,158,11,0.2);border-radius:var(--radius-sm);padding:1rem;">
+            <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;">
+              <span style="font-size:1rem;">&#9888;</span>
+              <strong style="color:var(--warning);">${escapeHtml(c.containerName)}</strong>
+              <code style="font-size:0.72rem;color:var(--text-dim);">${escapeHtml(c.serverName ?? '')}</code>
+            </div>
+            <div style="display:grid;gap:0.3rem;">
+              ${fixes.map(f => `
+                <div style="display:flex;align-items:center;gap:0.5rem;">
+                  <span style="color:var(--critical);font-size:0.8rem;">&#10007;</span>
+                  <span style="color:var(--text-muted);font-size:0.8rem;">${f.label}</span>
+                  <span style="color:var(--text-dim);font-size:0.7rem;">&rarr;</span>
+                  <code style="font-size:0.72rem;color:var(--cyan);">${f.compose}</code>
+                </div>
+              `).join('')}
+            </div>
+          </div>`;
+      }
+
+      html += `
+        </div>
+      </div>`;
+    }
+
+    res.send(html);
+  } catch (err) {
+    logger.error({ err }, 'Containers dashboard API error');
+    res.status(500).send('<p class="severity-critical">Error loading container security data</p>');
+  }
+});
+
+// ─── Container Action Endpoints ──────────────────────────────────────────────
+
+async function resolveServerCtx(serverName: string, container: string): Promise<PlaybookContext | null> {
+  const servers = await ServerService.getEnabled();
+  const server = servers.find(s => s.name === serverName);
+  if (!server) return null;
+  return {
+    serverId: server.id,
+    serverName: server.name,
+    sourceIp: undefined,
+    triggeredBy: 'dashboard:manual',
+    variables: { containerName: container },
+  };
+}
+
+function actionResultHtml(success: boolean, message: string): string {
+  if (success) {
+    return `
+      <div style="background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.3);border-radius:var(--radius-sm);padding:1rem;text-align:center;">
+        <span style="color:var(--success);font-size:1.1rem;">&#10003;</span>
+        <strong style="color:var(--success);margin-left:0.5rem;">${escapeHtml(message)}</strong>
+      </div>`;
+  }
+  return `
+    <div style="background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.3);border-radius:var(--radius-sm);padding:1rem;text-align:center;">
+      <span style="color:var(--critical);font-size:1.1rem;">&#10007;</span>
+      <strong style="color:var(--critical);margin-left:0.5rem;">${escapeHtml(message)}</strong>
+    </div>`;
+}
+
+dashboardApi.post('/containers/restart', async (req, res) => {
+  const container = req.query.container as string;
+  const serverName = req.query.server as string;
+  if (!container || !serverName) {
+    res.status(400).send(actionResultHtml(false, 'Parametros invalidos'));
+    return;
+  }
+
+  const ctx = await resolveServerCtx(serverName, container);
+  if (!ctx) {
+    res.status(404).send(actionResultHtml(false, `Servidor '${serverName}' nao encontrado`));
+    return;
+  }
+
+  const result = await restartContainer(ctx);
+  res.send(actionResultHtml(result.success, result.message));
+});
+
+dashboardApi.post('/containers/disconnect', async (req, res) => {
+  const container = req.query.container as string;
+  const serverName = req.query.server as string;
+  if (!container || !serverName) {
+    res.status(400).send(actionResultHtml(false, 'Parametros invalidos'));
+    return;
+  }
+
+  const ctx = await resolveServerCtx(serverName, container);
+  if (!ctx) {
+    res.status(404).send(actionResultHtml(false, `Servidor '${serverName}' nao encontrado`));
+    return;
+  }
+
+  const result = await disconnectContainer(ctx);
+  res.send(actionResultHtml(result.success, result.message));
+});
+
+dashboardApi.post('/containers/kill-procs', async (req, res) => {
+  const container = req.query.container as string;
+  const serverName = req.query.server as string;
+  if (!container || !serverName) {
+    res.status(400).send(actionResultHtml(false, 'Parametros invalidos'));
+    return;
+  }
+
+  const ctx = await resolveServerCtx(serverName, container);
+  if (!ctx) {
+    res.status(404).send(actionResultHtml(false, `Servidor '${serverName}' nao encontrado`));
+    return;
+  }
+
+  const result = await killContainerProcess(ctx);
+  res.send(actionResultHtml(result.success, result.message));
+});
+
+dashboardApi.post('/containers/update-image', async (req, res) => {
+  const container = req.query.container as string;
+  const serverName = req.query.server as string;
+  if (!container || !serverName) {
+    res.status(400).send(actionResultHtml(false, 'Parametros invalidos'));
+    return;
+  }
+
+  const ctx = await resolveServerCtx(serverName, container);
+  if (!ctx) {
+    res.status(404).send(actionResultHtml(false, `Servidor '${serverName}' nao encontrado`));
+    return;
+  }
+
+  const pullResult = await pullContainerImage(ctx);
+  if (!pullResult.success) {
+    res.send(actionResultHtml(false, pullResult.message));
+    return;
+  }
+
+  const recreateResult = await recreateContainer(ctx);
+  res.send(actionResultHtml(recreateResult.success,
+    recreateResult.success
+      ? `Imagem atualizada e container recriado: ${container}`
+      : recreateResult.message
+  ));
 });

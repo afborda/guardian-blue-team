@@ -326,6 +326,62 @@ const DETECTION_RULES: DetectionRule[] = [
     severity: 'high',
     eventType: 'syslog_oom_repeated',
   },
+  // ─── Container Runtime Security Rules ──────────────────────────────────────
+  {
+    name: 'container_crypto_process',
+    description: 'Detects cryptocurrency mining process INSIDE a container',
+    condition: (_events, current) => {
+      return current.source === 'container_process' && CONSTANTS.cryptoMiningPatterns.test(current.rawLog);
+    },
+    severity: 'critical',
+    eventType: 'container_crypto_process',
+  },
+  {
+    name: 'container_suspicious_exec',
+    description: 'Detects process execution from /tmp or /dev/shm inside container',
+    condition: (_events, current) => {
+      if (current.source !== 'container_process') return false;
+      return /\/tmp\/|\/dev\/shm\/|\/var\/tmp\//.test(current.rawLog);
+    },
+    severity: 'high',
+    eventType: 'container_suspicious_exec',
+  },
+  {
+    name: 'container_mining_network',
+    description: 'Detects container connection to known mining pool ports',
+    condition: (_events, current) => {
+      if (current.source !== 'container_network') return false;
+      const remotePort = current.destinationPort ?? (current.metadata?.remotePort as number);
+      if (!remotePort) return false;
+      return (CONSTANTS.container.miningPorts as readonly number[]).includes(remotePort);
+    },
+    severity: 'critical',
+    eventType: 'container_mining_network',
+  },
+  {
+    name: 'container_fs_tampering',
+    description: 'Detects new files written to suspicious paths inside container',
+    condition: (_events, current) => {
+      if (current.source !== 'container_filesystem') return false;
+      if (current.eventType !== 'container_file_added') return false;
+      const filePath = current.metadata?.filePath as string;
+      if (!filePath) return false;
+      return CONSTANTS.container.suspiciousContainerPaths.some(p => filePath.includes(p));
+    },
+    severity: 'high',
+    eventType: 'container_fs_tampering',
+  },
+  {
+    name: 'container_critical_cve',
+    description: 'Critical CVE (CVSS >= 9.0) found in running container image',
+    condition: (_events, current) => {
+      if (current.source !== 'container_image_cve') return false;
+      const cvss = current.metadata?.cvss as number;
+      return cvss >= CONSTANTS.container.minCvssForAutoUpdate;
+    },
+    severity: 'critical',
+    eventType: 'container_critical_cve',
+  },
 ];
 
 export class EventDetector {

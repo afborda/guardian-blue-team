@@ -4,7 +4,7 @@ import { notify } from './actions/notify.js';
 import { enrichIP } from './actions/enrich-ip.js';
 import { checkRepeatOffender } from './actions/check-repeat.js';
 import { killProcess } from './actions/kill-process.js';
-import { pauseContainer, disconnectContainer } from './actions/container-actions.js';
+import { pauseContainer, disconnectContainer, killContainerProcess, restartContainer, pullContainerImage, recreateContainer } from './actions/container-actions.js';
 import { rateLimit, removeRateLimit } from './actions/rate-limit.js';
 
 const PLAYBOOKS: PlaybookDefinition[] = [
@@ -187,6 +187,60 @@ const PLAYBOOKS: PlaybookDefinition[] = [
     ],
     requiresApproval: false,
   },
+  // ─── Container Runtime Security Playbooks ──────────────────────────────────
+  {
+    name: 'container-crypto-response',
+    description: 'Responds to crypto mining inside container — kills process, isolates, restarts',
+    trigger: { eventType: 'container_crypto_process' },
+    steps: [
+      { action: 'kill-container-process' },
+      { action: 'disconnect-container' },
+      { action: 'restart-container' },
+      { action: 'notify', params: { severity: 'critical', message: '&#9888;&#65039; MINERADOR DE CRIPTO DETECTADO E ELIMINADO\n\nGuardian detectou um processo de mineracao rodando dentro de um container, matou o processo, isolou a rede e reiniciou o container automaticamente.' } },
+    ],
+    requiresApproval: false,
+  },
+  {
+    name: 'container-mining-network-response',
+    description: 'Responds to mining pool connection from container — isolates and restarts',
+    trigger: { eventType: 'container_mining_network' },
+    steps: [
+      { action: 'disconnect-container' },
+      { action: 'restart-container' },
+      { action: 'notify', params: { severity: 'critical', message: '&#128279; CONEXAO COM POOL DE MINERACAO DETECTADA\n\nContainer tentou se conectar a uma porta conhecida de pool de mineracao. Guardian cortou a rede e reiniciou o container.' } },
+    ],
+    requiresApproval: false,
+  },
+  {
+    name: 'container-fs-tampering-response',
+    description: 'Alerts on suspicious filesystem changes inside container',
+    trigger: { eventType: 'container_fs_tampering' },
+    steps: [
+      { action: 'notify', params: { severity: 'high', message: '&#128193; ARQUIVO SUSPEITO CRIADO EM CONTAINER\n\nBinario ou arquivo novo detectado em /tmp, /dev/shm ou /usr/bin dentro de um container. Pode indicar exploit em andamento. Investigue antes de tomar acao.' } },
+    ],
+    requiresApproval: true,
+  },
+  {
+    name: 'container-auto-update',
+    description: 'Responds to critical CVE in container image — pulls latest and recreates',
+    trigger: { eventType: 'container_critical_cve' },
+    steps: [
+      { action: 'pull-container-image' },
+      { action: 'recreate-container' },
+      { action: 'notify', params: { severity: 'high', message: '&#128736; CONTAINER ATUALIZADO POR CVE CRITICA\n\nVulnerabilidade critica (CVSS >= 9.0) encontrada na imagem do container. Guardian puxou a versao corrigida e recriou o container.' } },
+    ],
+    requiresApproval: true,
+  },
+  {
+    name: 'container-suspicious-exec-response',
+    description: 'Alerts on execution from /tmp or /dev/shm inside container',
+    trigger: { eventType: 'container_suspicious_exec' },
+    steps: [
+      { action: 'kill-container-process' },
+      { action: 'notify', params: { severity: 'high', message: '&#128065; EXECUCAO SUSPEITA EM CONTAINER\n\nProcesso iniciado de /tmp ou /dev/shm — tipico de exploit que baixa e executa payload. Guardian matou o processo automaticamente.' } },
+    ],
+    requiresApproval: false,
+  },
 ];
 
 export class PlaybookRegistry {
@@ -202,6 +256,10 @@ export class PlaybookRegistry {
     PlaybookEngine.registerAction('kill-process', killProcess);
     PlaybookEngine.registerAction('pause-container', pauseContainer);
     PlaybookEngine.registerAction('disconnect-container', disconnectContainer);
+    PlaybookEngine.registerAction('kill-container-process', killContainerProcess);
+    PlaybookEngine.registerAction('restart-container', restartContainer);
+    PlaybookEngine.registerAction('pull-container-image', pullContainerImage);
+    PlaybookEngine.registerAction('recreate-container', recreateContainer);
     PlaybookEngine.registerAction('rate-limit', rateLimit);
     PlaybookEngine.registerAction('remove-rate-limit', removeRateLimit);
     PlaybookEngine.registerAction('notify', notify);

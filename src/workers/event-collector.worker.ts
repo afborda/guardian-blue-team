@@ -2,6 +2,7 @@ import { ServerService } from '../services/server.service.js';
 import { LogCollector } from '../collectors/log-collector.js';
 import { ProcessCollector } from '../collectors/process-collector.js';
 import { NetworkCollector } from '../collectors/network-collector.js';
+import { ContainerRuntimeCollector } from '../collectors/container-runtime-collector.js';
 import { SudoCollector } from '../collectors/sudo-collector.js';
 import { DNSCollector } from '../collectors/dns-collector.js';
 import { SyslogCollector } from '../collectors/syslog-collector.js';
@@ -69,7 +70,7 @@ export class EventCollectorWorker {
       for (const server of servers) {
         const target = ServerService.toSSHTarget(server);
 
-        const [authLogs, ufwLogs, dockerEvents, suspiciousProcs, networkAnomaly, sudoLogs, dnsLogs, syslogLogs, proxyLogs, packageLogs, systemdLogs, auditLogs] = await Promise.all([
+        const [authLogs, ufwLogs, dockerEvents, suspiciousProcs, networkAnomaly, sudoLogs, dnsLogs, syslogLogs, proxyLogs, packageLogs, systemdLogs, auditLogs, containerProcs] = await Promise.all([
           LogCollector.collectAuthLogs(target, 3),
           LogCollector.collectUfwLogs(target, 3),
           LogCollector.collectDockerEvents(target, 3),
@@ -82,9 +83,10 @@ export class EventCollectorWorker {
           PackageCollector.collect(target, 5),
           SystemdCollector.collect(target, 3),
           AuditCollector.collect(target, 3),
+          ContainerRuntimeCollector.collectContainerProcesses(target),
         ]);
 
-        const rawLogs = [...authLogs, ...ufwLogs, ...dockerEvents, ...suspiciousProcs, ...networkAnomaly, ...sudoLogs, ...dnsLogs, ...syslogLogs, ...proxyLogs, ...packageLogs, ...systemdLogs, ...auditLogs];
+        const rawLogs = [...authLogs, ...ufwLogs, ...dockerEvents, ...suspiciousProcs, ...networkAnomaly, ...sudoLogs, ...dnsLogs, ...syslogLogs, ...proxyLogs, ...packageLogs, ...systemdLogs, ...auditLogs, ...containerProcs];
         if (rawLogs.length === 0) continue;
 
         logger.debug({
@@ -93,6 +95,7 @@ export class EventCollectorWorker {
           process: suspiciousProcs.length, network: networkAnomaly.length, sudo: sudoLogs.length,
           dns: dnsLogs.length, syslog: syslogLogs.length, proxy: proxyLogs.length,
           package: packageLogs.length, systemd: systemdLogs.length, audit: auditLogs.length,
+          containerProcs: containerProcs.length,
         }, 'Collector results');
 
         let normalized = EventNormalizer.normalizeBatch(rawLogs);
@@ -224,7 +227,11 @@ export class EventCollectorWorker {
           incidentId: result.incidentId ?? undefined,
           sourceIp: result.event.sourceIp ?? undefined,
           triggeredBy: 'auto',
-          variables: {},
+          variables: {
+            ...(result.event.processName ? { containerName: result.event.processName } : {}),
+            ...(result.event.metadata?.containerName ? { containerName: result.event.metadata.containerName as string } : {}),
+            ...(result.event.metadata?.command ? { command: result.event.metadata.command as string } : {}),
+          },
         };
 
         if (playbook.requiresApproval) {
@@ -292,12 +299,23 @@ export class EventCollectorWorker {
 
   private static async notifyNewIncidents(count: number): Promise<void> {
     try {
+      const text = [
+        `&#128680; <b>${count} novo(s) incidente(s) detectado(s)</b>`,
+        ``,
+        `<b>O que fazer:</b>`,
+        `  /incidents — ver detalhes e tomar acao`,
+        `  /dashboard — painel visual com botoes de acao`,
+        `  /scores — verificar impacto no score de seguranca`,
+        ``,
+        `<i>Incidentes criticos sao tratados automaticamente. Verifique os que precisam de aprovacao.</i>`,
+      ].join('\n');
+
       await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: config.telegram.chatId,
-          text: `🚨 <b>${count} novo(s) incidente(s) detectado(s)</b>\nUse /incidents para detalhes.`,
+          text,
           parse_mode: 'HTML',
         }),
       });

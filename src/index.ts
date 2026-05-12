@@ -14,6 +14,7 @@ import { FIMWorker } from './workers/fim.worker.js';
 import { DiscoveryWorker } from './workers/discovery.worker.js';
 import { ThreatHunterWorker } from './workers/threat-hunter.worker.js';
 import { DDoSEscalationWorker } from './workers/ddos-escalation.worker.js';
+import { ContainerSecurityWorker } from './workers/container-security.worker.js';
 import { ThreatIntelManager } from './threat-intel/manager.js';
 import { PlaybookRegistry } from './playbooks/registry.js';
 import { handleTelegramCommand } from './telegram/commands.js';
@@ -265,6 +266,7 @@ async function start(): Promise<void> {
   DiscoveryWorker.start();
   ThreatHunterWorker.start();
   DDoSEscalationWorker.start();
+  ContainerSecurityWorker.start();
   startHeartbeat();
 
   if (config.cveMonitor.enabled) {

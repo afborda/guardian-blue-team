@@ -243,6 +243,25 @@ export const behaviorProfiles = pgTable('behavior_profiles', {
   subjectIdx: uniqueIndex('behavior_profiles_subject_idx').on(table.serverId, table.profileType, table.subjectId),
 }));
 
+// ─── Container Runtime Security ────────────────────────────────────────────
+
+export const containerSnapshots = pgTable('container_snapshots', {
+  id: serial('id').primaryKey(),
+  serverId: integer('server_id').notNull(),
+  containerName: varchar('container_name', { length: 200 }).notNull(),
+  imageName: varchar('image_name', { length: 300 }),
+  processes: jsonb('processes').$type<Array<{ pid: number; user: string; cpu: number; mem: number; command: string; args: string }>>(),
+  network: jsonb('network').$type<Array<{ remoteIp: string; remotePort: number; localPort: number; state: string }>>(),
+  filesystemChanges: jsonb('filesystem_changes').$type<string[]>(),
+  securityConfig: jsonb('security_config').$type<{ readOnly: boolean; noNewPrivs: boolean; capDrop: string[]; memoryLimit: number; cpuQuota: number }>(),
+  cveCount: integer('cve_count').default(0),
+  status: varchar('status', { length: 20 }).default('running'),
+  collectedAt: timestamp('collected_at').defaultNow().notNull(),
+}, (table) => ({
+  serverIdx: index('container_snapshots_server_idx').on(table.serverId, table.collectedAt),
+  nameIdx: index('container_snapshots_name_idx').on(table.serverId, table.containerName),
+}));
+
 export const incidentMemory = pgTable('incident_memory', {
   id: serial('id').primaryKey(),
   incidentId: integer('incident_id'),

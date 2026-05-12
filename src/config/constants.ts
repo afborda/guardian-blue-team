@@ -148,10 +148,23 @@ export const CONSTANTS = {
 
   // ─── Crypto Mining Detection ───────────────────────────────────────────────
   // Patterns that indicate crypto mining processes
-  cryptoMiningPatterns: /xmrig|minerd|cpuminer|cryptonight|kdevtmpfsi|kinsing/i,
+  cryptoMiningPatterns: /xmrig|minerd|cpuminer|cryptonight|kdevtmpfsi|kinsing|ccminer|t-rex|phoenixminer|nbminer|gminer/i,
 
   // ─── Suspicious Binary Paths ───────────────────────────────────────────────
   // Execution from these paths triggers suspicious_binary alert
   suspiciousPaths: ['/tmp/', '/dev/shm/', '/var/tmp/.', '/run/user/'],
+
+  // ─── Container Runtime Security ────────────────────────────────────────────
+  container: {
+    processIntervalMs: 2 * 60 * 1000,       // 2 min — lightweight, critical detection
+    networkIntervalMs: 5 * 60 * 1000,       // 5 min — moderate I/O
+    filesystemIntervalMs: 30 * 60 * 1000,   // 30 min — heavy, cached
+    configAuditIntervalMs: 60 * 60 * 1000,  // 1h — very light
+    imageScanIntervalMs: 6 * 60 * 60 * 1000, // 6h — heavy, separate worker
+    miningPorts: [3333, 4444, 5555, 8888, 14433, 14444, 45700, 9999],
+    suspiciousContainerPaths: ['/tmp/', '/dev/shm/', '/var/tmp/', '/run/'],
+    minCvssForAutoUpdate: 9.0,
+    minCvssForAlert: 7.0,
+  },
 
 } as const;

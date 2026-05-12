@@ -27,6 +27,9 @@ export class SSHCollector {
       '-o', 'ConnectTimeout=10',
       '-o', 'LogLevel=ERROR',
       '-o', 'BatchMode=yes',
+      '-o', 'ControlMaster=auto',
+      '-o', `ControlPath=/tmp/guardian-ssh-%h-%p-%r`,
+      '-o', 'ControlPersist=180',
     ];
     if (target.sshKeyPath) args.push('-i', target.sshKeyPath);
     args.push('-p', String(target.sshPort), `${target.sshUser}@${target.host}`);

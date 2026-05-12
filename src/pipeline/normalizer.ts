@@ -84,6 +84,16 @@ export class EventNormalizer {
         return this.normalizeSystemd(entry);
       case 'audit':
         return this.normalizeAudit(entry);
+      case 'container_process':
+        return this.normalizeContainerProcess(entry);
+      case 'container_network':
+        return this.normalizeContainerNetwork(entry);
+      case 'container_filesystem':
+        return this.normalizeContainerFilesystem(entry);
+      case 'container_config':
+        return this.normalizeContainerConfig(entry);
+      case 'container_image_cve':
+        return this.normalizeContainerImageCve(entry);
       default:
         return null;
     }
@@ -675,5 +685,140 @@ export class EventNormalizer {
     }
 
     return null;
+  }
+
+  // ─── Container Runtime Sources ──────────────────────────────────────────────
+
+  private static normalizeContainerProcess(entry: RawLogEntry): NormalizedEvent | null {
+    // Format: containerName|pid user %cpu %mem command args
+    const [containerName, rest] = entry.line.split('|', 2);
+    if (!containerName || !rest) return null;
+
+    const parts = rest.trim().split(/\s+/);
+    const [, , cpu, , command, ...argParts] = parts;
+    const fullCommand = `${command ?? ''} ${argParts.join(' ')}`.trim();
+
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: 'container_process',
+      category: 'container',
+      severity: 'info',
+      eventType: 'container_process_list',
+      sourceIp: null,
+      destinationPort: null,
+      userName: null,
+      processName: containerName,
+      rawLog: entry.line,
+      metadata: { containerName, command: fullCommand, cpu: parseFloat(cpu ?? '0') },
+    };
+  }
+
+  private static normalizeContainerNetwork(entry: RawLogEntry): NormalizedEvent | null {
+    // Format: containerName|ESTAB 0 0 local:port remote:port users:((...))
+    const [containerName, rest] = entry.line.split('|', 2);
+    if (!containerName || !rest) return null;
+
+    const parts = rest.trim().split(/\s+/);
+    const remoteAddr = parts[4] || '';
+    const remoteParts = remoteAddr.split(':');
+    const remotePort = parseInt(remoteParts.pop() ?? '0');
+    const remoteIp = remoteParts.join(':');
+
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: 'container_network',
+      category: 'container',
+      severity: 'info',
+      eventType: 'container_connection',
+      sourceIp: remoteIp || null,
+      destinationPort: remotePort || null,
+      userName: null,
+      processName: containerName,
+      rawLog: entry.line,
+      metadata: { containerName, remoteIp, remotePort },
+    };
+  }
+
+  private static normalizeContainerFilesystem(entry: RawLogEntry): NormalizedEvent | null {
+    // Format: containerName|A /tmp/xmrig  or  C /usr/bin/node
+    const [containerName, rest] = entry.line.split('|', 2);
+    if (!containerName || !rest) return null;
+
+    const changeType = rest.trim().charAt(0);
+    const filePath = rest.trim().slice(2).trim();
+
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: 'container_filesystem',
+      category: 'container',
+      severity: changeType === 'A' ? 'high' : 'medium',
+      eventType: changeType === 'A' ? 'container_file_added' : 'container_file_changed',
+      sourceIp: null,
+      destinationPort: null,
+      userName: null,
+      processName: containerName,
+      rawLog: entry.line,
+      metadata: { containerName, filePath, changeType },
+    };
+  }
+
+  private static normalizeContainerConfig(entry: RawLogEntry): NormalizedEvent | null {
+    // Format: name|IMAGE=img|RO=false|SECOPT=...|CAPDROP=...|MEM=0|CPU=0
+    const parts = entry.line.split('|');
+    if (parts.length < 3) return null;
+
+    const containerName = parts[0].trim();
+    const fields: Record<string, string> = {};
+    for (const part of parts.slice(1)) {
+      const [key, val] = part.split('=', 2);
+      if (key && val !== undefined) fields[key] = val;
+    }
+
+    const readOnly = fields['RO'] === 'true';
+    const hasCapDrop = (fields['CAPDROP'] ?? '').length > 2;
+    const noNewPrivs = (fields['SECOPT'] ?? '').includes('no-new-privileges');
+    const isInsecure = !readOnly && !hasCapDrop;
+
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: 'container_config',
+      category: 'container',
+      severity: isInsecure ? 'medium' : 'info',
+      eventType: isInsecure ? 'container_insecure_config' : 'container_config_ok',
+      sourceIp: null,
+      destinationPort: null,
+      userName: null,
+      processName: containerName,
+      rawLog: entry.line,
+      metadata: { containerName, image: fields['IMAGE'], readOnly, noNewPrivs, hasCapDrop },
+    };
+  }
+
+  private static normalizeContainerImageCve(entry: RawLogEntry): NormalizedEvent | null {
+    // Format: imageName|CVE-ID|severity|cvss|pkgName|version|fixedVersion|title
+    const parts = entry.line.split('|');
+    if (parts.length < 7) return null;
+
+    const [imageName, cveId, _severity, cvss, pkgName, installedVersion, fixedVersion, ...titleParts] = parts;
+    const cvssScore = parseFloat(cvss ?? '0');
+
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: 'container_image_cve',
+      category: 'vulnerability',
+      severity: cvssScore >= 9.0 ? 'critical' : 'high',
+      eventType: cvssScore >= 9.0 ? 'container_critical_cve' : 'container_high_cve',
+      sourceIp: null,
+      destinationPort: null,
+      userName: null,
+      processName: imageName ?? null,
+      rawLog: entry.line,
+      metadata: { imageName, cveId, cvss: cvssScore, pkgName, installedVersion, fixedVersion, title: titleParts.join('|') },
+    };
   }
 }

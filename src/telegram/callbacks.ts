@@ -192,20 +192,27 @@ export function requestPlaybookApproval(playbookName: string, ctx: PlaybookConte
     createdAt: Date.now(),
   });
 
+  const containerName = ctx.variables?.['containerName'] as string | undefined;
+  const actionDescription = describePlaybookAction(playbookName, ctx);
+
   const text = [
-    `🔒 <b>Playbook Approval Required</b>`,
+    `&#128274; <b>Aprovacao Necessaria</b>`,
     ``,
-    `📋 <b>${playbookName}</b>`,
-    `🖥️ Server: ${ctx.serverName}`,
-    `🎯 IP: ${ctx.sourceIp ?? 'n/a'}`,
-    `📂 Incident: #${ctx.incidentId ?? 'n/a'}`,
+    `<b>Playbook:</b> ${playbookName}`,
+    `<b>Servidor:</b> ${ctx.serverName}`,
+    containerName ? `<b>Container:</b> ${containerName}` : null,
+    ctx.sourceIp ? `<b>IP:</b> <code>${ctx.sourceIp}</code>` : null,
+    ctx.incidentId ? `<b>Incidente:</b> #${ctx.incidentId}` : null,
     ``,
-    `Aprovar execução?`,
-  ].join('\n');
+    `<b>O que vai acontecer se aprovado:</b>`,
+    actionDescription,
+    ``,
+    `&#9888; <i>Expira em 30 minutos se nao responder.</i>`,
+  ].filter(Boolean).join('\n');
 
   const keyboard = {
     inline_keyboard: [[
-      { text: '✅ Aprovar', callback_data: `pb_approve_${approvalId}` },
+      { text: '✅ Aprovar e Executar', callback_data: `pb_approve_${approvalId}` },
       { text: '❌ Rejeitar', callback_data: `pb_reject_${approvalId}` },
     ]],
   };
@@ -227,6 +234,52 @@ export function requestPlaybookApproval(playbookName: string, ctx: PlaybookConte
       logger.info({ approvalId, playbook: playbookName }, 'Playbook approval expired');
     }
   }, 30 * 60 * 1000);
+}
+
+function describePlaybookAction(playbookName: string, ctx: PlaybookContext): string {
+  const containerName = ctx.variables?.['containerName'] as string | undefined;
+
+  switch (playbookName) {
+    case 'container-auto-update':
+      return [
+        `  1. Baixar ultima versao da imagem Docker`,
+        `  2. Recriar o container${containerName ? ` '${containerName}'` : ''}`,
+        `  3. Notificar conclusao`,
+        `  &#9888; O container tera ~10s de downtime durante recriacao`,
+      ].join('\n');
+
+    case 'container-fs-tampering-response':
+      return [
+        `  1. Notificar sobre arquivo suspeito`,
+        `  &#8594; Nenhuma acao destrutiva automatica`,
+        `  &#8594; Investigue manualmente no dashboard`,
+      ].join('\n');
+
+    case 'container-escape-response':
+      return [
+        `  1. Pausar o container (congela execucao)`,
+        `  2. Desconectar todas as redes`,
+        `  3. Notificar sobre tentativa de escape`,
+        `  &#9888; O container ficara inacessivel ate acao manual`,
+      ].join('\n');
+
+    case 'suspicious-process':
+      return [
+        `  1. Notificar sobre processo suspeito`,
+        `  &#8594; Acao manual necessaria`,
+        `  &#8594; Use /incidents para detalhes`,
+      ].join('\n');
+
+    case 'file-integrity-response':
+      return [
+        `  1. Alerta critico sobre arquivo modificado`,
+        `  &#8594; Nenhuma acao automatica`,
+        `  &#8594; Investigue imediatamente: pode ser backdoor`,
+      ].join('\n');
+
+    default:
+      return `  &#8594; Executar playbook '${playbookName}' no servidor ${ctx.serverName}`;
+  }
 }
 
 async function handlePlaybookApproval(

@@ -1,6 +1,7 @@
 import express from 'express';
 import { config } from './config/environment.js';
 import { logger } from './utils/logger.js';
+import { AuditLogger } from './utils/audit-logger.js';
 import { testConnection, closeConnection, initDatabase } from './database/connection.js';
 import { DailyReportWorker } from './workers/daily-report.worker.js';
 import { EventCollectorWorker } from './workers/event-collector.worker.js';
@@ -274,6 +275,7 @@ async function start(): Promise<void> {
   }
 
   logger.info('All workers started');
+  AuditLogger.operational(null, 'guardian_start', 'success', { version: process.env.npm_package_version ?? 'unknown' }).catch(() => {});
 }
 
 // ─── Graceful Shutdown ──────────────────────────────────────────────────────

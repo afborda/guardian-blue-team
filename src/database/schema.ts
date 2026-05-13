@@ -14,4 +14,5 @@ export {
   rateLimitedIps,
   threatHuntFindings,
   containerSnapshots,
+  auditLogs,
 } from './guardian-schema.js';

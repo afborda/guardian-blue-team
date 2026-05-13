@@ -280,3 +280,23 @@ export const incidentMemory = pgTable('incident_memory', {
   categoryIdx: index('incident_memory_category_idx').on(table.category),
   createdIdx: index('incident_memory_created_idx').on(table.createdAt),
 }));
+
+export const auditLogs = pgTable('audit_logs', {
+  id: serial('id').primaryKey(),
+  category: varchar('category', { length: 30 }).notNull(), // operational | access | block
+  eventType: varchar('event_type', { length: 100 }).notNull(),
+  serverId: integer('server_id'),
+  timestamp: timestamp('timestamp').defaultNow().notNull(),
+  actor: varchar('actor', { length: 255 }),       // system | telegram | auto-enforce | user
+  resource: varchar('resource', { length: 500 }), // IP, file path, username
+  action: varchar('action', { length: 100 }),
+  result: varchar('result', { length: 30 }),       // success | failure | skipped
+  details: jsonb('details').$type<Record<string, unknown>>(),
+  relatedIncidentId: integer('related_incident_id'),
+  relatedPlaybookId: integer('related_playbook_id'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  serverIdx: index('audit_logs_server_idx').on(table.serverId, table.createdAt),
+  categoryIdx: index('audit_logs_category_idx').on(table.category, table.eventType),
+  timestampIdx: index('audit_logs_timestamp_idx').on(table.timestamp),
+}));

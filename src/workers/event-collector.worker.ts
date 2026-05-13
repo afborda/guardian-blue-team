@@ -1,4 +1,5 @@
 import { ServerService } from '../services/server.service.js';
+import { AuditLogger } from '../utils/audit-logger.js';
 import { LogCollector } from '../collectors/log-collector.js';
 import { ProcessCollector } from '../collectors/process-collector.js';
 import { NetworkCollector } from '../collectors/network-collector.js';
@@ -87,7 +88,10 @@ export class EventCollectorWorker {
         ]);
 
         const rawLogs = [...authLogs, ...ufwLogs, ...dockerEvents, ...suspiciousProcs, ...networkAnomaly, ...sudoLogs, ...dnsLogs, ...syslogLogs, ...proxyLogs, ...packageLogs, ...systemdLogs, ...auditLogs, ...containerProcs];
-        if (rawLogs.length === 0) continue;
+        if (rawLogs.length === 0) {
+          await AuditLogger.operational(server.id, 'collection_cycle', 'skipped', { server: server.name, reason: 'no_logs' });
+          continue;
+        }
 
         logger.debug({
           server: server.name,
@@ -112,6 +116,12 @@ export class EventCollectorWorker {
         await EventIngestor.persist(correlated);
 
         totalEvents += correlated.length;
+        await AuditLogger.operational(server.id, 'collection_cycle', 'success', {
+          server: server.name,
+          events: correlated.length,
+          auth: authLogs.length, ufw: ufwLogs.length, docker: dockerEvents.length,
+          process: suspiciousProcs.length, network: networkAnomaly.length,
+        });
         // Trigger playbooks for new incidents AND for events correlated to existing incidents with a source IP (ensures auto-block)
         newIncidentResults.push(...correlated.filter(r => r.isNewIncident || (r.incidentId && r.incidentCategory && r.event.sourceIp)));
 
@@ -173,6 +183,7 @@ export class EventCollectorWorker {
             const result = await blockIP(ctx, { duration: 'permanent' });
             if (result.success && !result.message.includes('already blocked')) {
               logger.info({ ip, server: server.name, incidentId: incident.id }, 'Auto-enforced block for open incident');
+              await AuditLogger.block(ip, server.id, 'auto-enforce', incident.id, { method: result.message });
             } else if (!result.success) {
               allBlocked = false;
             }

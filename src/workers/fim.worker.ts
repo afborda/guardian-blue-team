@@ -1,4 +1,5 @@
 import { logger } from '../utils/logger.js';
+import { AuditLogger } from '../utils/audit-logger.js';
 import { CONSTANTS } from '../config/constants.js';
 import { db, dbNow } from '../database/connection.js';
 import { sql } from 'drizzle-orm';
@@ -56,8 +57,13 @@ export class FIMWorker {
           await this.checkFileIntegrity(target);
           await this.checkCronJobs(target);
           await this.checkSSHKeys(target);
+          await AuditLogger.operational(server.id, 'fim_cycle', 'success', { server: server.name });
         } catch (err) {
           logger.error({ err, server: server.name }, 'FIM check failed for server');
+          await AuditLogger.operational(server.id, 'fim_cycle', 'failure', {
+            server: server.name,
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
       }
     } finally {
@@ -69,7 +75,12 @@ export class FIMWorker {
 
   private static async checkFileIntegrity(target: SSHTarget): Promise<void> {
     const current = await FIMCollector.collect(target);
-    if (current.length === 0) return;
+    if (current.length === 0) {
+      await AuditLogger.operational(target.id, 'fim_collection', 'failure', {
+        server: target.name, reason: 'SSH collection returned empty (sshrc error or no files)',
+      });
+      return;
+    }
 
     const existing = await db.execute<{
       file_path: string;
@@ -97,6 +108,7 @@ export class FIMWorker {
 
     if (isFirstRun) {
       logger.info({ server: target.name, files: current.length }, 'FIM baseline initialized');
+      await AuditLogger.operational(target.id, 'fim_baseline_init', 'success', { server: target.name, files: current.length });
       return;
     }
 
@@ -163,6 +175,7 @@ export class FIMWorker {
     if (rawEvents.length > 0) {
       await this.emitEvents(rawEvents);
       logger.info({ server: target.name, changes: rawEvents.length }, 'FIM changes detected');
+      await AuditLogger.operational(target.id, 'fim_changes', 'success', { server: target.name, changes: rawEvents.length });
     }
   }
 

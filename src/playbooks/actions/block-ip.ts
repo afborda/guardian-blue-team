@@ -5,6 +5,7 @@ import { blockedIps } from '../../database/schema.js';
 import { and, eq } from 'drizzle-orm';
 import type { PlaybookContext } from '../engine.js';
 import { logger } from '../../utils/logger.js';
+import { AuditLogger } from '../../utils/audit-logger.js';
 import { isValidIp } from '../../utils/sanitize.js';
 
 function isPermanent(duration: string): boolean {
@@ -138,6 +139,9 @@ export async function blockIP(ctx: PlaybookContext, params?: Record<string, unkn
   const expiresLabel = expiresAt ? `expires in ${duration}` : 'permanent';
   const verifiedLabel = verified ? 'verified' : 'unverified';
   logger.info({ ip: ctx.sourceIp, server: ctx.serverName, duration, method, expiresAt, verified }, 'IP blocked via playbook');
+  await AuditLogger.block(ctx.sourceIp, ctx.serverId, ctx.triggeredBy ?? 'system', ctx.incidentId, {
+    method, duration, verified, server: ctx.serverName,
+  });
 
   if (isPermanent(duration)) {
     propagateBlock(ctx.sourceIp, ctx.serverId, ctx.incidentId);

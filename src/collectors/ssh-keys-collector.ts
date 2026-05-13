@@ -22,7 +22,7 @@ export class SSHKeysCollector {
 
     if (!result.success || !result.stdout.trim()) {
       if (!result.success) {
-        logger.warn({ server: target.name }, 'SSH key collection failed via SSH');
+        logger.warn({ server: target.name, error: result.error }, 'SSH key collection failed via SSH');
       }
       return [];
     }

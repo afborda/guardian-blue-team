@@ -89,7 +89,9 @@ export const discoveryResultSchema = z.object({
     services: z.array(z.string()),
     logPaths: z.array(z.string()),
     criticalPorts: z.array(z.number()),
-    customChecks: z.array(z.string()),
+    customChecks: z.array(z.union([z.string(), z.object({}).passthrough()])).transform(arr =>
+      arr.map(item => typeof item === 'string' ? item : JSON.stringify(item))
+    ),
   }),
 });
 

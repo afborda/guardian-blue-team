@@ -22,7 +22,7 @@ export class FIMCollector {
 
     if (!result.success || !result.stdout.trim()) {
       if (!result.success) {
-        logger.warn({ server: target.name }, 'FIM collection failed via SSH');
+        logger.warn({ server: target.name, error: result.error }, 'FIM collection failed via SSH');
       }
       return [];
     }

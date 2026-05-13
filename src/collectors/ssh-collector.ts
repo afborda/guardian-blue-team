@@ -17,6 +17,7 @@ export interface SSHResult {
   stdout: string;
   success: boolean;
   durationMs: number;
+  error?: string;
 }
 
 export class SSHCollector {
@@ -46,8 +47,9 @@ export class SSHCollector {
       });
       return { stdout, success: true, durationMs: Date.now() - start };
     } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
       logger.debug({ server: target.name, err: error }, 'SSH command failed');
-      return { stdout: '', success: false, durationMs: Date.now() - start };
+      return { stdout: '', success: false, durationMs: Date.now() - start, error: errMsg };
     }
   }
 

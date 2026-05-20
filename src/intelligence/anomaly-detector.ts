@@ -84,15 +84,21 @@ export class AnomalyDetector {
       checks.push({ metric: 'disk_max_percent', current: maxDisk, values: histMaxDisks });
     }
 
-    // Network bandwidth anomaly detection
+    // Network bandwidth anomaly detection. We deliberately do NOT filter
+    // zero-byte samples out of the history series: doing so would break
+    // index-alignment with `historyTimestamps`, and scoreSTL() rejects any
+    // values/timestamps pair whose lengths disagree — so filtering would
+    // silently disable STL for both network metrics. We instead require
+    // that *some* sample is non-zero before pushing the check, which
+    // preserves the original "skip dead interfaces" intent.
     const networkIo = (latest.networkIo as Array<{ iface: string; rxBps: number; txBps: number }>) ?? [];
     const totalRxBps = networkIo.reduce((sum, n) => sum + n.rxBps, 0);
     const histRxBps = history.map(m => {
       const nio = (m.networkIo as Array<{ iface: string; rxBps: number; txBps: number }>) ?? [];
       return nio.reduce((sum, n) => sum + n.rxBps, 0);
-    }).filter(v => v > 0);
+    });
 
-    if (histRxBps.length >= 3 && totalRxBps > 0) {
+    if (totalRxBps > 0 && histRxBps.some(v => v > 0)) {
       checks.push({ metric: 'network_rx_bps', current: totalRxBps, values: histRxBps });
     }
 
@@ -100,9 +106,9 @@ export class AnomalyDetector {
     const histTxBps = history.map(m => {
       const nio = (m.networkIo as Array<{ iface: string; rxBps: number; txBps: number }>) ?? [];
       return nio.reduce((sum, n) => sum + n.txBps, 0);
-    }).filter(v => v > 0);
+    });
 
-    if (histTxBps.length >= 3 && totalTxBps > 0) {
+    if (totalTxBps > 0 && histTxBps.some(v => v > 0)) {
       checks.push({ metric: 'network_tx_bps', current: totalTxBps, values: histTxBps });
     }
 

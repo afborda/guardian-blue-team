@@ -8,7 +8,7 @@ export class SystemdCollector {
     const minutes = Math.max(1, Math.floor(Math.abs(lookbackMinutes)));
 
     const command =
-      `(systemctl --failed --no-legend --no-pager 2>/dev/null | awk '{print "UNIT_FAILED "$1}'; ` +
+      `(systemctl --failed --no-legend --no-pager 2>/dev/null | awk '/\\.service/{print "UNIT_FAILED "$2}'; ` +
       `journalctl -p err --since '${minutes} min ago' --no-pager -o short-iso 2>/dev/null | ` +
       `grep -iE 'systemd|Started|Stopped|Failed|restart' | tail -100) | head -150`;
 

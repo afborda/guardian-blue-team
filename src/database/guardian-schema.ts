@@ -27,6 +27,7 @@ export const socServers = pgTable('soc_servers', {
   tags: jsonb('tags').$type<string[]>().default([]),
   enabled: boolean('enabled').default(true).notNull(),
   lastSeenAt: timestamp('last_seen_at'),
+  falcoInstalledAt: timestamp('falco_installed_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 

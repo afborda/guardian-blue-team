@@ -89,7 +89,15 @@ function pickScanTargets(lines: string[], limit: number): Array<{ image: string;
   const out: Array<{ image: string; tag: string }> = [];
   for (const line of lines) {
     const imageTag = line.split(' ')[0];
-    const [image, tag] = imageTag.split(':');
+    // Split on the LAST colon — image refs like `registry:5000/img:tag`
+    // contain a port colon in the host segment; only the trailing colon
+    // separates the tag. `imageTag.split(':')` was producing
+    // image='registry', tag='5000/img', which made Trivy scan a
+    // nonexistent ref and silently skip the alert.
+    const lastColon = imageTag.lastIndexOf(':');
+    if (lastColon <= 0) continue;
+    const image = imageTag.slice(0, lastColon);
+    const tag = imageTag.slice(lastColon + 1);
     if (!image || !tag) continue;
     if (image === '<none>' || tag === '<none>') continue;
     const key = `${image}:${tag}`;

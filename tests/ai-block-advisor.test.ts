@@ -77,18 +77,22 @@ describe('AIBlockAdvisor — TI+AI consensus gate', () => {
     expect(rec.tiScore).toBe(50);
   });
 
-  it('TI mid + AI block but only 60 conf: trusts AI soft call (ai_only, no consensus)', async () => {
+  it('TI mid + AI block at low conf: downgrades to monitor (consensus not reached)', async () => {
     lookupIPMock.mockResolvedValueOnce({ score: 50, source: 'abuseipdb' });
     aiIsAvailableMock.mockReturnValue(true);
     aiChatMock.mockResolvedValueOnce(aiResponse('block_permanent', 60));
 
     const rec = await AIBlockAdvisor.getRecommendation(baseCtx, baseEvent);
 
-    expect(rec.source).toBe('ai_only');
-    // Action is whatever AI said (block_permanent) but the source flag
-    // tells the caller TI consensus did not validate it.
-    expect(rec.action).toBe('block_permanent');
-    expect(rec.confidence).toBe(60);
+    // The two-key gate requires AI confidence >= AI_BLOCK_CONFIDENCE (70).
+    // AI said "block at 60%" — below the consensus bar — so we MUST downgrade
+    // to monitor instead of executing the block. Forwarding block_permanent
+    // here would be a defense-in-depth failure: low-confidence AI should
+    // RAISE the bar to block, never lower it.
+    expect(rec.action).toBe('monitor');
+    expect(rec.source).toBe('no_ti_low_conf');
+    expect(rec.tiScore).toBe(50);
+    expect(rec.reasoning).toMatch(/consensus band/);
   });
 
   it('No TI signal + AI block at <85 conf: downgrades to monitor', async () => {

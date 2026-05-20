@@ -338,6 +338,11 @@ async function createPostgresTables(pool: Pool): Promise<void> {
         root_cause VARCHAR(500),
         stored_at TIMESTAMP NOT NULL DEFAULT NOW()
       );
+      -- Tracks which embedding model produced each row embedding. NULL on
+      -- rows pre-dating the column; treated as unknown / needs reembed by
+      -- scripts/reembed-incidents.ts. Without this, switching between two
+      -- 1024d models silently mixes vector spaces.
+      ALTER TABLE incident_memory ADD COLUMN IF NOT EXISTS embedding_model VARCHAR(100);
     `);
   } finally {
     client.release();

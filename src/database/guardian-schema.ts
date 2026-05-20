@@ -320,6 +320,11 @@ export const incidentMemory = pgTable('incident_memory', {
   timeToContainMinutes: integer('time_to_contain_minutes'),
   tags: jsonb('tags').$type<string[]>().default([]),
   embedding: jsonb('embedding').$type<number[]>(),
+  // Tracks which embedding model produced `embedding`. Required so that
+  // switching between two models of identical dimension (e.g. bge-m3 1024d
+  // ↔ mxbai-embed-large 1024d) can still trigger re-embedding — comparing
+  // dimension alone would silently mix two distinct vector spaces.
+  embeddingModel: varchar('embedding_model', { length: 100 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
   categoryIdx: index('incident_memory_category_idx').on(table.category),

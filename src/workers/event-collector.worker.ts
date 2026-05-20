@@ -14,6 +14,7 @@ import { AuditCollector } from '../collectors/audit-collector.js';
 import { EventNormalizer } from '../pipeline/normalizer.js';
 import { EventEnricher } from '../pipeline/enricher.js';
 import { EventDetector } from '../pipeline/detector.js';
+import { enrichWithDgaScore } from '../intelligence/dga-enricher.js';
 import { EventCorrelator, type CorrelationResult } from '../pipeline/correlator.js';
 import { EventIngestor } from '../pipeline/ingestor.js';
 import { PlaybookRegistry } from '../playbooks/registry.js';
@@ -104,6 +105,10 @@ export class EventCollectorWorker {
 
         let normalized = EventNormalizer.normalizeBatch(rawLogs);
         if (normalized.length === 0) continue;
+
+        // Pre-classify DNS queries against the DGA model so the synchronous
+        // detector rule can read the score from event.metadata.dgaScore.
+        normalized = await enrichWithDgaScore(normalized);
 
         const detected = EventDetector.detect(normalized);
         if (detected.length > 0) {

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { config } from './config/environment.js';
 import { logger } from './utils/logger.js';
@@ -33,6 +35,16 @@ import { falcoWebhookHandler } from './falco/webhook.js';
 const app = express();
 app.use(express.json());
 
+const APP_VERSION = ((): string => {
+  try {
+    const pkgPath = fileURLToPath(new URL('../package.json', import.meta.url));
+    const { version } = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: string };
+    return typeof version === 'string' && version.length > 0 ? version : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+})();
+
 // ─── Dashboard ──────────────────────────────────────────────────────────────
 
 app.use('/dashboard', rateLimiter(60), dashboardAuth, dashboardPages);
@@ -48,7 +60,7 @@ app.get('/health', async (_req, res) => {
     status,
     uptime: Math.floor(process.uptime()),
     database: dbOk ? 'connected' : 'unreachable',
-    version: '2.1.0',
+    version: APP_VERSION,
   });
 });
 
@@ -288,7 +300,7 @@ async function start(): Promise<void> {
   }
 
   logger.info('All workers started');
-  AuditLogger.operational(null, 'guardian_start', 'success', { version: process.env.npm_package_version ?? 'unknown' }).catch(() => {});
+  AuditLogger.operational(null, 'guardian_start', 'success', { version: APP_VERSION }).catch(() => {});
 }
 
 // ─── Graceful Shutdown ──────────────────────────────────────────────────────

@@ -16,7 +16,7 @@ export class FIMCollector {
     const command =
       `for f in ${paths}; do ` +
       `[ -f "$f" ] && sha256sum "$f" 2>/dev/null && stat --format="%a %U %n" "$f" 2>/dev/null; ` +
-      `done`;
+      `done; exit 0`;
 
     const result = await SSHCollector.run(target, command, CONSTANTS.collection.sshTimeoutMs);
 

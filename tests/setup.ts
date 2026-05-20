@@ -14,6 +14,7 @@ vi.mock('../src/config/environment.js', () => ({
     hostSecurity: { sshHost: '127.0.0.1', sshPort: 22, sshUser: 'ubuntu', sshKeyPath: null },
     threatIntel: { abuseIpDbKey: null, virusTotalKey: null },
     cveMonitor: { enabled: true, minCvss: 7.0, checkIntervalHours: 6 },
+    trivy: { serverUrl: null, token: null },
   },
 }));
 

@@ -1,6 +1,6 @@
 {
   "name": "guardian-blue-team",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Lightweight SOAR for the rest of us — server security monitoring with automated response",
   "license": "AGPL-3.0",
   "repository": {

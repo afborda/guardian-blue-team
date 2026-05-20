@@ -28,7 +28,8 @@
     "test:watch": "vitest",
     "lint": "eslint src/",
     "type-check": "tsc --noEmit",
-    "reembed-incidents": "tsx scripts/reembed-incidents.ts"
+    "reembed-incidents": "tsx scripts/reembed-incidents.ts",
+    "train-dga": "python3 scripts/train_dga.py"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
@@ -40,6 +41,9 @@
     "pino": "^9.6.0",
     "resend": "^4.2.0",
     "zod": "^3.24.0"
+  },
+  "optionalDependencies": {
+    "onnxruntime-node": "^1.20.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

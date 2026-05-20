@@ -233,19 +233,20 @@ const DETECTION_RULES: DetectionRule[] = [
   },
   {
     name: 'dns_dga_detected',
-    description: 'Domain classified as DGA (model score above threshold, or high entropy fallback)',
+    description: 'Domain classified as DGA (model verdict, or high entropy fallback)',
     condition: (_events, current) => {
       if (current.eventType !== 'dns_query') return false;
-      // The event is pre-classified by the DGA model in the worker that
-      // pumps events into the detector. The model output is async so it
-      // can't run inside this synchronous condition; we just consume the
-      // score that's already attached to metadata.
-      const score = current.metadata?.dgaScore as number | undefined;
-      if (typeof score === 'number') return score >= 0.7;
+      // The event is pre-classified by the DGA enricher (see dga-enricher.ts).
+      // The classifier owns the threshold (loaded from the model's meta.json),
+      // so we trust its boolean verdict as the single source of truth — no
+      // re-thresholding here, which would risk drifting from the trained
+      // operating point.
+      const isDga = current.metadata?.dgaIsDga as boolean | undefined;
+      if (typeof isDga === 'boolean') return isDga;
 
-      // No model output (model not loaded, or domain not classified for some
-      // reason) — fall back to the legacy entropy heuristic so detection
-      // still fires on obvious DGAs.
+      // Enricher didn't run (e.g. event ingested via a path that bypasses it)
+      // — fall back to the legacy entropy heuristic so detection still fires
+      // on obvious DGAs.
       const domain = current.metadata?.domain as string;
       if (!domain || domain.length < CONSTANTS.dns.minDgaLength) return false;
       const len = domain.length;

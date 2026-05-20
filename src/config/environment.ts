@@ -41,7 +41,7 @@ const envSchema = z.object({
   OLLAMA_URL: z.string().default('http://localhost:11434'),
   OLLAMA_MODEL: z.string().default('qwen3:4b'),
   OLLAMA_CHAT_MODEL: z.string().default('qwen3:0.6b'),
-  OLLAMA_EMBED_MODEL: z.string().default('nomic-embed-text'),
+  OLLAMA_EMBED_MODEL: z.string().default('bge-m3'),
 
   // AI — Provider preference
   AI_PROVIDER: z.enum(['gemini', 'openai', 'claude', 'ollama', 'auto']).default('auto'),

@@ -156,6 +156,42 @@ async function createPostgresTables(pool: Pool): Promise<void> {
       CREATE INDEX IF NOT EXISTS cve_alerts_cve_server_idx ON cve_alerts(cve_id, server_id);
       CREATE INDEX IF NOT EXISTS cve_alerts_status_idx ON cve_alerts(status);
 
+      CREATE TABLE IF NOT EXISTS cve_epss (
+        cve_id VARCHAR(20) PRIMARY KEY,
+        epss_score NUMERIC(6,5) NOT NULL,
+        percentile NUMERIC(6,5) NOT NULL,
+        fetched_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS cve_epss_score_idx ON cve_epss(epss_score DESC);
+
+      CREATE TABLE IF NOT EXISTS cve_epss_history (
+        id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        cve_id VARCHAR(20) NOT NULL,
+        epss_score NUMERIC(6,5) NOT NULL,
+        percentile NUMERIC(6,5) NOT NULL,
+        snapshot_date DATE NOT NULL,
+        UNIQUE (cve_id, snapshot_date)
+      );
+      CREATE INDEX IF NOT EXISTS cve_epss_history_cve_date_idx ON cve_epss_history(cve_id, snapshot_date DESC);
+      CREATE INDEX IF NOT EXISTS cve_epss_history_date_idx ON cve_epss_history(snapshot_date);
+
+      CREATE TABLE IF NOT EXISTS cve_kev (
+        cve_id VARCHAR(20) PRIMARY KEY,
+        vendor_project VARCHAR(200),
+        product VARCHAR(200),
+        vulnerability_name VARCHAR(500),
+        date_added DATE NOT NULL,
+        short_description TEXT,
+        required_action TEXT,
+        due_date DATE,
+        ransomware_use BOOLEAN DEFAULT FALSE,
+        notes TEXT,
+        cwes TEXT,
+        fetched_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS cve_kev_date_added_idx ON cve_kev(date_added DESC);
+      CREATE INDEX IF NOT EXISTS cve_kev_ransomware_idx ON cve_kev(ransomware_use) WHERE ransomware_use = TRUE;
+
       CREATE TABLE IF NOT EXISTS blocked_ips (
         id SERIAL PRIMARY KEY,
         ip VARCHAR(45) NOT NULL,

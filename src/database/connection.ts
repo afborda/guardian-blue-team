@@ -485,6 +485,41 @@ function createSqliteTables(sqlite: { exec: (sql: string) => void }): void {
     CREATE INDEX IF NOT EXISTS cve_alerts_cve_server_idx ON cve_alerts(cve_id, server_id);
     CREATE INDEX IF NOT EXISTS cve_alerts_status_idx ON cve_alerts(status);
 
+    CREATE TABLE IF NOT EXISTS cve_epss (
+      cve_id VARCHAR(20) PRIMARY KEY,
+      epss_score REAL NOT NULL,
+      percentile REAL NOT NULL,
+      fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS cve_epss_score_idx ON cve_epss(epss_score DESC);
+
+    CREATE TABLE IF NOT EXISTS cve_epss_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cve_id VARCHAR(20) NOT NULL,
+      epss_score REAL NOT NULL,
+      percentile REAL NOT NULL,
+      snapshot_date TEXT NOT NULL,
+      UNIQUE (cve_id, snapshot_date)
+    );
+    CREATE INDEX IF NOT EXISTS cve_epss_history_cve_date_idx ON cve_epss_history(cve_id, snapshot_date DESC);
+    CREATE INDEX IF NOT EXISTS cve_epss_history_date_idx ON cve_epss_history(snapshot_date);
+
+    CREATE TABLE IF NOT EXISTS cve_kev (
+      cve_id VARCHAR(20) PRIMARY KEY,
+      vendor_project VARCHAR(200),
+      product VARCHAR(200),
+      vulnerability_name VARCHAR(500),
+      date_added TEXT NOT NULL,
+      short_description TEXT,
+      required_action TEXT,
+      due_date TEXT,
+      ransomware_use INTEGER DEFAULT 0,
+      notes TEXT,
+      cwes TEXT,
+      fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS cve_kev_date_added_idx ON cve_kev(date_added DESC);
+
     CREATE TABLE IF NOT EXISTS blocked_ips (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ip VARCHAR(45) NOT NULL,

@@ -270,19 +270,23 @@ export class EventCollectorWorker {
               sourceIp: result.event.sourceIp,
             });
 
-            if (recommendation.confidence >= 70) {
-              if (recommendation.action === 'monitor' || recommendation.action === 'ignore') {
-                logger.info({
-                  ip: result.event.sourceIp, playbook: playbook.name,
-                  action: recommendation.action, confidence: recommendation.confidence,
-                  source: recommendation.source, tiScore: recommendation.tiScore,
-                  reasoning: recommendation.reasoning,
-                }, 'AI advisor: skipping block');
-                continue;
-              }
-              if (recommendation.action === 'rate_limit') {
-                ctx.variables = { ...ctx.variables, aiOverride: 'rate_limit' };
-              }
+            // Trust the advisor's `action`. The advisor already encodes the
+            // TI+AI gate and downgrades low-confidence-block decisions to
+            // 'monitor'/'ignore' itself, so there's no need to re-check
+            // confidence here — doing so was the source of a bug where a
+            // 60%-conf monitor recommendation was overruled and the block
+            // executed anyway.
+            if (recommendation.action === 'monitor' || recommendation.action === 'ignore') {
+              logger.info({
+                ip: result.event.sourceIp, playbook: playbook.name,
+                action: recommendation.action, confidence: recommendation.confidence,
+                source: recommendation.source, tiScore: recommendation.tiScore,
+                reasoning: recommendation.reasoning,
+              }, 'AI advisor: skipping block');
+              continue;
+            }
+            if (recommendation.action === 'rate_limit' && recommendation.confidence >= 70) {
+              ctx.variables = { ...ctx.variables, aiOverride: 'rate_limit' };
             }
 
             // Always log final decision so audit can replay why each block fired.
@@ -291,9 +295,6 @@ export class EventCollectorWorker {
               action: recommendation.action, confidence: recommendation.confidence,
               source: recommendation.source, tiScore: recommendation.tiScore,
             }, 'AI advisor: decision');
-
-            // Source-specific downgrade: no_ti_low_conf already returns action=monitor,
-            // so it'd be caught above. This branch is just for visibility.
           } catch (err) {
             logger.debug({ err }, 'AI advisor failed — proceeding with rule-based block');
           }

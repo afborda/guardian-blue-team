@@ -75,15 +75,35 @@ export class AIBlockAdvisor {
       if (ai.action === 'block_permanent' && ai.confidence >= AI_BLOCK_CONFIDENCE) {
         return { ...ai, source: 'ti_ai_consensus', tiScore };
       }
-      // TI is mildly suspicious but AI didn't agree confidently — trust AI's softer call
+      // TI is mildly suspicious but AI didn't reach the consensus bar. We must
+      // NOT block here — that's the whole point of the two-key gate. If AI
+      // returned a softer call (rate_limit/monitor/ignore) we forward it; if
+      // AI still said block_permanent at low confidence, downgrade to monitor
+      // so the caller doesn't execute the block playbook.
+      if (ai.action === 'block_permanent') {
+        return {
+          action: 'monitor',
+          confidence: ai.confidence,
+          reasoning: `TI=${tiScore} in consensus band but AI block conf ${ai.confidence}% < ${AI_BLOCK_CONFIDENCE}% — downgraded (was: ${ai.reasoning})`,
+          source: 'no_ti_low_conf',
+          tiScore,
+        };
+      }
       return { ...ai, source: 'ai_only', tiScore };
     }
 
     // Case 2: No TI signal at all — require very high AI confidence to block.
     if (tiScore === undefined && ai.action === 'block_permanent' && ai.confidence < AI_SOLO_CONFIDENCE) {
+      // Surface confidence as 100 on the downgraded recommendation so the
+      // caller's `confidence >= 70` skip-guard fires unconditionally.
+      // Preserving the original (low) AI confidence here was a bug — the
+      // caller would treat the recommendation as "uncertain" and fall
+      // through to the block playbook anyway. The downgrade decision
+      // itself is high-confidence ("we know we don't have enough signal
+      // to block"), even if the underlying AI verdict was uncertain.
       return {
         action: 'monitor',
-        confidence: ai.confidence,
+        confidence: 100,
         reasoning: `AI suggested block at ${ai.confidence}% conf but no TI signal — downgraded to monitor (was: ${ai.reasoning})`,
         source: 'no_ti_low_conf',
       };

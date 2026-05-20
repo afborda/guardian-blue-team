@@ -34,6 +34,15 @@ export class AnomalyDetector {
   private static readonly STL_WARNING_Z = 3;
   private static readonly STL_CRITICAL_Z = 5;
 
+  // Metrics where only an *increase* is operationally meaningful. A drop in
+  // journal/kernel errors means the system got quieter — that's good news,
+  // not an incident. Without this filter, abs() z-score fires "anomaly" when
+  // a noisy server stabilizes (e.g. journal_errors falling from 9.65 → 0).
+  private static readonly INCREASE_ONLY_METRICS = new Set([
+    'kernel_errors',
+    'journal_errors',
+  ]);
+
   static async detect(serverId: number): Promise<Anomaly[]> {
     const since = new Date(Date.now() - this.LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
 
@@ -118,7 +127,9 @@ export class AnomalyDetector {
       const { mean, stdDev } = this.computeStats(check.values);
       if (stdDev > 0) {
         const deviations = Math.abs(check.current - mean) / stdDev;
-        if (deviations >= this.THRESHOLD) {
+        const isIncreaseOnly = this.INCREASE_ONLY_METRICS.has(check.metric);
+        const directionOk = !isIncreaseOnly || check.current >= mean;
+        if (deviations >= this.THRESHOLD && directionOk) {
           anomalies.push({
             serverId,
             metric: check.metric,

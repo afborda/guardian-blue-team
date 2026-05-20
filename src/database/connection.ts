@@ -211,6 +211,10 @@ async function createPostgresTables(pool: Pool): Promise<void> {
       ALTER TABLE blocked_ips ADD COLUMN IF NOT EXISTS verified BOOLEAN DEFAULT false;
       ALTER TABLE blocked_ips ADD COLUMN IF NOT EXISTS method VARCHAR(20);
 
+      -- Falco deploy state (migration 008). Idempotent ALTER so deployments
+      -- that bootstrapped before PR #8 pick up the column on next start.
+      ALTER TABLE soc_servers ADD COLUMN IF NOT EXISTS falco_installed_at TIMESTAMP NULL;
+
       CREATE TABLE IF NOT EXISTS rate_limited_ips (
         id SERIAL PRIMARY KEY,
         ip VARCHAR(45) NOT NULL,

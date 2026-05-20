@@ -71,7 +71,8 @@ export class PerformanceCollector {
     const networkIo: NetworkIoSample[] = [];
     for (const [iface, after] of netDevAfter.entries()) {
       const before = netDevBefore.get(iface);
-      if (!before || iface === 'lo') continue;
+      if (!before) continue;
+      if (this.isVirtualInterface(iface)) continue;
       const rxBps = after.rxBytes - before.rxBytes;
       const txBps = after.txBytes - before.txBytes;
       networkIo.push({ iface, rxBps, txBps });
@@ -84,6 +85,16 @@ export class PerformanceCollector {
       diskIo,
       networkIo,
     };
+  }
+
+  // Excludes loopback and container/orchestrator virtual interfaces from
+  // network totals. Docker traffic flows host-eth0 ↔ docker0/br-* ↔ veth* ↔
+  // container eth0; counting all of them triples each byte and the resulting
+  // sum bears no relation to actual link utilization. We keep physical NICs
+  // (eth*, enp*, eno*, ens*, wl*) and VPN tunnels (tun*, tap*, wg*).
+  private static isVirtualInterface(iface: string): boolean {
+    if (iface === 'lo') return true;
+    return /^(veth|docker|br-|cni|cali|flannel|weave|kube-)/.test(iface);
   }
 
   private static parseDiskStats(section: string): Map<string, { sectorsRead: number; sectorsWritten: number }> {
@@ -106,14 +117,18 @@ export class PerformanceCollector {
     const result = new Map<string, { rxBytes: number; txBytes: number }>();
     if (!section) return result;
 
+    // /proc/net/dev format (modern kernels): "  eth0: <rx_bytes> <rx_pkts> ... <tx_bytes> <tx_pkts> ..."
+    // The label always ends in `:` followed by whitespace, so after trim+split,
+    // parts[0] = "eth0:", parts[1] = rx_bytes, parts[9] = tx_bytes.
     for (const line of section.split('\n')) {
-      const match = line.match(/^\s*(\w+):\s*(\d+)/);
-      if (!match) continue;
-      const iface = match[1];
-      const parts = line.trim().split(/\s+/);
-      const colonIdx = parts[0].indexOf(':');
-      const rxBytes = parseInt(colonIdx > 0 ? parts[0].substring(colonIdx + 1) : parts[1]) || 0;
-      const txBytes = parseInt(parts[9] ?? parts[8]) || 0;
+      const trimmed = line.trim();
+      if (!trimmed.includes(':')) continue;
+      const parts = trimmed.split(/\s+/);
+      if (parts.length < 10 || !parts[0].endsWith(':')) continue;
+      const iface = parts[0].slice(0, -1);
+      if (!iface) continue;
+      const rxBytes = parseInt(parts[1]) || 0;
+      const txBytes = parseInt(parts[9]) || 0;
       result.set(iface, { rxBytes, txBytes });
     }
     return result;

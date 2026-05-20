@@ -70,11 +70,13 @@ export class IntelligenceWorker {
   }
 
   private static async notifyAnomaly(serverName: string, anomaly: any): Promise<void> {
+    const method = anomaly.method ?? 'sigma';
+    const unit = method === 'stl' ? 'z' : 'σ';
     await NotifierManager.notify({
       title: `Anomalia em ${serverName}`,
-      body: `Métrica: ${anomaly.metric}\nValor atual: ${anomaly.currentValue} (esperado: ~${anomaly.expectedMean})\nDesvio: ${anomaly.deviations}σ`,
+      body: `Métrica: ${anomaly.metric}\nValor atual: ${anomaly.currentValue} (esperado: ~${anomaly.expectedMean})\nDesvio: ${anomaly.deviations}${unit} (${method})`,
       severity: anomaly.severity === 'critical' ? 'high' : 'medium',
-      metadata: { server: serverName, metric: anomaly.metric },
+      metadata: { server: serverName, metric: anomaly.metric, method },
     });
   }
 

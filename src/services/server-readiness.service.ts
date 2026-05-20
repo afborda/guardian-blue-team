@@ -157,4 +157,68 @@ failregex = ^$`;
 
     return { available, security };
   }
+
+  /**
+   * Deploy Falco on the target host as a privileged container that monitors
+   * syscalls via modern_eBPF and POSTs alerts to Guardian's webhook.
+   *
+   * The docker run is idempotent: if an existing `guardian-falco` container is
+   * already running we replace it (so re-runs after token rotation work).
+   *
+   * @param target SSH target (host being monitored)
+   * @param guardianBaseUrl public URL of Guardian (where Falco POSTs alerts)
+   * @param token shared FALCO_WEBHOOK_TOKEN, sent as X-Falco-Token header
+   * @param hostName logical host name (matches soc_servers.name) — sent as
+   *                 X-Guardian-Host so the webhook can resolve serverId
+   */
+  static async installFalco(
+    target: ReturnType<typeof ServerService.toSSHTarget> & { id: number },
+    guardianBaseUrl: string,
+    token: string,
+    hostName: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const webhookUrl = `${guardianBaseUrl.replace(/\/$/, '')}/webhook/falco`;
+    const image = 'falcosecurity/falco-no-driver:0.43.1';
+
+    // Best-effort cleanup of any prior deployment so token/URL changes apply.
+    await SSHCollector.run(target, 'sudo docker rm -f guardian-falco 2>/dev/null || true', 15_000);
+
+    // Token + hostName quoted with single quotes. Single quotes work on every
+    // POSIX shell (bash/dash/ash/zsh) and disable ALL interpolation inside.
+    // Token is validated to not contain ' at config load (environment.ts);
+    // hostName comes from soc_servers.name which is constrained by SERVER_NAME_RE.
+    const headersArg = `'http_output.headers=X-Falco-Token: ${token},X-Guardian-Host: ${hostName}'`;
+
+    const cmd = [
+      `sudo docker pull ${image}`,
+      `sudo docker run -d --name guardian-falco --restart unless-stopped \
+       --privileged --pid host \
+       -v /var/run/docker.sock:/host/var/run/docker.sock \
+       -v /dev:/host/dev -v /proc:/host/proc:ro \
+       -v /etc:/host/etc:ro -v /usr:/host/usr:ro \
+       -v /sys/kernel/debug:/sys/kernel/debug \
+       -e HOST_ROOT=/host \
+       ${image} \
+       /usr/bin/falco --modern-bpf \
+       -o http_output.enabled=true \
+       -o http_output.url=${webhookUrl} \
+       -o http_output.user_agent=falco-${hostName} \
+       -o ${headersArg}`,
+      // Wait for Falco to actually attach to the kernel — modern_eBPF needs
+      // kernel ≥5.8. If the kernel's too old, Falco exits in <1s; sleep+inspect
+      // catches that instead of reporting a phantom success.
+      'sleep 2',
+      `sudo docker inspect -f '{{.State.Running}}' guardian-falco | grep -q true`,
+    ].join(' && ');
+
+    const result = await SSHCollector.run(target, cmd, 120_000);
+    if (!result.success) {
+      logger.warn({ server: target.host, error: result.error }, 'Falco install failed');
+      return { success: false, error: result.error };
+    }
+
+    await ServerService.markFalcoInstalled(target.id);
+    logger.info({ server: target.host, webhookUrl }, 'Falco deployed');
+    return { success: true };
+  }
 }

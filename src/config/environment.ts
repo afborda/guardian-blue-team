@@ -75,6 +75,10 @@ const envSchema = z.object({
   CVE_MONITOR_ENABLED: z.string().transform(v => v !== 'false').default('true'),
   CVE_MONITOR_MIN_CVSS: z.string().transform(Number).default('7.0'),
   CVE_MONITOR_INTERVAL_HOURS: z.string().transform(Number).default('6'),
+
+  // Falco — runtime syscall visibility. Token is shared by all Falco agents
+  // and validated on POST /webhook/falco. Unset = endpoint returns 503.
+  FALCO_WEBHOOK_TOKEN: z.string().optional(),
 });
 
 export interface DashboardUser {
@@ -94,6 +98,14 @@ function parseDashboardUsers(raw?: string): DashboardUser[] {
 }
 
 const env = envSchema.parse(process.env);
+
+// Falco token is shell-interpolated into the deploy command. Single quotes are
+// the only safe quoting char that works on every POSIX shell — but they break
+// if the token itself contains '. base64 tokens (openssl rand -base64 32) never
+// do; reject anything else at startup with a clear error.
+if (env.FALCO_WEBHOOK_TOKEN && env.FALCO_WEBHOOK_TOKEN.includes("'")) {
+  throw new Error("FALCO_WEBHOOK_TOKEN must not contain single quotes. Generate with: openssl rand -base64 32");
+}
 
 export const config = {
   server: {
@@ -169,6 +181,10 @@ export const config = {
     enabled: env.CVE_MONITOR_ENABLED,
     minCvss: env.CVE_MONITOR_MIN_CVSS,
     checkIntervalHours: env.CVE_MONITOR_INTERVAL_HOURS,
+  },
+
+  falco: {
+    webhookToken: env.FALCO_WEBHOOK_TOKEN || null,
   },
 } as const;
 

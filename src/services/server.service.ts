@@ -130,6 +130,10 @@ export class ServerService {
     await db.update(socServers).set({ lastSeenAt: dbNow() }).where(eq(socServers.id, id));
   }
 
+  static async markFalcoInstalled(id: number): Promise<void> {
+    await db.update(socServers).set({ falcoInstalledAt: dbNow() }).where(eq(socServers.id, id));
+  }
+
   static toSSHTarget(server: ServerInfo): SSHTarget {
     return {
       id: server.id,

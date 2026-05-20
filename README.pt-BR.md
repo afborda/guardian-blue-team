@@ -6,7 +6,7 @@
   <a href="https://github.com/afborda/guardian-blue-team/actions/workflows/ci.yml"><img src="https://github.com/afborda/guardian-blue-team/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License: AGPL-3.0"></a>
   <a href="https://ghcr.io/afborda/guardian-blue-team"><img src="https://img.shields.io/badge/Docker-ghcr.io-blue" alt="Docker"></a>
-  <img src="https://img.shields.io/badge/version-2.0.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.1.0-blue" alt="Version">
 </p>
 
 <p align="center">
@@ -98,7 +98,7 @@ graph TB
         COLLECT[Coletores\n12 tipos]
         PIPE[Pipeline\nNormalizar → Detectar → Enriquecer → Correlacionar]
         ENGINE[Engine de Playbooks\n15+ playbooks automatizados]
-        AI_LAYER[Camada AI\nOllama qwen3 + nomic-embed-text]
+        AI_LAYER[Camada AI\nOllama qwen3 + bge-m3]
         DB[(PostgreSQL\nEventos, Incidentes, Bloqueios, Memoria)]
         WORKERS[Workers\n12 processos em background]
     end
@@ -122,7 +122,19 @@ graph TB
 
 ---
 
-## Features Principais (v2.0)
+## Novidades na v2.1
+
+| Feature | O que faz |
+|---------|-----------|
+| **Deteccao de Anomalia STL** | Decomposicao de serie temporal (tendencia + sazonal + residuo) em `load_ratio`, `mem_used_percent`, `network_rx/tx_bps`. Captura anomalias que limites fixos de σ deixam passar em metricas com ciclos diarios/semanais. Faz fallback para σ quando nao detecta periodo. |
+| **Classificador DGA com ML** | Modelo ONNX de regressao logistica (sklearn → skl2onnx) com 11 features incluindo log-likelihood de bigrama. Treinado em Tranco top-1m + dominios sinteticos Conficker/Cryptolocker/Necurs. Dependencia opcional — faz fallback para heuristica de entropia se `onnxruntime-node` nao estiver instalado. Treine via `npm run train-dga`. |
+| **Consenso TI + AI** | Decisoes de bloqueio agora exigem concordancia entre score de Threat Intel e recomendacao da AI. Categorias always-block (port_scan, brute_force, ddos, crypto_mining, lateral_movement) ignoram o gate mas ainda registram o sinal de TI para auditoria de FP. |
+| **Embeddings bge-m3** | Memoria RAG migrada de `nomic-embed-text` para `bge-m3` (multilingual, 1024-dim). Re-embede incidentes historicos com `npm run reembed-incidents`. |
+| **Feeds CVE Intel** | EPSS (probabilidade de exploracao) + CISA KEV (known-exploited) somam-se ao OSV.dev. Endpoint admin para forcar atualizacao. |
+
+---
+
+## Features Principais
 
 ### Bloqueio Permanente — Uma Vez Bloqueado, Sempre Bloqueado
 
@@ -189,7 +201,7 @@ Quando um login SSH e detectado, Guardian envia notificacao no Telegram com:
 
 ```mermaid
 flowchart LR
-    INCIDENT[Novo Incidente] --> EMBED[Gerar Embedding\nnomic-embed-text]
+    INCIDENT[Novo Incidente] --> EMBED[Gerar Embedding\nbge-m3]
     EMBED --> STORE[(Vector Store\nPostgreSQL)]
     
     NEXT[Proximo Incidente\nSimilar] --> SEARCH[Busca Semantica\nCosine Similarity]
@@ -206,10 +218,11 @@ flowchart LR
 |----------|---------|----------|
 | **SSH** | Brute force, usuarios invalidos, logins nao autorizados, horarios incomuns, movimento lateral | Bloqueio permanente |
 | **DDoS** | SYN flood, pico de conexoes, anomalia de bandwidth | Rate-limit → Escalar → Bloquear |
-| **Rede** | Port scanning, DNS DGA (C2), TLDs suspeitos, flood de conexoes | Bloqueio permanente |
+| **Rede** | Port scanning, DGA C2 (classificador ML), TLDs suspeitos, flood de conexoes | Bloqueio permanente |
+| **Anomalias Estatisticas** | Picos de CPU/memoria/rede via decomposicao STL (lida com ciclos diurnos) | Alerta + triagem AI |
 | **Containers** | Tentativas de escape, crypto mining, crashloops, abuso de recursos | Kill + block + isolar |
 | **Integridade** | /etc/passwd, sudoers, sshd_config, authorized_keys alterados | Alerta critico |
-| **Supply Chain** | CVEs em pacotes instalados (OSV.dev) | Alerta + passos de remediacao |
+| **Supply Chain** | CVEs em pacotes instalados (OSV.dev + EPSS + CISA KEV) | Alerta + passos de remediacao |
 | **Persistencia** | Cron jobs maliciosos, reverse shells, chaves SSH nao autorizadas | Alerta + bloquear |
 
 15+ regras de deteccao, 15+ playbooks automatizados.
@@ -282,7 +295,7 @@ ABUSEIPDB_API_KEY=sua_chave_gratis
 docker compose up -d
 ```
 
-Aguarde 2-3 minutos para Ollama baixar modelos AI (`qwen3:4b` + `nomic-embed-text`).
+Aguarde 2-3 minutos para Ollama baixar modelos AI (`qwen3:4b` + `bge-m3`).
 
 ### 3. Adicione Servidores
 
@@ -434,7 +447,7 @@ Acesso: `https://seu-dominio/dashboard?token=TOKEN`
 |-------|-----------|
 | Runtime | Node.js 20 + TypeScript |
 | Banco de Dados | PostgreSQL 16 |
-| AI (local) | Ollama + qwen3:4b + nomic-embed-text |
+| AI (local) | Ollama + qwen3:4b + bge-m3 |
 | AI (cloud) | Gemini / OpenAI / Claude (failover) |
 | Firewall | UFW + fail2ban + iptables |
 | Alertas | Telegram Bot API |

@@ -228,6 +228,18 @@ const DETECTION_RULES: DetectionRule[] = [
     eventType: 'sudo_suspicious',
   },
   {
+    name: 'sudo_unusual_sequence',
+    description: 'Sudo command sequence anomalous for this user (Markov surprisal > p99)',
+    condition: (_events, current) => {
+      if (current.eventType !== 'sudo_command') return false;
+      // markov-enricher attaches these — absent metadata = cold-start or no
+      // prior command, both of which are silent by design.
+      return current.metadata?.markovIsAnomaly === true;
+    },
+    severity: 'medium',
+    eventType: 'sudo_unusual_sequence',
+  },
+  {
     name: 'suspicious_cron_added',
     description: 'Cron job with suspicious command was added',
     condition: (_events, current) => {
@@ -249,9 +261,20 @@ const DETECTION_RULES: DetectionRule[] = [
   },
   {
     name: 'dns_dga_detected',
-    description: 'Domain with high entropy detected (possible DGA)',
+    description: 'Domain classified as DGA (model verdict, or high entropy fallback)',
     condition: (_events, current) => {
       if (current.eventType !== 'dns_query') return false;
+      // The event is pre-classified by the DGA enricher (see dga-enricher.ts).
+      // The classifier owns the threshold (loaded from the model's meta.json),
+      // so we trust its boolean verdict as the single source of truth — no
+      // re-thresholding here, which would risk drifting from the trained
+      // operating point.
+      const isDga = current.metadata?.dgaIsDga as boolean | undefined;
+      if (typeof isDga === 'boolean') return isDga;
+
+      // Enricher didn't run (e.g. event ingested via a path that bypasses it)
+      // — fall back to the legacy entropy heuristic so detection still fires
+      // on obvious DGAs.
       const domain = current.metadata?.domain as string;
       if (!domain || domain.length < CONSTANTS.dns.minDgaLength) return false;
       const len = domain.length;

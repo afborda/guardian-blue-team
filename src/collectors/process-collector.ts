@@ -32,32 +32,71 @@ export class ProcessCollector {
       });
   }
 
+  // Process names (comm field — executable basename, max 15 chars on Linux)
+  // Matched as exact lowercase tokens against `comm` to avoid self-detection
+  // when the SSH command itself contains these strings as arguments.
+  private static readonly suspiciousProcessNames = [
+    'xmrig', 'minerd', 'cpuminer', 'cryptonight',
+    'kinsing', 'kdevtmpfsi',
+    'masscan', 'nmap', 'hydra', 'john',
+  ];
+
+  // Path indicators (matched against full cmdline `args`).
+  // These signal a process executing from a suspicious location regardless
+  // of binary name — common malware persistence pattern.
+  // Stored as awk-string-regex fragments (no leading/trailing slashes), so
+  // they can be injected into awk as a `-v pat=...` value and matched with
+  // the `~` operator without confusing awk's regex-literal parser.
+  private static readonly suspiciousPathPatterns = [
+    '/tmp/\\.',      // hidden file under /tmp (\\. in JS = \. in the awk pattern)
+    '/dev/shm/',     // tmpfs execution
+    '/var/tmp/\\.',  // hidden under /var/tmp
+  ];
+
   static async detectSuspiciousProcesses(target: SSHTarget): Promise<RawLogEntry[]> {
-    const suspiciousPatterns = [
-      'xmrig', 'minerd', 'cpuminer', 'cryptonight',
-      'kinsing', 'kdevtmpfsi', 'ld-linux',
-      'masscan', 'nmap', 'hydra', 'john',
-      '.hidden', '/tmp/\\.', '/dev/shm/',
-    ];
+    const nameAlt = this.suspiciousProcessNames.join('|');
+    const pathAlt = this.suspiciousPathPatterns.join('|');
 
-    const grepPattern = suspiciousPatterns.join('\\|');
-
-    const result = await SSHCollector.run(target,
-      `ps aux 2>/dev/null | grep -i '${grepPattern}' | grep -v grep || echo ''`,
+    // Pass 1: match by `comm` field (executable name).
+    // $$ is the PID of the remote shell running this command — we exclude it
+    // and its parent (ssh-spawned bash) so the collector never matches itself.
+    const namePass = await SSHCollector.run(target,
+      `ps -eo pid,ppid,user,pcpu,pmem,comm,args --no-headers 2>/dev/null | ` +
+      `awk -v self=$$ -v parent=$PPID '` +
+      `$1 != self && $2 != self && $1 != parent && ` +
+      `tolower($6) ~ /^(${nameAlt})$/ { print }'`,
       10_000
     );
 
-    if (!result.success || !result.stdout.trim()) return [];
+    // Pass 2: match by full cmdline against suspicious path indicators.
+    // Pattern is passed as an awk variable (-v pat=...) — matching $0 ~ pat
+    // treats `pat` as a dynamic regex, so the literal `/` characters inside
+    // the alternation don't terminate an awk regex-literal. Embedded single
+    // quotes in the script are split-and-rejoined ('"'"') so the shell
+    // doesn't terminate the surrounding single-quoted awk program.
+    const pathPass = await SSHCollector.run(target,
+      `ps -eo pid,ppid,user,pcpu,pmem,comm,args --no-headers 2>/dev/null | ` +
+      `awk -v self=$$ -v parent=$PPID -v pat='(${pathAlt})' '` +
+      `$1 != self && $2 != self && $1 != parent && ` +
+      `$6 !~ /^(awk|grep|sed|sh|bash|dash|zsh)$/ && ` +
+      `$0 ~ pat { print }'`,
+      10_000
+    );
 
-    return result.stdout.trim().split('\n')
-      .filter(Boolean)
-      .map(line => ({
-        serverId: target.id,
-        serverName: target.name,
-        source: 'process',
-        timestamp: new Date(),
-        line: `SUSPICIOUS_PROCESS: ${line.trim()}`,
-      }));
+    const lines = [
+      ...(namePass.success ? namePass.stdout.trim().split('\n') : []),
+      ...(pathPass.success ? pathPass.stdout.trim().split('\n') : []),
+    ].filter(Boolean);
+
+    if (lines.length === 0) return [];
+
+    return lines.map(line => ({
+      serverId: target.id,
+      serverName: target.name,
+      source: 'process',
+      timestamp: new Date(),
+      line: `SUSPICIOUS_PROCESS: ${line.trim()}`,
+    }));
   }
 
   static async detectHighCPU(target: SSHTarget, thresholdPercent = 90): Promise<RawLogEntry[]> {

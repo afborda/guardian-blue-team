@@ -3,12 +3,15 @@ import { AnomalyDetector } from '../intelligence/anomaly-detector.js';
 import { TrendPredictor } from '../intelligence/trend-predictor.js';
 import { SSHBehaviorProfiler } from '../intelligence/ssh-behavior.js';
 import { ContainerBehaviorProfiler } from '../intelligence/container-behavior.js';
+import { MarkovUserProfile } from '../intelligence/markov-user-profile.service.js';
 import { NotifierManager } from '../plugins/notifier-manager.js';
 import { logger } from '../utils/logger.js';
 
 export class IntelligenceWorker {
   private static intervalId: NodeJS.Timeout | null = null;
+  private static markovIntervalId: NodeJS.Timeout | null = null;
   private static readonly INTERVAL_MS = 60 * 60 * 1000;
+  private static readonly MARKOV_REFRESH_MS = 24 * 60 * 60 * 1000;
   // Cooldown: same server+metric combo won't re-alert for 6 hours
   private static readonly ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
   private static alertedAt = new Map<string, number>();
@@ -20,11 +23,21 @@ export class IntelligenceWorker {
       this.run().catch(err => logger.error({ err }, 'Intelligence worker error'));
     }, 10 * 60 * 1000);
 
+    // Refresh Markov views once on startup so scoring works after a fresh deploy,
+    // then once a day. Cheap when nothing changed.
+    setTimeout(() => {
+      MarkovUserProfile.refresh().catch(err => logger.warn({ err }, 'Markov refresh failed'));
+    }, 60 * 1000);
+
     this.intervalId = setInterval(() => {
       this.run().catch(err => logger.error({ err }, 'Intelligence worker error'));
     }, this.INTERVAL_MS);
 
-    logger.info('Intelligence worker started (every 1h)');
+    this.markovIntervalId = setInterval(() => {
+      MarkovUserProfile.refresh().catch(err => logger.warn({ err }, 'Markov refresh failed'));
+    }, this.MARKOV_REFRESH_MS);
+
+    logger.info('Intelligence worker started (every 1h, Markov refresh every 24h)');
   }
 
   static async run(): Promise<void> {
@@ -85,11 +98,13 @@ export class IntelligenceWorker {
   }
 
   private static async notifyAnomaly(serverName: string, anomaly: any): Promise<void> {
+    const method = anomaly.method ?? 'sigma';
+    const unit = method === 'stl' ? 'z' : 'σ';
     await NotifierManager.notify({
       title: `Anomalia em ${serverName}`,
-      body: `Métrica: ${anomaly.metric}\nValor atual: ${anomaly.currentValue} (esperado: ~${anomaly.expectedMean})\nDesvio: ${anomaly.deviations}σ`,
+      body: `Métrica: ${anomaly.metric}\nValor atual: ${anomaly.currentValue} (esperado: ~${anomaly.expectedMean})\nDesvio: ${anomaly.deviations}${unit} (${method})`,
       severity: anomaly.severity === 'critical' ? 'high' : 'medium',
-      metadata: { server: serverName, metric: anomaly.metric },
+      metadata: { server: serverName, metric: anomaly.metric, method },
     });
   }
 
@@ -116,6 +131,10 @@ export class IntelligenceWorker {
     if (this.intervalId) {
       clearInterval(this.intervalId);
       this.intervalId = null;
+    }
+    if (this.markovIntervalId) {
+      clearInterval(this.markovIntervalId);
+      this.markovIntervalId = null;
     }
     logger.info('Intelligence worker stopped');
   }

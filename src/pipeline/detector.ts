@@ -1,6 +1,8 @@
 import type { NormalizedEvent } from './normalizer.js';
 import { logger } from '../utils/logger.js';
 import { CONSTANTS } from '../config/constants.js';
+import { db } from '../database/connection.js';
+import { trustedEntities } from '../database/schema.js';
 
 export interface DetectionRule {
   name: string;
@@ -34,6 +36,20 @@ export function addTrustedIp(ip: string): void {
 
 export function addTrustedFingerprint(fingerprint: string): void {
   TRUSTED_FINGERPRINTS.add(fingerprint);
+}
+
+export async function loadTrustedEntities(): Promise<void> {
+  try {
+    const rows = await db.select().from(trustedEntities);
+    let ips = 0, fps = 0;
+    for (const row of rows) {
+      if (row.entityType === 'ip') { TRUSTED_IPS.add(row.value); ips++; }
+      else if (row.entityType === 'fingerprint') { TRUSTED_FINGERPRINTS.add(row.value); fps++; }
+    }
+    logger.info({ ips, fingerprints: fps, total: rows.length }, 'Trusted entities loaded from DB');
+  } catch (err) {
+    logger.error({ err }, 'Failed to load trusted entities from DB');
+  }
 }
 
 const KNOWN_USERS = new Set(['ubuntu', 'root', 'deploy']);
@@ -364,7 +380,11 @@ const DETECTION_RULES: DetectionRule[] = [
     description: 'Detects process execution from /tmp or /dev/shm inside container',
     condition: (_events, current) => {
       if (current.source !== 'container_process') return false;
-      return /\/tmp\/|\/dev\/shm\/|\/var\/tmp\//.test(current.rawLog);
+      if (!(/\/tmp\/|\/dev\/shm\/|\/var\/tmp\//).test(current.rawLog)) return false;
+      // Exclude Guardian's own SSH ControlPath sockets and known-benign app tmp usage
+      if (/\/tmp\/guardian-ssh-/.test(current.rawLog)) return false;
+      if (/haproxy.*\/tmp\/haproxy\.cfg/.test(current.rawLog)) return false;
+      return true;
     },
     severity: 'high',
     eventType: 'container_suspicious_exec',
@@ -383,13 +403,25 @@ const DETECTION_RULES: DetectionRule[] = [
   },
   {
     name: 'container_fs_tampering',
-    description: 'Detects new files written to suspicious paths inside container',
+    description: 'Detects new executable-looking files written to suspicious paths inside container',
     condition: (_events, current) => {
       if (current.source !== 'container_filesystem') return false;
       if (current.eventType !== 'container_file_added') return false;
       const filePath = current.metadata?.filePath as string;
       if (!filePath) return false;
-      return CONSTANTS.container.suspiciousContainerPaths.some(p => filePath.includes(p));
+      if (!CONSTANTS.container.suspiciousContainerPaths.some(p => filePath.includes(p))) return false;
+      // Exclude Guardian's own SSH sockets and known-benign app temp usage
+      if (/\/tmp\/guardian-ssh-/.test(filePath)) return false;
+      if (/\/tmp\/\.mc(\/|$)/.test(filePath)) return false;
+      // Only flag files that look executable — not sockets, dirs, configs, or caches
+      const basename = filePath.split('/').pop() ?? '';
+      const isDirectory = !basename.includes('.') && !basename.match(/[A-F0-9]{8,}/i);
+      if (isDirectory) return false;
+      const benignExtensions = /\.(json|cfg|config|conf|log|pid|sock|socket|lock|tmp|cache|gz|tar|zip|png|jpg|env|ini|xml|yaml|yml)$/i;
+      if (benignExtensions.test(basename)) return false;
+      const debugPipeOrCache = /clr-debug-pipe|dotnet-diagnostic|node-compile-cache|jellyfin|qdrant.*upload/i;
+      if (debugPipeOrCache.test(filePath)) return false;
+      return true;
     },
     severity: 'high',
     eventType: 'container_fs_tampering',
@@ -410,6 +442,10 @@ const DETECTION_RULES: DetectionRule[] = [
 export class EventDetector {
   private static eventBuffer: NormalizedEvent[] = [];
   private static readonly MAX_BUFFER = CONSTANTS.detection.eventBufferSize;
+  // Cooldown for chronic/persistent alerts (broken services, not attacks) — 30min per server+rule+unit
+  private static readonly CHRONIC_COOLDOWN_MS = 30 * 60_000;
+  private static readonly CHRONIC_RULES = new Set(['systemd_restart_loop', 'container_fs_tampering', 'container_suspicious_exec', 'container_crypto_process']);
+  private static chronicSeen = new Map<string, number>();
 
   static detect(events: NormalizedEvent[]): NormalizedEvent[] {
     this.eventBuffer.push(...events);
@@ -417,11 +453,21 @@ export class EventDetector {
       this.eventBuffer = this.eventBuffer.slice(-this.MAX_BUFFER);
     }
 
+    const now = Date.now();
     const detectedEvents: NormalizedEvent[] = [];
 
     for (const event of events) {
       for (const rule of DETECTION_RULES) {
         if (rule.condition(this.eventBuffer, event)) {
+          // Suppress repeated chronic alerts within cooldown window
+          if (this.CHRONIC_RULES.has(rule.name)) {
+            const unit = (event.metadata?.unit as string) ?? event.processName ?? '';
+            const cooldownKey = `${rule.name}:${event.serverId}:${unit}`;
+            const lastSeen = this.chronicSeen.get(cooldownKey) ?? 0;
+            if (now - lastSeen < this.CHRONIC_COOLDOWN_MS) break;
+            this.chronicSeen.set(cooldownKey, now);
+          }
+
           const detected: NormalizedEvent = {
             ...event,
             severity: rule.severity,

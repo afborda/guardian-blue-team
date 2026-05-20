@@ -212,6 +212,18 @@ const DETECTION_RULES: DetectionRule[] = [
     eventType: 'sudo_suspicious',
   },
   {
+    name: 'sudo_unusual_sequence',
+    description: 'Sudo command sequence anomalous for this user (Markov surprisal > p99)',
+    condition: (_events, current) => {
+      if (current.eventType !== 'sudo_command') return false;
+      // markov-enricher attaches these — absent metadata = cold-start or no
+      // prior command, both of which are silent by design.
+      return current.metadata?.markovIsAnomaly === true;
+    },
+    severity: 'medium',
+    eventType: 'sudo_unusual_sequence',
+  },
+  {
     name: 'suspicious_cron_added',
     description: 'Cron job with suspicious command was added',
     condition: (_events, current) => {

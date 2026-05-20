@@ -17,6 +17,11 @@ id_*
 *.sqlite
 *.heapsnapshot
 
+# ML model artifacts (rebuild via `npm run train-dga`)
+/models/*.onnx
+/models/*.meta.json
+/models/tranco_top1m.csv
+
 # OS
 .DS_Store
 Thumbs.db

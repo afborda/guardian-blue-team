@@ -6,7 +6,7 @@
   <a href="https://github.com/afborda/guardian-blue-team/actions/workflows/ci.yml"><img src="https://github.com/afborda/guardian-blue-team/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License: AGPL-3.0"></a>
   <a href="https://ghcr.io/afborda/guardian-blue-team"><img src="https://img.shields.io/badge/Docker-ghcr.io-blue" alt="Docker"></a>
-  <img src="https://img.shields.io/badge/version-2.0.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.1.0-blue" alt="Version">
 </p>
 
 <p align="center">
@@ -98,7 +98,7 @@ graph TB
         COLLECT[Collectors\n12 types]
         PIPE[Pipeline\nNormalize → Detect → Enrich → Correlate]
         ENGINE[Playbook Engine\n15+ automated playbooks]
-        AI_LAYER[AI Layer\nOllama qwen3 + nomic-embed-text]
+        AI_LAYER[AI Layer\nOllama qwen3 + bge-m3]
         DB[(PostgreSQL\nEvents, Incidents, Blocks, Memory)]
         WORKERS[Workers\n12 background processes]
     end
@@ -122,7 +122,19 @@ graph TB
 
 ---
 
-## Key Features (v2.0)
+## What's New in v2.1
+
+| Feature | What it does |
+|---------|--------------|
+| **STL Anomaly Detection** | Time-series decomposition (trend + seasonal + residual) on `load_ratio`, `mem_used_percent`, `network_rx/tx_bps`. Catches anomalies that fixed-σ thresholds miss on metrics with daily/weekly cycles. Falls back to σ when no period is detectable. |
+| **DGA ML Classifier** | ONNX logistic-regression model (sklearn → skl2onnx) with 11 features incl. bigram log-likelihood. Trained on Tranco top-1m + synthetic Conficker/Cryptolocker/Necurs domains. Optional dependency — falls back to entropy heuristic if `onnxruntime-node` is not installed. Train via `npm run train-dga`. |
+| **TI + AI Consensus Gate** | Block decisions now require agreement between Threat Intel score and AI advisor. Always-block categories (port_scan, brute_force, ddos, crypto_mining, lateral_movement) bypass the gate but still log a TI hint for FP audit. |
+| **bge-m3 Embeddings** | RAG memory upgraded from `nomic-embed-text` to `bge-m3` (multilingual, 1024-dim). Re-embed historical incidents with `npm run reembed-incidents`. |
+| **CVE Intel Feeds** | EPSS (exploitation probability) + CISA KEV (known-exploited) join OSV.dev. Admin trigger endpoint to force a refresh. |
+
+---
+
+## Key Features
 
 ### Permanent Blocking — Once Blocked, Always Blocked
 
@@ -189,7 +201,7 @@ When an SSH login is detected, Guardian sends a Telegram notification with:
 
 ```mermaid
 flowchart LR
-    INCIDENT[New Incident] --> EMBED[Generate Embedding\nnomic-embed-text]
+    INCIDENT[New Incident] --> EMBED[Generate Embedding\nbge-m3]
     EMBED --> STORE[(Vector Store\nPostgreSQL)]
     
     NEXT[Next Similar\nIncident] --> SEARCH[Semantic Search\nCosine Similarity]
@@ -206,10 +218,11 @@ flowchart LR
 |----------|---------|----------|
 | **SSH** | Brute force, invalid users, unauthorized logins, unusual hours, lateral movement | Permanent block |
 | **DDoS** | SYN flood, connection rate spike, bandwidth anomaly | Rate-limit → Escalate → Block |
-| **Network** | Port scanning, DNS DGA (C2), suspicious TLDs, connection flood | Permanent block |
+| **Network** | Port scanning, DGA C2 (ML classifier), suspicious TLDs, connection flood | Permanent block |
+| **Statistical Anomalies** | CPU/memory/network spikes via STL decomposition (handles diurnal cycles) | Alert + AI triage |
 | **Containers** | Escape attempts, crypto mining, crashloops, resource abuse | Kill + block + isolate |
 | **File Integrity** | /etc/passwd, sudoers, sshd_config, authorized_keys tampering | Critical alert |
-| **Supply Chain** | CVE on installed packages (OSV.dev) | Alert + remediation steps |
+| **Supply Chain** | CVE on installed packages (OSV.dev + EPSS + CISA KEV) | Alert + remediation steps |
 | **Persistence** | Malicious cron jobs, reverse shells, unauthorized SSH keys | Alert + block |
 
 15+ detection rules, 15+ automated playbooks.
@@ -282,7 +295,7 @@ ABUSEIPDB_API_KEY=your_free_key
 docker compose up -d
 ```
 
-Wait 2-3 minutes for Ollama to pull AI models (`qwen3:4b` + `nomic-embed-text`).
+Wait 2-3 minutes for Ollama to pull AI models (`qwen3:4b` + `bge-m3`).
 
 ### 3. Add Servers
 
@@ -434,7 +447,7 @@ sequenceDiagram
 |-------|-----------|
 | Runtime | Node.js 20 + TypeScript |
 | Database | PostgreSQL 16 |
-| AI (local) | Ollama + qwen3:4b + nomic-embed-text |
+| AI (local) | Ollama + qwen3:4b + bge-m3 |
 | AI (cloud) | Gemini / OpenAI / Claude (failover) |
 | Firewall | UFW + fail2ban + iptables |
 | Alerts | Telegram Bot API |

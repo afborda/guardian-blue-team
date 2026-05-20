@@ -343,6 +343,52 @@ async function createPostgresTables(pool: Pool): Promise<void> {
       -- scripts/reembed-incidents.ts. Without this, switching between two
       -- 1024d models silently mixes vector spaces.
       ALTER TABLE incident_memory ADD COLUMN IF NOT EXISTS embedding_model VARCHAR(100);
+
+      -- Markov user-behavior profiling. See migrations/007 for schema docs.
+      -- Matviews are empty after creation; intelligence.worker triggers the
+      -- first refresh ~60s after startup.
+      CREATE MATERIALIZED VIEW IF NOT EXISTS user_command_transitions AS
+      WITH paired AS (
+        SELECT
+          e.server_id,
+          e.user_name,
+          (e.metadata->>'command') AS curr_cmd,
+          LAG(e.metadata->>'command') OVER (
+            PARTITION BY e.server_id, e.user_name ORDER BY e.timestamp
+          ) AS prev_cmd
+        FROM security_events e
+        WHERE e.event_type = 'sudo_command'
+          AND e.user_name IS NOT NULL
+          AND e.metadata ? 'command'
+          AND e.timestamp > NOW() - INTERVAL '90 days'
+      ),
+      counted AS (
+        SELECT server_id, user_name, prev_cmd, curr_cmd, COUNT(*) AS n
+        FROM paired
+        WHERE prev_cmd IS NOT NULL AND curr_cmd IS NOT NULL
+        GROUP BY server_id, user_name, prev_cmd, curr_cmd
+      )
+      SELECT
+        server_id, user_name, prev_cmd, curr_cmd, n,
+        n::float / SUM(n) OVER (PARTITION BY server_id, user_name, prev_cmd) AS p,
+        SUM(n) OVER (PARTITION BY server_id, user_name) AS total_samples
+      FROM counted;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS user_command_transitions_pk
+        ON user_command_transitions (server_id, user_name, prev_cmd, curr_cmd);
+      CREATE INDEX IF NOT EXISTS user_command_transitions_lookup_idx
+        ON user_command_transitions (server_id, user_name, prev_cmd);
+
+      CREATE MATERIALIZED VIEW IF NOT EXISTS user_command_thresholds AS
+      SELECT
+        server_id, user_name, total_samples,
+        PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY -LN(p)) AS p99_surprisal,
+        MIN(p) AS min_observed_p
+      FROM user_command_transitions
+      GROUP BY server_id, user_name, total_samples;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS user_command_thresholds_pk
+        ON user_command_thresholds (server_id, user_name);
     `);
   } finally {
     client.release();

@@ -77,6 +77,11 @@ const envSchema = z.object({
   CVE_MONITOR_INTERVAL_HOURS: z.string().transform(Number).default('6'),
   CVE_INTEL_FEEDS_ENABLED: z.string().transform(v => v !== 'false').default('true'),
   CVE_EPSS_HISTORY_DAYS: z.string().transform(Number).default('30'),
+
+  // Trivy — image vulnerability scanner. Optional: when unset, docker-audit
+  // falls back to its cheap :latest/age heuristics only.
+  TRIVY_SERVER_URL: z.string().optional(),
+  TRIVY_TOKEN: z.string().optional(),
 });
 
 export interface DashboardUser {
@@ -176,6 +181,11 @@ export const config = {
   cveIntelFeeds: {
     enabled: env.CVE_INTEL_FEEDS_ENABLED,
     epssHistoryDays: env.CVE_EPSS_HISTORY_DAYS,
+  },
+
+  trivy: {
+    serverUrl: env.TRIVY_SERVER_URL || null,
+    token: env.TRIVY_TOKEN || null,
   },
 } as const;
 

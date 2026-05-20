@@ -41,7 +41,7 @@ export class VulnScanner {
     }
 
     for (const d of docker) {
-      await this.upsertVuln(serverId, 'docker', d.severity, `${d.image}:${d.tag} — ${d.issue}`);
+      await this.upsertVuln(serverId, 'docker', d.severity, `${d.image}:${d.tag} — ${d.issue}`, d.cveId);
     }
 
     return {
@@ -89,7 +89,7 @@ export class VulnScanner {
     });
   }
 
-  private static async upsertVuln(serverId: number, category: string, severity: string, title: string): Promise<void> {
+  private static async upsertVuln(serverId: number, category: string, severity: string, title: string, cveId?: string): Promise<void> {
     const existing = await db.select()
       .from(vulnerabilities)
       .where(and(
@@ -100,7 +100,7 @@ export class VulnScanner {
       .then(rows => rows[0]);
 
     if (!existing) {
-      await db.insert(vulnerabilities).values({ serverId, category, severity, title });
+      await db.insert(vulnerabilities).values({ serverId, category, severity, title, cveId });
     }
   }
 }

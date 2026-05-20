@@ -3,12 +3,15 @@ import { AnomalyDetector } from '../intelligence/anomaly-detector.js';
 import { TrendPredictor } from '../intelligence/trend-predictor.js';
 import { SSHBehaviorProfiler } from '../intelligence/ssh-behavior.js';
 import { ContainerBehaviorProfiler } from '../intelligence/container-behavior.js';
+import { MarkovUserProfile } from '../intelligence/markov-user-profile.service.js';
 import { NotifierManager } from '../plugins/notifier-manager.js';
 import { logger } from '../utils/logger.js';
 
 export class IntelligenceWorker {
   private static intervalId: NodeJS.Timeout | null = null;
+  private static markovIntervalId: NodeJS.Timeout | null = null;
   private static readonly INTERVAL_MS = 60 * 60 * 1000;
+  private static readonly MARKOV_REFRESH_MS = 24 * 60 * 60 * 1000;
 
   static start(): void {
     if (this.intervalId) return;
@@ -17,11 +20,21 @@ export class IntelligenceWorker {
       this.run().catch(err => logger.error({ err }, 'Intelligence worker error'));
     }, 10 * 60 * 1000);
 
+    // Refresh Markov views once on startup so scoring works after a fresh deploy,
+    // then once a day. Cheap when nothing changed.
+    setTimeout(() => {
+      MarkovUserProfile.refresh().catch(err => logger.warn({ err }, 'Markov refresh failed'));
+    }, 60 * 1000);
+
     this.intervalId = setInterval(() => {
       this.run().catch(err => logger.error({ err }, 'Intelligence worker error'));
     }, this.INTERVAL_MS);
 
-    logger.info('Intelligence worker started (every 1h)');
+    this.markovIntervalId = setInterval(() => {
+      MarkovUserProfile.refresh().catch(err => logger.warn({ err }, 'Markov refresh failed'));
+    }, this.MARKOV_REFRESH_MS);
+
+    logger.info('Intelligence worker started (every 1h, Markov refresh every 24h)');
   }
 
   static async run(): Promise<void> {
@@ -103,6 +116,10 @@ export class IntelligenceWorker {
     if (this.intervalId) {
       clearInterval(this.intervalId);
       this.intervalId = null;
+    }
+    if (this.markovIntervalId) {
+      clearInterval(this.markovIntervalId);
+      this.markovIntervalId = null;
     }
     logger.info('Intelligence worker stopped');
   }

@@ -106,9 +106,41 @@ services:
       OLLAMA_HOST: http://ollama:11434
     restart: "no"
 
+  # Centralized Trivy server. Targets run `trivy image --server <url>` over SSH;
+  # only this container holds the ~600MB vuln DB and refreshes it every 6h.
+  # Auth via TRIVY_TOKEN (optional but recommended on shared networks).
+  trivy:
+    image: aquasec/trivy:latest
+    container_name: guardian-trivy
+    restart: unless-stopped
+    command: ["server", "--listen", "0.0.0.0:4954", "--token", "${TRIVY_TOKEN:-}"]
+    volumes:
+      - trivy_cache:/root/.cache/trivy
+    networks:
+      - guardian-internal
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+        reservations:
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4954/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
 volumes:
   guardian_pgdata:
   ollama_models:
+  trivy_cache:
 
 networks:
   guardian-internal:

@@ -7,6 +7,9 @@ export {
   vulnerabilities,
   blockedIps,
   cveAlerts,
+  cveEpss,
+  cveEpssHistory,
+  cveKev,
   serverMetrics,
   serverScores,
   behaviorProfiles,
@@ -15,4 +18,5 @@ export {
   threatHuntFindings,
   containerSnapshots,
   auditLogs,
+  trustedEntities,
 } from './guardian-schema.js';

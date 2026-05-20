@@ -68,7 +68,20 @@ export class IncidentMemoryService {
       const allWithEmbeddings = await db.select().from(incidentMemory)
         .where(isNotNull(incidentMemory.embedding));
       if (allWithEmbeddings.length > 0) {
-        const scored = allWithEmbeddings
+        // Filter out stale embeddings from prior model (dimension mismatch).
+        // Re-embedding is handled by `npm run reembed-incidents` after model swap.
+        const queryDim = queryEmbedding.length;
+        const compatible = allWithEmbeddings.filter(r => {
+          const emb = r.embedding as number[] | null;
+          return Array.isArray(emb) && emb.length === queryDim;
+        });
+        const stale = allWithEmbeddings.length - compatible.length;
+        if (stale > 0) {
+          logger.warn({ stale, total: allWithEmbeddings.length, queryDim },
+            'incident_memory has stale embeddings — run reembed-incidents');
+        }
+
+        const scored = compatible
           .map(record => ({
             ...record,
             similarity: EmbeddingService.cosineSimilarity(queryEmbedding, record.embedding as number[]),

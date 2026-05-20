@@ -94,7 +94,7 @@ export class ServerReadinessService {
         logger.info({ tool: tool.tool, server: target.host }, 'Tool installed successfully');
       } else {
         failed.push(tool.tool);
-        logger.warn({ tool: tool.tool, server: target.host, stderr: result.stderr }, 'Tool installation failed');
+        logger.warn({ tool: tool.tool, server: target.host, error: result.error }, 'Tool installation failed');
       }
     }
 
@@ -127,7 +127,7 @@ failregex = ^$`;
     if (result.success) {
       logger.info({ server: target.host }, 'fail2ban guardian-jail configured');
     } else {
-      logger.warn({ server: target.host, stderr: result.stderr }, 'fail2ban jail setup failed');
+      logger.warn({ server: target.host, error: result.error }, 'fail2ban jail setup failed');
     }
     return result.success;
   }

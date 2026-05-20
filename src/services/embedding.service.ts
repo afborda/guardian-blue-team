@@ -1,8 +1,22 @@
 import { config } from '../config/environment.js';
 import { logger } from '../utils/logger.js';
 
+// bge-m3 produces 1024d vectors; nomic-embed-text produced 768d.
+// Stale embeddings from prior models are filtered by dimension match in findSimilar.
+export const EMBEDDING_DIMENSIONS: Readonly<Record<string, number>> = {
+  'bge-m3': 1024,
+  'nomic-embed-text': 768,
+  'mxbai-embed-large': 1024,
+};
+
 export class EmbeddingService {
   private static readonly TIMEOUT_MS = 30_000;
+
+  /** Expected dimension for the currently configured embed model. */
+  static expectedDimension(): number | null {
+    const modelKey = config.ai.ollamaEmbedModel.split(':')[0]; // strip ":latest" tag if present
+    return EMBEDDING_DIMENSIONS[modelKey] ?? null;
+  }
 
   static async generate(text: string): Promise<number[] | null> {
     if (!config.ai.ollamaUrl || config.ai.strategy === 'api-only') return null;
@@ -49,7 +63,8 @@ export class EmbeddingService {
       const res = await fetch(`${config.ai.ollamaUrl}/api/tags`, { method: 'GET' });
       if (!res.ok) return false;
       const data = await res.json() as { models?: Array<{ name: string }> };
-      return data.models?.some(m => m.name.includes('nomic-embed')) ?? false;
+      const expected = config.ai.ollamaEmbedModel.split(':')[0];
+      return data.models?.some(m => m.name.split(':')[0] === expected) ?? false;
     } catch {
       return false;
     }

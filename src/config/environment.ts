@@ -41,7 +41,7 @@ const envSchema = z.object({
   OLLAMA_URL: z.string().default('http://localhost:11434'),
   OLLAMA_MODEL: z.string().default('qwen3:4b'),
   OLLAMA_CHAT_MODEL: z.string().default('qwen3:0.6b'),
-  OLLAMA_EMBED_MODEL: z.string().default('nomic-embed-text'),
+  OLLAMA_EMBED_MODEL: z.string().default('bge-m3'),
 
   // AI — Provider preference
   AI_PROVIDER: z.enum(['gemini', 'openai', 'claude', 'ollama', 'auto']).default('auto'),
@@ -75,6 +75,13 @@ const envSchema = z.object({
   CVE_MONITOR_ENABLED: z.string().transform(v => v !== 'false').default('true'),
   CVE_MONITOR_MIN_CVSS: z.string().transform(Number).default('7.0'),
   CVE_MONITOR_INTERVAL_HOURS: z.string().transform(Number).default('6'),
+  CVE_INTEL_FEEDS_ENABLED: z.string().transform(v => v !== 'false').default('true'),
+  CVE_EPSS_HISTORY_DAYS: z.string().transform(Number).default('30'),
+
+  // Trivy — image vulnerability scanner. Optional: when unset, docker-audit
+  // falls back to its cheap :latest/age heuristics only.
+  TRIVY_SERVER_URL: z.string().optional(),
+  TRIVY_TOKEN: z.string().optional(),
 
   // Falco — runtime syscall visibility. Token is shared by all Falco agents
   // and validated on POST /webhook/falco. Unset = endpoint returns 503.
@@ -181,6 +188,16 @@ export const config = {
     enabled: env.CVE_MONITOR_ENABLED,
     minCvss: env.CVE_MONITOR_MIN_CVSS,
     checkIntervalHours: env.CVE_MONITOR_INTERVAL_HOURS,
+  },
+
+  cveIntelFeeds: {
+    enabled: env.CVE_INTEL_FEEDS_ENABLED,
+    epssHistoryDays: env.CVE_EPSS_HISTORY_DAYS,
+  },
+
+  trivy: {
+    serverUrl: env.TRIVY_SERVER_URL || null,
+    token: env.TRIVY_TOKEN || null,
   },
 
   falco: {

@@ -11,6 +11,8 @@ import {
   real,
   bigint,
   uniqueIndex,
+  numeric,
+  date,
 } from 'drizzle-orm/pg-core';
 
 // ─── Guardian SOC Tables (owned and managed by Guardian) ────────────────────
@@ -134,6 +136,49 @@ export const cveAlerts = pgTable('cve_alerts', {
 }, (table) => ({
   cveServerIdx: index('cve_alerts_cve_server_idx').on(table.cveId, table.serverId),
   statusIdx: index('cve_alerts_status_idx').on(table.status),
+}));
+
+// EPSS (Exploit Prediction Scoring System) — daily snapshot per CVE
+// Source: https://api.first.org/data/v1/epss
+export const cveEpss = pgTable('cve_epss', {
+  cveId: varchar('cve_id', { length: 20 }).primaryKey(),
+  epssScore: numeric('epss_score', { precision: 6, scale: 5, mode: 'number' }).notNull(),
+  percentile: numeric('percentile', { precision: 6, scale: 5, mode: 'number' }).notNull(),
+  fetchedAt: timestamp('fetched_at').defaultNow().notNull(),
+}, (table) => ({
+  scoreIdx: index('cve_epss_score_idx').on(table.epssScore),
+}));
+
+// 30-day rolling history for EPSS trend detection
+export const cveEpssHistory = pgTable('cve_epss_history', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+  cveId: varchar('cve_id', { length: 20 }).notNull(),
+  epssScore: numeric('epss_score', { precision: 6, scale: 5, mode: 'number' }).notNull(),
+  percentile: numeric('percentile', { precision: 6, scale: 5, mode: 'number' }).notNull(),
+  snapshotDate: date('snapshot_date').notNull(),
+}, (table) => ({
+  cveDateIdx: index('cve_epss_history_cve_date_idx').on(table.cveId, table.snapshotDate),
+  dateIdx: index('cve_epss_history_date_idx').on(table.snapshotDate),
+  cveDateUq: uniqueIndex('cve_epss_history_cve_date_uq').on(table.cveId, table.snapshotDate),
+}));
+
+// CISA KEV (Known Exploited Vulnerabilities) — confirmed exploited in the wild
+// Source: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+export const cveKev = pgTable('cve_kev', {
+  cveId: varchar('cve_id', { length: 20 }).primaryKey(),
+  vendorProject: varchar('vendor_project', { length: 200 }),
+  product: varchar('product', { length: 200 }),
+  vulnerabilityName: varchar('vulnerability_name', { length: 500 }),
+  dateAdded: date('date_added').notNull(),
+  shortDescription: text('short_description'),
+  requiredAction: text('required_action'),
+  dueDate: date('due_date'),
+  ransomwareUse: boolean('ransomware_use').default(false),
+  notes: text('notes'),
+  cwes: text('cwes'),
+  fetchedAt: timestamp('fetched_at').defaultNow().notNull(),
+}, (table) => ({
+  dateAddedIdx: index('cve_kev_date_added_idx').on(table.dateAdded),
 }));
 
 export const blockedIps = pgTable('blocked_ips', {
@@ -276,10 +321,26 @@ export const incidentMemory = pgTable('incident_memory', {
   timeToContainMinutes: integer('time_to_contain_minutes'),
   tags: jsonb('tags').$type<string[]>().default([]),
   embedding: jsonb('embedding').$type<number[]>(),
+  // Tracks which embedding model produced `embedding`. Required so that
+  // switching between two models of identical dimension (e.g. bge-m3 1024d
+  // ↔ mxbai-embed-large 1024d) can still trigger re-embedding — comparing
+  // dimension alone would silently mix two distinct vector spaces.
+  embeddingModel: varchar('embedding_model', { length: 100 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
   categoryIdx: index('incident_memory_category_idx').on(table.category),
   createdIdx: index('incident_memory_created_idx').on(table.createdAt),
+}));
+
+export const trustedEntities = pgTable('trusted_entities', {
+  id: serial('id').primaryKey(),
+  entityType: varchar('entity_type', { length: 20 }).notNull(), // 'ip' | 'fingerprint'
+  value: varchar('value', { length: 500 }).notNull(),
+  addedBy: varchar('added_by', { length: 100 }),
+  addedAt: timestamp('added_at').defaultNow().notNull(),
+  note: varchar('note', { length: 500 }),
+}, (table) => ({
+  typeValueIdx: uniqueIndex('trusted_entities_type_value_idx').on(table.entityType, table.value),
 }));
 
 export const auditLogs = pgTable('audit_logs', {

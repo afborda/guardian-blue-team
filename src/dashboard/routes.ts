@@ -4,6 +4,8 @@ import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts, server
 import { IntelligenceWorker } from '../workers/intelligence.worker.js';
 import { ScoreCalculatorWorker } from '../workers/score-calculator.worker.js';
 import { CVEMonitorWorker } from '../workers/cve-monitor.worker.js';
+import { CVEIntelFeedsWorker } from '../workers/cve-intel-feeds.worker.js';
+import { requireRole } from './auth.js';
 import { eq, count, desc, and, gte, ne, sql } from 'drizzle-orm';
 import { config } from '../config/environment.js';
 import { layout } from './views/layout.js';
@@ -1415,6 +1417,16 @@ dashboardApi.post('/run-workers', async (_req, res) => {
       &#10007; Erro ao recalcular
     </button>`);
   }
+});
+
+dashboardApi.post('/admin/trigger/cve-intel-feeds', requireRole('admin'), (_req, res) => {
+  CVEIntelFeedsWorker.run().catch(err =>
+    logger.error({ err }, 'Manual CVE intel feeds trigger failed')
+  );
+  res.status(202).json({
+    status: 'triggered',
+    message: 'CVE intel feeds ingest started in background — check logs for progress',
+  });
 });
 
 // ─── Container Alert Description Helper ──────────────────────────────────────

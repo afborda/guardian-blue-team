@@ -214,7 +214,10 @@ export class EventCollectorWorker {
 
   private static recentlyTriggered = new Map<string, number>();
 
-  private static async triggerPlaybooks(results: CorrelationResult[]): Promise<void> {
+  // Public so non-worker code (Falco webhook) can reuse the dedupe + trigger
+  // logic without re-implementing it. Promoting to public is cheaper than
+  // extracting to a module — refactor when a third caller appears.
+  static async triggerPlaybooks(results: CorrelationResult[]): Promise<void> {
     const serverCache = new Map<number, string>();
     const now = Date.now();
 

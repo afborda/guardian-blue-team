@@ -82,6 +82,10 @@ const envSchema = z.object({
   // falls back to its cheap :latest/age heuristics only.
   TRIVY_SERVER_URL: z.string().optional(),
   TRIVY_TOKEN: z.string().optional(),
+
+  // Falco — runtime syscall visibility. Token is shared by all Falco agents
+  // and validated on POST /webhook/falco. Unset = endpoint returns 503.
+  FALCO_WEBHOOK_TOKEN: z.string().optional(),
 });
 
 export interface DashboardUser {
@@ -101,6 +105,14 @@ function parseDashboardUsers(raw?: string): DashboardUser[] {
 }
 
 const env = envSchema.parse(process.env);
+
+// Falco token is shell-interpolated into the deploy command. Single quotes are
+// the only safe quoting char that works on every POSIX shell — but they break
+// if the token itself contains '. base64 tokens (openssl rand -base64 32) never
+// do; reject anything else at startup with a clear error.
+if (env.FALCO_WEBHOOK_TOKEN && env.FALCO_WEBHOOK_TOKEN.includes("'")) {
+  throw new Error("FALCO_WEBHOOK_TOKEN must not contain single quotes. Generate with: openssl rand -base64 32");
+}
 
 export const config = {
   server: {
@@ -186,6 +198,10 @@ export const config = {
   trivy: {
     serverUrl: env.TRIVY_SERVER_URL || null,
     token: env.TRIVY_TOKEN || null,
+  },
+
+  falco: {
+    webhookToken: env.FALCO_WEBHOOK_TOKEN || null,
   },
 } as const;
 

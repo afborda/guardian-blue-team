@@ -28,6 +28,7 @@ import { dashboardAuth } from './dashboard/auth.js';
 import { CONSTANTS } from './config/constants.js';
 import { safeCompare } from './utils/sanitize.js';
 import { rateLimiter } from './middleware/rate-limiter.js';
+import { falcoWebhookHandler } from './falco/webhook.js';
 
 const app = express();
 app.use(express.json());
@@ -155,6 +156,11 @@ async function sendTelegramMessage(chatId: number | string, text: string): Promi
     logger.error({ err: error }, 'Failed to send Telegram response');
   }
 }
+
+// ─── Falco Webhook ──────────────────────────────────────────────────────────
+// Runtime syscall events from `guardian-falco` agents on monitored hosts.
+// Limit 120/min: Falco can burst when a chain of related syscalls fires.
+app.post('/webhook/falco', rateLimiter(120), falcoWebhookHandler);
 
 // ─── Telegram Webhook Registration ─────────────────────────────────────────
 

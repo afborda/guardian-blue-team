@@ -75,6 +75,8 @@ const envSchema = z.object({
   CVE_MONITOR_ENABLED: z.string().transform(v => v !== 'false').default('true'),
   CVE_MONITOR_MIN_CVSS: z.string().transform(Number).default('7.0'),
   CVE_MONITOR_INTERVAL_HOURS: z.string().transform(Number).default('6'),
+  CVE_INTEL_FEEDS_ENABLED: z.string().transform(v => v !== 'false').default('true'),
+  CVE_EPSS_HISTORY_DAYS: z.string().transform(Number).default('30'),
 });
 
 export interface DashboardUser {
@@ -169,6 +171,11 @@ export const config = {
     enabled: env.CVE_MONITOR_ENABLED,
     minCvss: env.CVE_MONITOR_MIN_CVSS,
     checkIntervalHours: env.CVE_MONITOR_INTERVAL_HOURS,
+  },
+
+  cveIntelFeeds: {
+    enabled: env.CVE_INTEL_FEEDS_ENABLED,
+    epssHistoryDays: env.CVE_EPSS_HISTORY_DAYS,
   },
 } as const;
 

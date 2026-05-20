@@ -254,6 +254,13 @@ export class EventCollectorWorker {
         // Consult AI before auto-executing blocking playbooks (skip for clear-cut threats)
         const hasBlockAction = playbook.steps.some(s => s.action === 'block-ip');
         const alwaysBlock = ['port_scan', 'brute_force', 'ddos', 'crypto_mining', 'lateral_movement'].includes(result.incidentCategory ?? '');
+        if (hasBlockAction && result.event.sourceIp && alwaysBlock) {
+          // Bypass advisor but still capture TI signal for FP audit (v2 hardening §7.1, option B).
+          AIBlockAdvisor.logTiHint(ctx, {
+            eventType: result.event.eventType,
+            sourceIp: result.event.sourceIp,
+          }).catch(() => {});
+        }
         if (hasBlockAction && result.event.sourceIp && !alwaysBlock) {
           try {
             const recommendation = await AIBlockAdvisor.getRecommendation(ctx, {
@@ -268,6 +275,7 @@ export class EventCollectorWorker {
                 logger.info({
                   ip: result.event.sourceIp, playbook: playbook.name,
                   action: recommendation.action, confidence: recommendation.confidence,
+                  source: recommendation.source, tiScore: recommendation.tiScore,
                   reasoning: recommendation.reasoning,
                 }, 'AI advisor: skipping block');
                 continue;
@@ -276,6 +284,16 @@ export class EventCollectorWorker {
                 ctx.variables = { ...ctx.variables, aiOverride: 'rate_limit' };
               }
             }
+
+            // Always log final decision so audit can replay why each block fired.
+            logger.info({
+              ip: result.event.sourceIp, playbook: playbook.name,
+              action: recommendation.action, confidence: recommendation.confidence,
+              source: recommendation.source, tiScore: recommendation.tiScore,
+            }, 'AI advisor: decision');
+
+            // Source-specific downgrade: no_ti_low_conf already returns action=monitor,
+            // so it'd be caught above. This branch is just for visibility.
           } catch (err) {
             logger.debug({ err }, 'AI advisor failed — proceeding with rule-based block');
           }

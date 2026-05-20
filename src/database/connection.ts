@@ -156,6 +156,42 @@ async function createPostgresTables(pool: Pool): Promise<void> {
       CREATE INDEX IF NOT EXISTS cve_alerts_cve_server_idx ON cve_alerts(cve_id, server_id);
       CREATE INDEX IF NOT EXISTS cve_alerts_status_idx ON cve_alerts(status);
 
+      CREATE TABLE IF NOT EXISTS cve_epss (
+        cve_id VARCHAR(20) PRIMARY KEY,
+        epss_score NUMERIC(6,5) NOT NULL,
+        percentile NUMERIC(6,5) NOT NULL,
+        fetched_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS cve_epss_score_idx ON cve_epss(epss_score DESC);
+
+      CREATE TABLE IF NOT EXISTS cve_epss_history (
+        id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        cve_id VARCHAR(20) NOT NULL,
+        epss_score NUMERIC(6,5) NOT NULL,
+        percentile NUMERIC(6,5) NOT NULL,
+        snapshot_date DATE NOT NULL,
+        UNIQUE (cve_id, snapshot_date)
+      );
+      CREATE INDEX IF NOT EXISTS cve_epss_history_cve_date_idx ON cve_epss_history(cve_id, snapshot_date DESC);
+      CREATE INDEX IF NOT EXISTS cve_epss_history_date_idx ON cve_epss_history(snapshot_date);
+
+      CREATE TABLE IF NOT EXISTS cve_kev (
+        cve_id VARCHAR(20) PRIMARY KEY,
+        vendor_project VARCHAR(200),
+        product VARCHAR(200),
+        vulnerability_name VARCHAR(500),
+        date_added DATE NOT NULL,
+        short_description TEXT,
+        required_action TEXT,
+        due_date DATE,
+        ransomware_use BOOLEAN DEFAULT FALSE,
+        notes TEXT,
+        cwes TEXT,
+        fetched_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS cve_kev_date_added_idx ON cve_kev(date_added DESC);
+      CREATE INDEX IF NOT EXISTS cve_kev_ransomware_idx ON cve_kev(ransomware_use) WHERE ransomware_use = TRUE;
+
       CREATE TABLE IF NOT EXISTS blocked_ips (
         id SERIAL PRIMARY KEY,
         ip VARCHAR(45) NOT NULL,
@@ -302,6 +338,57 @@ async function createPostgresTables(pool: Pool): Promise<void> {
         root_cause VARCHAR(500),
         stored_at TIMESTAMP NOT NULL DEFAULT NOW()
       );
+      -- Tracks which embedding model produced each row embedding. NULL on
+      -- rows pre-dating the column; treated as unknown / needs reembed by
+      -- scripts/reembed-incidents.ts. Without this, switching between two
+      -- 1024d models silently mixes vector spaces.
+      ALTER TABLE incident_memory ADD COLUMN IF NOT EXISTS embedding_model VARCHAR(100);
+
+      -- Markov user-behavior profiling. See migrations/007 for schema docs.
+      -- Matviews are empty after creation; intelligence.worker triggers the
+      -- first refresh ~60s after startup.
+      CREATE MATERIALIZED VIEW IF NOT EXISTS user_command_transitions AS
+      WITH paired AS (
+        SELECT
+          e.server_id,
+          e.user_name,
+          (e.metadata->>'command') AS curr_cmd,
+          LAG(e.metadata->>'command') OVER (
+            PARTITION BY e.server_id, e.user_name ORDER BY e.timestamp
+          ) AS prev_cmd
+        FROM security_events e
+        WHERE e.event_type = 'sudo_command'
+          AND e.user_name IS NOT NULL
+          AND e.metadata ? 'command'
+          AND e.timestamp > NOW() - INTERVAL '90 days'
+      ),
+      counted AS (
+        SELECT server_id, user_name, prev_cmd, curr_cmd, COUNT(*) AS n
+        FROM paired
+        WHERE prev_cmd IS NOT NULL AND curr_cmd IS NOT NULL
+        GROUP BY server_id, user_name, prev_cmd, curr_cmd
+      )
+      SELECT
+        server_id, user_name, prev_cmd, curr_cmd, n,
+        n::float / SUM(n) OVER (PARTITION BY server_id, user_name, prev_cmd) AS p,
+        SUM(n) OVER (PARTITION BY server_id, user_name) AS total_samples
+      FROM counted;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS user_command_transitions_pk
+        ON user_command_transitions (server_id, user_name, prev_cmd, curr_cmd);
+      CREATE INDEX IF NOT EXISTS user_command_transitions_lookup_idx
+        ON user_command_transitions (server_id, user_name, prev_cmd);
+
+      CREATE MATERIALIZED VIEW IF NOT EXISTS user_command_thresholds AS
+      SELECT
+        server_id, user_name, total_samples,
+        PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY -LN(p)) AS p99_surprisal,
+        MIN(p) AS min_observed_p
+      FROM user_command_transitions
+      GROUP BY server_id, user_name, total_samples;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS user_command_thresholds_pk
+        ON user_command_thresholds (server_id, user_name);
     `);
   } finally {
     client.release();
@@ -448,6 +535,41 @@ function createSqliteTables(sqlite: { exec: (sql: string) => void }): void {
     );
     CREATE INDEX IF NOT EXISTS cve_alerts_cve_server_idx ON cve_alerts(cve_id, server_id);
     CREATE INDEX IF NOT EXISTS cve_alerts_status_idx ON cve_alerts(status);
+
+    CREATE TABLE IF NOT EXISTS cve_epss (
+      cve_id VARCHAR(20) PRIMARY KEY,
+      epss_score REAL NOT NULL,
+      percentile REAL NOT NULL,
+      fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS cve_epss_score_idx ON cve_epss(epss_score DESC);
+
+    CREATE TABLE IF NOT EXISTS cve_epss_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cve_id VARCHAR(20) NOT NULL,
+      epss_score REAL NOT NULL,
+      percentile REAL NOT NULL,
+      snapshot_date TEXT NOT NULL,
+      UNIQUE (cve_id, snapshot_date)
+    );
+    CREATE INDEX IF NOT EXISTS cve_epss_history_cve_date_idx ON cve_epss_history(cve_id, snapshot_date DESC);
+    CREATE INDEX IF NOT EXISTS cve_epss_history_date_idx ON cve_epss_history(snapshot_date);
+
+    CREATE TABLE IF NOT EXISTS cve_kev (
+      cve_id VARCHAR(20) PRIMARY KEY,
+      vendor_project VARCHAR(200),
+      product VARCHAR(200),
+      vulnerability_name VARCHAR(500),
+      date_added TEXT NOT NULL,
+      short_description TEXT,
+      required_action TEXT,
+      due_date TEXT,
+      ransomware_use INTEGER DEFAULT 0,
+      notes TEXT,
+      cwes TEXT,
+      fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS cve_kev_date_added_idx ON cve_kev(date_added DESC);
 
     CREATE TABLE IF NOT EXISTS blocked_ips (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

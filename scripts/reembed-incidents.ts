@@ -66,6 +66,7 @@ async function main(): Promise<void> {
     resolution: incidentMemory.resolution,
     tags: incidentMemory.tags,
     embedding: incidentMemory.embedding,
+    embeddingModel: incidentMemory.embeddingModel,
   }).from(incidentMemory);
 
   const stats: Stats = {
@@ -76,9 +77,18 @@ async function main(): Promise<void> {
     skippedNoText: 0,
   };
 
+  const currentModel = config.ai.ollamaEmbedModel;
+
   for (const row of all) {
     const currentDim = Array.isArray(row.embedding) ? row.embedding.length : 0;
-    const needsReembed = force || (expectedDim ? currentDim !== expectedDim : true);
+    // Reembed when: forced; OR dimension wrong; OR row's stored model name
+    // doesn't match the configured model. The model-name check catches the
+    // case where two distinct models happen to share dimensionality (e.g.
+    // bge-m3 ↔ mxbai-embed-large, both 1024d) — comparing dim alone would
+    // silently mix vector spaces and quietly degrade RAG retrieval.
+    const dimWrong = expectedDim ? currentDim !== expectedDim : true;
+    const modelWrong = row.embeddingModel !== currentModel;
+    const needsReembed = force || dimWrong || modelWrong;
     if (!needsReembed) {
       stats.alreadyCorrect++;
       continue;
@@ -91,7 +101,11 @@ async function main(): Promise<void> {
     }
 
     if (dryRun) {
-      logger.info({ id: row.id, currentDim, target: expectedDim }, 'would re-embed');
+      logger.info({
+        id: row.id, currentDim, target: expectedDim,
+        currentModel: row.embeddingModel ?? '<null>', targetModel: currentModel,
+        reason: dimWrong ? 'dim-mismatch' : modelWrong ? 'model-mismatch' : 'forced',
+      }, 'would re-embed');
       stats.reembedded++;
       continue;
     }
@@ -104,7 +118,7 @@ async function main(): Promise<void> {
     }
 
     await db.update(incidentMemory)
-      .set({ embedding: newEmbedding })
+      .set({ embedding: newEmbedding, embeddingModel: currentModel })
       .where(eq(incidentMemory.id, row.id));
 
     stats.reembedded++;

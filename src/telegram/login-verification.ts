@@ -2,7 +2,7 @@ import { config } from '../config/environment.js';
 import { addTrustedIp, addTrustedFingerprint } from '../pipeline/detector.js';
 import { ThreatIntelManager } from '../threat-intel/manager.js';
 import { db, dbNow } from '../database/connection.js';
-import { socIncidents } from '../database/schema.js';
+import { socIncidents, trustedEntities } from '../database/schema.js';
 import { eq } from 'drizzle-orm';
 import { secureId } from '../utils/sanitize.js';
 import { logger } from '../utils/logger.js';
@@ -162,11 +162,16 @@ export async function handleLoginVerification(
 
   if (action === 'yes') {
     addTrustedIp(pending.sourceIp);
+    db.insert(trustedEntities).values({ entityType: 'ip', value: pending.sourceIp, addedBy: operator })
+      .onConflictDoNothing().catch(err => logger.error({ err }, 'Failed to persist trusted IP'));
+
     if (pending.fingerprint) {
       const hashPart = pending.fingerprint.includes(' ')
         ? pending.fingerprint.split(' ')[1]
         : pending.fingerprint;
       addTrustedFingerprint(hashPart);
+      db.insert(trustedEntities).values({ entityType: 'fingerprint', value: hashPart, addedBy: operator })
+        .onConflictDoNothing().catch(err => logger.error({ err }, 'Failed to persist trusted fingerprint'));
     }
     await db.update(socIncidents)
       .set({ status: 'resolved', resolvedAt: dbNow() })

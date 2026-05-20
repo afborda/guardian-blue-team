@@ -18,6 +18,7 @@ import { DDoSEscalationWorker } from './workers/ddos-escalation.worker.js';
 import { ContainerSecurityWorker } from './workers/container-security.worker.js';
 import { ThreatIntelManager } from './threat-intel/manager.js';
 import { PlaybookRegistry } from './playbooks/registry.js';
+import { loadTrustedEntities } from './pipeline/detector.js';
 import { handleTelegramCommand } from './telegram/commands.js';
 import { handleTelegramCallback } from './telegram/callbacks.js';
 import { registerBuiltinPlugins, PluginManager } from './plugins/index.js';
@@ -249,6 +250,7 @@ async function start(): Promise<void> {
 
   PlaybookRegistry.init();
   ThreatIntelManager.start();
+  await loadTrustedEntities();
 
   app.listen(config.server.port, () => {
     logger.info(`Guardian listening on :${config.server.port}`);

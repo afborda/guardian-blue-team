@@ -295,15 +295,22 @@ export class EventCollectorWorker {
       }
 
       if (result.event.eventType === 'unauthorized_login' && result.incidentId && result.event.sourceIp) {
-        requestLoginVerification({
-          incidentId: result.incidentId,
-          sourceIp: result.event.sourceIp,
-          userName: result.event.userName ?? 'unknown',
-          serverName,
-          authMethod: (result.event.metadata?.authMethod as string) ?? 'unknown',
-          fingerprint: (result.event.metadata?.fingerprint as string) ?? null,
-          timestamp: result.event.timestamp,
-        });
+        const alreadyBlocked = await db.select({ id: blockedIps.id }).from(blockedIps)
+          .where(and(eq(blockedIps.ip, result.event.sourceIp), eq(blockedIps.active, dbTrue)))
+          .limit(1);
+        if (alreadyBlocked.length > 0) {
+          logger.debug({ ip: result.event.sourceIp }, 'Skipping login verification — IP already blocked');
+        } else {
+          requestLoginVerification({
+            incidentId: result.incidentId,
+            sourceIp: result.event.sourceIp,
+            userName: result.event.userName ?? 'unknown',
+            serverName,
+            authMethod: (result.event.metadata?.authMethod as string) ?? 'unknown',
+            fingerprint: (result.event.metadata?.fingerprint as string) ?? null,
+            timestamp: result.event.timestamp,
+          });
+        }
       }
     }
   }

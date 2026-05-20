@@ -281,6 +281,17 @@ export const incidentMemory = pgTable('incident_memory', {
   createdIdx: index('incident_memory_created_idx').on(table.createdAt),
 }));
 
+export const trustedEntities = pgTable('trusted_entities', {
+  id: serial('id').primaryKey(),
+  entityType: varchar('entity_type', { length: 20 }).notNull(), // 'ip' | 'fingerprint'
+  value: varchar('value', { length: 500 }).notNull(),
+  addedBy: varchar('added_by', { length: 100 }),
+  addedAt: timestamp('added_at').defaultNow().notNull(),
+  note: varchar('note', { length: 500 }),
+}, (table) => ({
+  typeValueIdx: uniqueIndex('trusted_entities_type_value_idx').on(table.entityType, table.value),
+}));
+
 export const auditLogs = pgTable('audit_logs', {
   id: serial('id').primaryKey(),
   category: varchar('category', { length: 30 }).notNull(), // operational | access | block

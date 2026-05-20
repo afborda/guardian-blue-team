@@ -15,4 +15,5 @@ export {
   threatHuntFindings,
   containerSnapshots,
   auditLogs,
+  trustedEntities,
 } from './guardian-schema.js';

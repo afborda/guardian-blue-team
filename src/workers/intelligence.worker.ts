@@ -9,6 +9,9 @@ import { logger } from '../utils/logger.js';
 export class IntelligenceWorker {
   private static intervalId: NodeJS.Timeout | null = null;
   private static readonly INTERVAL_MS = 60 * 60 * 1000;
+  // Cooldown: same server+metric combo won't re-alert for 6 hours
+  private static readonly ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+  private static alertedAt = new Map<string, number>();
 
   static start(): void {
     if (this.intervalId) return;
@@ -49,14 +52,26 @@ export class IntelligenceWorker {
 
         const containerAnomalies = await ContainerBehaviorProfiler.detectAnomalies(server.id);
         for (const ca of containerAnomalies) {
+          const cooldownKey = `container:${server.name}:${ca.containerName}:${ca.anomalyType}`;
+          const lastAlerted = this.alertedAt.get(cooldownKey) ?? 0;
+          if (Date.now() - lastAlerted < this.ALERT_COOLDOWN_MS) continue;
+          this.alertedAt.set(cooldownKey, Date.now());
           await this.notifyContainerAnomaly(server.name, ca);
         }
 
         for (const anomaly of anomalies.filter(a => a.severity === 'critical')) {
+          const cooldownKey = `anomaly:${server.name}:${anomaly.metric}`;
+          const lastAlerted = this.alertedAt.get(cooldownKey) ?? 0;
+          if (Date.now() - lastAlerted < this.ALERT_COOLDOWN_MS) continue;
+          this.alertedAt.set(cooldownKey, Date.now());
           await this.notifyAnomaly(server.name, anomaly);
         }
 
         for (const trend of trends.filter(t => t.daysUntil90 !== null && t.daysUntil90 < 14)) {
+          const cooldownKey = `trend:${server.name}:${trend.metric}:${trend.mountpoint ?? ''}`;
+          const lastAlerted = this.alertedAt.get(cooldownKey) ?? 0;
+          if (Date.now() - lastAlerted < this.ALERT_COOLDOWN_MS) continue;
+          this.alertedAt.set(cooldownKey, Date.now());
           await this.notifyTrend(server.name, trend);
         }
       }

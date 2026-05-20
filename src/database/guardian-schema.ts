@@ -163,7 +163,7 @@ export const cveEpssHistory = pgTable('cve_epss_history', {
 }));
 
 // CISA KEV (Known Exploited Vulnerabilities) — confirmed exploited in the wild
-// Source: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+// Source: https://github.com/cisagov/kev-data (GitHub mirror; cisa.gov direct feed is Akamai-blocked from datacenter IPs)
 export const cveKev = pgTable('cve_kev', {
   cveId: varchar('cve_id', { length: 20 }).primaryKey(),
   vendorProject: varchar('vendor_project', { length: 200 }),

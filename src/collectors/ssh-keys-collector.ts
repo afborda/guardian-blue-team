@@ -16,7 +16,7 @@ export class SSHKeysCollector {
       `d=$(getent passwd "$u" | cut -d: -f6); ` +
       `f="$d/.ssh/authorized_keys"; ` +
       `[ -f "$f" ] && ssh-keygen -lf "$f" 2>/dev/null | sed "s/^/USER:$u /"; ` +
-      `done`;
+      `done; exit 0`;
 
     const result = await SSHCollector.run(target, command, CONSTANTS.collection.sshTimeoutMs);
 

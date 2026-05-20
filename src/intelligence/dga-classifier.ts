@@ -26,7 +26,14 @@ interface ModelMeta {
   threshold: number;              // probability above which we flag DGA
   featureOrder: string[];         // for cross-checking with TS feature names
   trainedAt: string;              // ISO timestamp of training run
-  positiveLabel: number;          // which output index corresponds to "DGA"
+  positiveLabel: number;          // which output index in `probabilities` corresponds to "DGA"
+}
+
+// Optional onnxruntime-node module shape — kept narrow so the dynamic import
+// path doesn't depend on the package being installed at type-check time.
+interface OnnxRuntimeModule {
+  InferenceSession: { create(path: string): Promise<OnnxSession> };
+  Tensor: new (type: string, data: Float32Array, dims: number[]) => unknown;
 }
 
 interface OnnxSession {
@@ -50,13 +57,21 @@ export class DgaClassifier {
   private static session: OnnxSession | null = null;
   private static bigramTable: Float32Array = new Float32Array(0);
   private static threshold = 0.5;
-  private static initAttempted = false;
+  private static positiveLabel = 1;
+  private static ortModule: OnnxRuntimeModule | null = null;
+  // Track init via a single shared promise so concurrent first-call classify()
+  // requests await the same load instead of all racing past the in-progress
+  // init and falling back to entropy.
+  private static initPromise: Promise<void> | null = null;
   private static initOk = false;
 
-  static async init(): Promise<void> {
-    if (this.initAttempted) return;
-    this.initAttempted = true;
+  static init(): Promise<void> {
+    if (this.initPromise) return this.initPromise;
+    this.initPromise = this.doInit();
+    return this.initPromise;
+  }
 
+  private static async doInit(): Promise<void> {
     const modelPath = resolve(process.env.DGA_MODEL_PATH ?? 'models/dga.onnx');
     const metaPath = modelPath.replace(/\.onnx$/, '.meta.json');
 
@@ -65,22 +80,21 @@ export class DgaClassifier {
       const meta = JSON.parse(metaRaw) as ModelMeta;
       this.bigramTable = new Float32Array(meta.bigramTable);
       this.threshold = meta.threshold;
+      this.positiveLabel = meta.positiveLabel ?? 1;
 
       // Dynamic import keeps onnxruntime-node optional. If the package isn't
       // installed, we fall back to entropy without crashing the worker.
       // @ts-ignore — onnxruntime-node is an optional peer dep
-      const ort = await import('onnxruntime-node').catch(() => null);
+      const ort = await import('onnxruntime-node').catch(() => null) as OnnxRuntimeModule | null;
       if (!ort) {
         logger.warn('onnxruntime-node not installed — DGA detection falls back to entropy');
         return;
       }
 
-      // The runtime exposes `InferenceSession.create(path)` which returns a
-      // session compatible with our `OnnxSession` shape.
-      const session = await (ort as any).InferenceSession.create(modelPath);
-      this.session = session as OnnxSession;
+      this.ortModule = ort;
+      this.session = await ort.InferenceSession.create(modelPath);
       this.initOk = true;
-      logger.info({ modelPath, threshold: this.threshold, features: meta.featureOrder.length },
+      logger.info({ modelPath, threshold: this.threshold, positiveLabel: this.positiveLabel, features: meta.featureOrder.length },
         'DGA classifier loaded');
     } catch (err) {
       logger.warn({ err: (err as Error).message, modelPath },
@@ -89,9 +103,9 @@ export class DgaClassifier {
   }
 
   static async classify(domain: string): Promise<DgaResult> {
-    if (!this.initAttempted) await this.init();
+    await this.init();
 
-    if (!this.initOk || !this.session) {
+    if (!this.initOk || !this.session || !this.ortModule) {
       return this.fallback(domain);
     }
 
@@ -99,28 +113,21 @@ export class DgaClassifier {
       const features = extractFeatures(domain, this.bigramTable);
       const vec = featuresToVector(features);
 
-      // skl2onnx exports a 2D input tensor (batch × features). Build a 1×N
-      // tensor for a single domain. We use the runtime's Tensor constructor
-      // via the loaded module — keep this isolated so a runtime-shape change
-      // is easy to fix.
-      // @ts-ignore — onnxruntime-node is an optional peer dep
-      const ort = await import('onnxruntime-node');
       const inputName = this.session.inputNames[0];
-      const tensor = new (ort as any).Tensor('float32', vec, [1, vec.length]);
+      const tensor = new this.ortModule.Tensor('float32', vec, [1, vec.length]);
       const out = await this.session.run({ [inputName]: tensor });
 
       // sklearn's LogisticRegression with skl2onnx outputs two heads:
       // `label` (predicted class) and `probabilities` (per-class probs).
-      // We want the probability of the positive class.
+      // We want the probability of the positive class — index from meta.
       const probsKey = this.session.outputNames.find(n => n.toLowerCase().includes('prob'))
         ?? this.session.outputNames[1];
       const probs = out[probsKey]?.data;
       if (!probs || !(probs instanceof Float32Array)) {
         return this.fallback(domain);
       }
-      // Two-class output: [P(legit), P(dga)] — positive label index is
-      // typically 1, but the meta file is authoritative.
-      const score = probs.length >= 2 ? probs[1] : probs[0];
+      const idx = this.positiveLabel < probs.length ? this.positiveLabel : probs.length - 1;
+      const score = probs[idx];
       return { isDga: score >= this.threshold, score, source: 'model' };
     } catch (err) {
       logger.debug({ err: (err as Error).message, domain }, 'DGA inference failed, falling back');

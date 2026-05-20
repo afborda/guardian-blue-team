@@ -28,6 +28,7 @@ export async function enrichWithDgaScore(events: NormalizedEvent[]): Promise<Nor
     event.metadata = {
       ...event.metadata,
       dgaScore: result.score,
+      dgaIsDga: result.isDga,
       dgaSource: result.source,
     };
   }));

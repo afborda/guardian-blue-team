@@ -8,6 +8,7 @@ import { EventCollectorWorker } from './workers/event-collector.worker.js';
 import { VulnScannerWorker } from './workers/vuln-scanner.worker.js';
 import { BlockCleanupWorker } from './workers/block-cleanup.worker.js';
 import { CVEMonitorWorker } from './workers/cve-monitor.worker.js';
+import { CVEIntelFeedsWorker } from './workers/cve-intel-feeds.worker.js';
 import { ScoreCalculatorWorker } from './workers/score-calculator.worker.js';
 import { MetricsRetentionWorker } from './workers/metrics-retention.worker.js';
 import { IntelligenceWorker } from './workers/intelligence.worker.js';
@@ -274,6 +275,10 @@ async function start(): Promise<void> {
     CVEMonitorWorker.start();
   }
 
+  if (config.cveIntelFeeds.enabled) {
+    CVEIntelFeedsWorker.start();
+  }
+
   logger.info('All workers started');
   AuditLogger.operational(null, 'guardian_start', 'success', { version: process.env.npm_package_version ?? 'unknown' }).catch(() => {});
 }
@@ -295,6 +300,7 @@ async function shutdown(signal: string): Promise<void> {
     VulnScannerWorker.stop(),
     BlockCleanupWorker.stop(),
     CVEMonitorWorker.stop(),
+    CVEIntelFeedsWorker.stop(),
     DiscoveryWorker.stop(),
     ThreatHunterWorker.stop(),
     DDoSEscalationWorker.stop(),

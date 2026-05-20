@@ -15,6 +15,7 @@ import { EventNormalizer } from '../pipeline/normalizer.js';
 import { EventEnricher } from '../pipeline/enricher.js';
 import { EventDetector } from '../pipeline/detector.js';
 import { enrichWithDgaScore } from '../intelligence/dga-enricher.js';
+import { enrichWithMarkovScore } from '../intelligence/markov-enricher.js';
 import { EventCorrelator, type CorrelationResult } from '../pipeline/correlator.js';
 import { EventIngestor } from '../pipeline/ingestor.js';
 import { PlaybookRegistry } from '../playbooks/registry.js';
@@ -109,6 +110,10 @@ export class EventCollectorWorker {
         // Pre-classify DNS queries against the DGA model so the synchronous
         // detector rule can read the score from event.metadata.dgaScore.
         normalized = await enrichWithDgaScore(normalized);
+
+        // Pre-score sudo command transitions for the synchronous detector rule
+        // — Markov surprisal vs. each user's own p99 threshold.
+        normalized = await enrichWithMarkovScore(normalized);
 
         const detected = EventDetector.detect(normalized);
         if (detected.length > 0) {

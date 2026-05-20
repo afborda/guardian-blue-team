@@ -254,6 +254,13 @@ export class EventCollectorWorker {
         // Consult AI before auto-executing blocking playbooks (skip for clear-cut threats)
         const hasBlockAction = playbook.steps.some(s => s.action === 'block-ip');
         const alwaysBlock = ['port_scan', 'brute_force', 'ddos', 'crypto_mining', 'lateral_movement'].includes(result.incidentCategory ?? '');
+        if (hasBlockAction && result.event.sourceIp && alwaysBlock) {
+          // Bypass advisor but still capture TI signal for FP audit (v2 hardening §7.1, option B).
+          AIBlockAdvisor.logTiHint(ctx, {
+            eventType: result.event.eventType,
+            sourceIp: result.event.sourceIp,
+          }).catch(() => {});
+        }
         if (hasBlockAction && result.event.sourceIp && !alwaysBlock) {
           try {
             const recommendation = await AIBlockAdvisor.getRecommendation(ctx, {
@@ -263,19 +270,31 @@ export class EventCollectorWorker {
               sourceIp: result.event.sourceIp,
             });
 
-            if (recommendation.confidence >= 70) {
-              if (recommendation.action === 'monitor' || recommendation.action === 'ignore') {
-                logger.info({
-                  ip: result.event.sourceIp, playbook: playbook.name,
-                  action: recommendation.action, confidence: recommendation.confidence,
-                  reasoning: recommendation.reasoning,
-                }, 'AI advisor: skipping block');
-                continue;
-              }
-              if (recommendation.action === 'rate_limit') {
-                ctx.variables = { ...ctx.variables, aiOverride: 'rate_limit' };
-              }
+            // Trust the advisor's `action`. The advisor already encodes the
+            // TI+AI gate and downgrades low-confidence-block decisions to
+            // 'monitor'/'ignore' itself, so there's no need to re-check
+            // confidence here — doing so was the source of a bug where a
+            // 60%-conf monitor recommendation was overruled and the block
+            // executed anyway.
+            if (recommendation.action === 'monitor' || recommendation.action === 'ignore') {
+              logger.info({
+                ip: result.event.sourceIp, playbook: playbook.name,
+                action: recommendation.action, confidence: recommendation.confidence,
+                source: recommendation.source, tiScore: recommendation.tiScore,
+                reasoning: recommendation.reasoning,
+              }, 'AI advisor: skipping block');
+              continue;
             }
+            if (recommendation.action === 'rate_limit' && recommendation.confidence >= 70) {
+              ctx.variables = { ...ctx.variables, aiOverride: 'rate_limit' };
+            }
+
+            // Always log final decision so audit can replay why each block fired.
+            logger.info({
+              ip: result.event.sourceIp, playbook: playbook.name,
+              action: recommendation.action, confidence: recommendation.confidence,
+              source: recommendation.source, tiScore: recommendation.tiScore,
+            }, 'AI advisor: decision');
           } catch (err) {
             logger.debug({ err }, 'AI advisor failed — proceeding with rule-based block');
           }

@@ -44,8 +44,11 @@ export class ProcessCollector {
   // Path indicators (matched against full cmdline `args`).
   // These signal a process executing from a suspicious location regardless
   // of binary name — common malware persistence pattern.
+  // Stored as awk-string-regex fragments (no leading/trailing slashes), so
+  // they can be injected into awk as a `-v pat=...` value and matched with
+  // the `~` operator without confusing awk's regex-literal parser.
   private static readonly suspiciousPathPatterns = [
-    '/tmp/\\.',      // hidden file under /tmp
+    '/tmp/\\.',      // hidden file under /tmp (\\. in JS = \. in the awk pattern)
     '/dev/shm/',     // tmpfs execution
     '/var/tmp/\\.',  // hidden under /var/tmp
   ];
@@ -66,14 +69,17 @@ export class ProcessCollector {
     );
 
     // Pass 2: match by full cmdline against suspicious path indicators.
-    // Exclude shell utilities themselves (grep/awk/sh/bash) which may carry
-    // the pattern as a literal argument in their command line.
+    // Pattern is passed as an awk variable (-v pat=...) — matching $0 ~ pat
+    // treats `pat` as a dynamic regex, so the literal `/` characters inside
+    // the alternation don't terminate an awk regex-literal. Embedded single
+    // quotes in the script are split-and-rejoined ('"'"') so the shell
+    // doesn't terminate the surrounding single-quoted awk program.
     const pathPass = await SSHCollector.run(target,
       `ps -eo pid,ppid,user,pcpu,pmem,comm,args --no-headers 2>/dev/null | ` +
-      `awk -v self=$$ -v parent=$PPID '` +
+      `awk -v self=$$ -v parent=$PPID -v pat='(${pathAlt})' '` +
       `$1 != self && $2 != self && $1 != parent && ` +
       `$6 !~ /^(awk|grep|sed|sh|bash|dash|zsh)$/ && ` +
-      `$0 ~ /(${pathAlt})/ { print }'`,
+      `$0 ~ pat { print }'`,
       10_000
     );
 

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db, dbFalse, dbNow } from '../database/connection.js';
-import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts, serverMetrics, serverScores, behaviorProfiles, containerSnapshots, threatHuntFindings, rateLimitedIps, playbookExecutions, cveEpss, cveKev, vulnerabilities, threatIntelCache } from '../database/schema.js';
+import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts, serverMetrics, serverScores, behaviorProfiles, containerSnapshots, threatHuntFindings, rateLimitedIps, playbookExecutions, cveEpss, cveKev, vulnerabilities, threatIntelCache, ipThreatScores } from '../database/schema.js';
 import { IntelligenceWorker } from '../workers/intelligence.worker.js';
 import { ScoreCalculatorWorker } from '../workers/score-calculator.worker.js';
 import { CVEMonitorWorker } from '../workers/cve-monitor.worker.js';
@@ -1575,6 +1575,7 @@ dashboardApi.get('/geo-attacks', async (_req, res) => {
   try {
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
+    // Raw event aggregation — count and max severity per IP
     const attacks = await db.select({
       ip: securityEvents.sourceIp,
       cnt: count(),
@@ -1590,59 +1591,137 @@ dashboardApi.get('/geo-attacks', async (_req, res) => {
       .orderBy(desc(count()))
       .limit(100);
 
-    const countryMap = new Map<string, { count: number; ips: string[]; topSeverity: string }>();
-    const ipList: Array<{ ip: string; count: number; severity: string; country: string }> = [];
+    // Load ML threat scores for all these IPs in one query
+    const ips = attacks.map(a => a.ip).filter(Boolean) as string[];
+    const scoreRows = ips.length > 0
+      ? await db.select({
+          ip: ipThreatScores.ip,
+          threatScore: ipThreatScores.threatScore,
+          isDangerous: ipThreatScores.isDangerous,
+          country: ipThreatScores.country,
+          isp: ipThreatScores.isp,
+          abuseScore: ipThreatScores.abuseScore,
+          vtMalicious: ipThreatScores.vtMalicious,
+          source: ipThreatScores.source,
+        })
+          .from(ipThreatScores)
+          .where(inArray(ipThreatScores.ip, ips.slice(0, 100)))
+      : [];
+
+    const scoreMap = new Map(scoreRows.map(s => [s.ip, s]));
+
+    // Country map: prefer ML-scored country, fall back to enrichment JSONB
+    const countryMap = new Map<string, { count: number; ips: string[]; topSeverity: string; topScore: number }>();
+    const ipList: Array<{
+      ip: string; count: number; severity: string; country: string;
+      threatScore: number; isDangerous: boolean; isp: string; abuseScore: number | null; source: string;
+    }> = [];
 
     for (const atk of attacks) {
       if (!atk.ip) continue;
-      const enrichment = await db.select({ enrichment: securityEvents.enrichment })
-        .from(securityEvents)
-        .where(eq(securityEvents.sourceIp, atk.ip))
-        .limit(1)
-        .then(rows => rows[0]?.enrichment as Record<string, any> | null);
+      const ml = scoreMap.get(atk.ip);
 
-      const country = enrichment?.country ?? enrichment?.threatIntel?.country ?? 'Unknown';
-      const entry = countryMap.get(country) || { count: 0, ips: [], topSeverity: 'low' };
+      let country = ml?.country ?? '';
+      if (!country) {
+        // Fallback: pull from enrichment JSONB (legacy path, one query per unknown)
+        const enrichment = await db.select({ enrichment: securityEvents.enrichment })
+          .from(securityEvents)
+          .where(eq(securityEvents.sourceIp, atk.ip))
+          .limit(1)
+          .then(rows => rows[0]?.enrichment as Record<string, unknown> | null);
+        country = (enrichment?.country ?? (enrichment?.threatIntel as any)?.country ?? '') as string;
+      }
+      if (!country) country = 'Unknown';
+
+      const threatScore = ml?.threatScore ?? 0;
+      const entry = countryMap.get(country) ?? { count: 0, ips: [], topSeverity: 'low', topScore: 0 };
       entry.count += Number(atk.cnt);
       if (entry.ips.length < 5) entry.ips.push(atk.ip);
       if (severityRank(atk.severity) > severityRank(entry.topSeverity)) entry.topSeverity = atk.severity;
+      if (threatScore > entry.topScore) entry.topScore = threatScore;
       countryMap.set(country, entry);
 
-      ipList.push({ ip: atk.ip, count: Number(atk.cnt), severity: atk.severity, country });
+      ipList.push({
+        ip: atk.ip,
+        count: Number(atk.cnt),
+        severity: atk.severity,
+        country,
+        threatScore,
+        isDangerous: ml?.isDangerous ?? false,
+        isp: ml?.isp ?? '',
+        abuseScore: ml?.abuseScore ?? null,
+        source: ml?.source ?? 'pending',
+      });
     }
+
+    // Sort by threat score DESC, then event count
+    ipList.sort((a, b) => b.threatScore - a.threatScore || b.count - a.count);
 
     const sortedCountries = [...countryMap.entries()].sort((a, b) => b[1].count - a[1].count);
     const totalAttacks = sortedCountries.reduce((s, [, v]) => s + v.count, 0);
+    const dangerousCount = ipList.filter(ip => ip.isDangerous).length;
 
     const countryRows = sortedCountries.slice(0, 20).map(([country, data]) => {
       const pct = totalAttacks > 0 ? Math.round((data.count / totalAttacks) * 100) : 0;
       const sevColor = data.topSeverity === 'critical' ? 'var(--critical)' :
                        data.topSeverity === 'high' ? 'var(--warning)' : 'var(--cyan)';
       const bar = `<div style="background:${sevColor};height:8px;width:${Math.max(pct, 2)}%;border-radius:4px;"></div>`;
+      const scoreIndicator = data.topScore >= 0.6
+        ? `<span style="color:var(--critical);font-size:0.75rem;margin-left:4px;">&#9889; ${Math.round(data.topScore * 100)}%</span>`
+        : data.topScore >= 0.3
+          ? `<span style="color:var(--warning);font-size:0.75rem;margin-left:4px;">&#9888; ${Math.round(data.topScore * 100)}%</span>`
+          : '';
       return `<tr>
-        <td><strong>${escapeHtml(country)}</strong></td>
+        <td><strong>${escapeHtml(country)}</strong>${scoreIndicator}</td>
         <td>${data.count}</td>
-        <td style="width:40%">${bar}</td>
+        <td style="width:35%">${bar}</td>
         <td>${pct}%</td>
         <td><code style="font-size:11px">${data.ips.slice(0, 3).join(', ')}</code></td>
       </tr>`;
     }).join('');
 
-    const topIPs = ipList.slice(0, 15).map(ip => {
+    const topIPs = ipList.slice(0, 20).map(ip => {
+      const score = ip.threatScore;
+      const scoreColor = score >= 0.6 ? 'var(--critical)' : score >= 0.3 ? 'var(--warning)' : 'var(--success)';
+      const pct = Math.round(score * 100);
+      const threatBar = `<div style="display:flex;align-items:center;gap:6px;">
+        <div style="width:60px;background:rgba(255,255,255,0.1);border-radius:3px;height:6px;">
+          <div style="width:${pct}%;background:${scoreColor};border-radius:3px;height:6px;"></div>
+        </div>
+        <span style="color:${scoreColor};font-size:0.75rem;font-family:var(--font-mono);">${pct}%</span>
+        ${ip.isDangerous ? '<span style="color:var(--critical);" title="Confirmed threat">&#9889;</span>' : ''}
+      </div>`;
+
       const sevIcon = ip.severity === 'critical' ? '&#128308;' :
                       ip.severity === 'high' ? '&#128992;' :
                       ip.severity === 'medium' ? '&#128993;' : '&#128309;';
+
+      const countryDisplay = ip.country !== 'Unknown'
+        ? escapeHtml(ip.country)
+        : '<span style="color:var(--text-dim)">—</span>';
+
+      const ispDisplay = ip.isp
+        ? `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px;">${escapeHtml(ip.isp.substring(0, 35))}</div>`
+        : '';
+
+      const abuseDisplay = ip.abuseScore !== null
+        ? `<span style="font-size:0.72rem;color:var(--text-muted);"> &middot; AbuseIPDB: ${ip.abuseScore}</span>`
+        : ip.source === 'pending'
+          ? '<span style="font-size:0.72rem;color:var(--text-dim);"> (scoring...)</span>'
+          : '';
+
       return `<tr>
         <td>${sevIcon}</td>
-        <td>${ipTag(ip.ip)}</td>
-        <td>${ip.count}</td>
-        <td>${escapeHtml(ip.country)}</td>
-        <td>${ip.severity}</td>
+        <td style="min-width:120px;">${ipTag(ip.ip)}${abuseDisplay}${ispDisplay}</td>
+        <td style="min-width:140px;">${threatBar}</td>
+        <td>${ip.count.toLocaleString()}</td>
+        <td>${countryDisplay}</td>
+        <td style="color:var(--text-muted);font-size:0.78rem;">${ip.severity}</td>
       </tr>`;
     }).join('');
 
     const html = `
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem;margin-bottom:2rem;">
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:2rem;">
         <div class="kpi">
           <div class="kpi-label">Countries</div>
           <div class="kpi-value">${sortedCountries.length}</div>
@@ -1651,11 +1730,21 @@ dashboardApi.get('/geo-attacks', async (_req, res) => {
           <div class="kpi-label">Unique IPs</div>
           <div class="kpi-value">${attacks.length}</div>
         </div>
+        <div class="kpi kpi-red">
+          <div class="kpi-label">&#9889; Confirmed Threats</div>
+          <div class="kpi-value kpi-value-red">${dangerousCount}</div>
+        </div>
         <div class="kpi">
-          <div class="kpi-label">Total Events</div>
+          <div class="kpi-label">Total Events (7d)</div>
           <div class="kpi-value">${totalAttacks.toLocaleString()}</div>
         </div>
       </div>
+
+      <p style="font-size:0.78rem;color:var(--text-muted);margin-bottom:1rem;">
+        &#9889; = ML classifier + AbuseIPDB confirm this IP is a real threat &middot;
+        Threat % = internal ML score (events, behavior, escalation, intel) &middot;
+        Scored every 30 min without wasting API quota on low-risk IPs
+      </p>
 
       <h3 class="section-title">Attack Origins by Country</h3>
       <table>
@@ -1663,10 +1752,10 @@ dashboardApi.get('/geo-attacks', async (_req, res) => {
         <tbody>${countryRows || '<tr><td colspan="5" style="text-align:center;color:var(--text-dim)">No attack data in the last 7 days</td></tr>'}</tbody>
       </table>
 
-      <h3 class="section-title" style="margin-top:2rem;">Top Attacking IPs</h3>
+      <h3 class="section-title" style="margin-top:2rem;">Top Attacking IPs — sorted by ML Threat Score</h3>
       <table>
-        <thead><tr><th></th><th>IP</th><th>Events</th><th>Country</th><th>Severity</th></tr></thead>
-        <tbody>${topIPs || '<tr><td colspan="5" style="text-align:center;color:var(--text-dim)">No data</td></tr>'}</tbody>
+        <thead><tr><th></th><th>IP + Intel</th><th>Threat Score</th><th>Events</th><th>Country</th><th>Severity</th></tr></thead>
+        <tbody>${topIPs || '<tr><td colspan="6" style="text-align:center;color:var(--text-dim)">No data</td></tr>'}</tbody>
       </table>`;
 
     res.send(html);

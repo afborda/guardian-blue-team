@@ -19,6 +19,7 @@ import { DiscoveryWorker } from './workers/discovery.worker.js';
 import { ThreatHunterWorker } from './workers/threat-hunter.worker.js';
 import { DDoSEscalationWorker } from './workers/ddos-escalation.worker.js';
 import { ContainerSecurityWorker } from './workers/container-security.worker.js';
+import { IpThreatScorerWorker } from './workers/ip-threat-scorer.worker.js';
 import { ThreatIntelManager } from './threat-intel/manager.js';
 import { PlaybookRegistry } from './playbooks/registry.js';
 import { loadTrustedEntities } from './pipeline/detector.js';
@@ -290,6 +291,7 @@ async function start(): Promise<void> {
   ThreatHunterWorker.start();
   DDoSEscalationWorker.start();
   ContainerSecurityWorker.start();
+  IpThreatScorerWorker.start();
   startHeartbeat();
 
   if (config.cveMonitor.enabled) {
@@ -325,6 +327,7 @@ async function shutdown(signal: string): Promise<void> {
     DiscoveryWorker.stop(),
     ThreatHunterWorker.stop(),
     DDoSEscalationWorker.stop(),
+    IpThreatScorerWorker.stop(),
   ]);
   ThreatIntelManager.stop();
 

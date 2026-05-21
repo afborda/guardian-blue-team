@@ -29,7 +29,8 @@
     "lint": "eslint src/",
     "type-check": "tsc --noEmit",
     "reembed-incidents": "tsx scripts/reembed-incidents.ts",
-    "train-dga": "python3 scripts/train_dga.py"
+    "train-dga": "python3 scripts/train_dga.py",
+    "train-ip-classifier": "python3 scripts/train_ip_classifier.py"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",

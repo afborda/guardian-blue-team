@@ -319,6 +319,23 @@ async function createPostgresTables(pool: Pool): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS ssh_key_baselines_server_idx ON ssh_key_baselines(server_id);
 
+      CREATE TABLE IF NOT EXISTS ip_threat_scores (
+        id SERIAL PRIMARY KEY,
+        ip VARCHAR(45) NOT NULL UNIQUE,
+        threat_score REAL NOT NULL,
+        is_dangerous BOOLEAN NOT NULL DEFAULT false,
+        features JSONB,
+        country VARCHAR(10),
+        isp TEXT,
+        abuse_score INTEGER,
+        vt_malicious INTEGER,
+        source VARCHAR(20) NOT NULL DEFAULT 'heuristic',
+        scored_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMP NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS ip_threat_scores_ip_idx ON ip_threat_scores(ip);
+      CREATE INDEX IF NOT EXISTS ip_threat_scores_dangerous_idx ON ip_threat_scores(is_dangerous, scored_at DESC);
+
       CREATE TABLE IF NOT EXISTS behavior_profiles (
         id SERIAL PRIMARY KEY,
         server_id INTEGER NOT NULL,
@@ -694,6 +711,23 @@ function createSqliteTables(sqlite: { exec: (sql: string) => void }): void {
       UNIQUE(server_id, username, fingerprint)
     );
     CREATE INDEX IF NOT EXISTS ssh_key_baselines_server_idx ON ssh_key_baselines(server_id);
+
+    CREATE TABLE IF NOT EXISTS ip_threat_scores (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ip VARCHAR(45) NOT NULL UNIQUE,
+      threat_score REAL NOT NULL,
+      is_dangerous INTEGER NOT NULL DEFAULT 0,
+      features TEXT,
+      country VARCHAR(10),
+      isp TEXT,
+      abuse_score INTEGER,
+      vt_malicious INTEGER,
+      source VARCHAR(20) NOT NULL DEFAULT 'heuristic',
+      scored_at TEXT NOT NULL DEFAULT (datetime('now')),
+      expires_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ip_threat_scores_ip_idx ON ip_threat_scores(ip);
+    CREATE INDEX IF NOT EXISTS ip_threat_scores_dangerous_idx ON ip_threat_scores(is_dangerous, scored_at);
   `);
 }
 

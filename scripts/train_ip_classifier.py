@@ -255,7 +255,7 @@ def main() -> int:
         if isinstance(raw, list):
             incident_ips.update(raw)
 
-    cur.execute("SELECT ip FROM trusted_entities WHERE entity_type = 'ip'")
+    cur.execute("SELECT value AS ip FROM trusted_entities WHERE entity_type = 'ip'")
     trusted_set = {r["ip"] for r in cur.fetchall()}
 
     positive_set = blocked_set | incident_ips
@@ -346,7 +346,8 @@ def main() -> int:
     meta_path = MODELS_DIR / "ip_classifier.meta.json"
 
     initial_type = [("input", FloatTensorType([None, X.shape[1]]))]
-    onnx_model = convert_sklearn(clf, initial_types=initial_type, target_opset=15)
+    onnx_model = convert_sklearn(clf, initial_types=initial_type, target_opset=15,
+                                 options={"zipmap": False})
     output_path.write_bytes(onnx_model.SerializeToString())
 
     meta = {

@@ -48,6 +48,7 @@ export class VulnScannerWorker {
         `   Portas: ${r.portsOpen} open (${r.portsUnexpected} unexpected)`,
         `   Packages: ${r.packagesUpgradable} upgradable (${r.securityUpdates} security)`,
         `   Docker: ${r.dockerIssues} issue(s)`,
+        `   Runtimes EOL: ${r.runtimeEolCount ?? 0}`,
         ``,
       );
     }

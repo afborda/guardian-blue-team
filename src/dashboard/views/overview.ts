@@ -3,6 +3,7 @@ import { config } from '../../config/environment.js';
 interface ServerInfo {
   name: string;
   lastSeen: Date | null;
+  id?: number;
 }
 
 interface OverviewStats {
@@ -167,6 +168,15 @@ export function overviewPage(stats: OverviewStats): string {
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- ─── SERVER FLEET STATUS ──────────────────────── -->
+    <h3 class="section-title" style="margin-top:1.5rem">Server Fleet</h3>
+    <div id="server-fleet"
+         hx-get="/api/dashboard/server-fleet?token=${token}"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+      <p aria-busy="true">Loading fleet data...</p>
     </div>
   `;
 }

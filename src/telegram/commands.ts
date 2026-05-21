@@ -5,12 +5,13 @@ import { SSHCollector } from '../collectors/ssh-collector.js';
 import { CronCollector } from '../collectors/cron-collector.js';
 import { SSHKeysCollector } from '../collectors/ssh-keys-collector.js';
 import { db, dbTrue } from '../database/connection.js';
-import { securityEvents, socIncidents, socServers, serverScores, serverMetrics, blockedIps } from '../database/schema.js';
+import { securityEvents, socIncidents, socServers, serverScores, serverMetrics, blockedIps, threatHuntFindings, rateLimitedIps, playbookExecutions } from '../database/schema.js';
 import { desc, eq, ne, count, and, gte, inArray } from 'drizzle-orm';
 import { ThreatIntelManager } from '../threat-intel/manager.js';
 import { PlaybookRegistry } from '../playbooks/registry.js';
 import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
 import { VulnScanner } from '../vuln-scanner/scanner.js';
+import { RuntimeVersionScanner } from '../vuln-scanner/runtime-versions.js';
 import { SOCAnalystService } from '../services/soc-analyst.service.js';
 import { AIProvider } from '../services/ai-provider.js';
 import { IncidentMemoryService } from '../services/incident-memory.service.js';
@@ -97,6 +98,14 @@ export async function handleTelegramCommand(text: string): Promise<string> {
       return await getMemoryStats();
     case '/dashboard':
       return getDashboardUrl();
+    case '/hunts':
+      return await getThreatHuntResults();
+    case '/rate-limits':
+      return await getRateLimits();
+    case '/playbook-log':
+      return await getPlaybookLog();
+    case '/versions':
+      return await getRuntimeVersions(parts[1]);
     case '/help':
       return formatHelp();
     default:
@@ -1340,6 +1349,145 @@ async function getDNSActivity(serverName?: string, hoursStr?: string): Promise<s
     : `🌐 <b>DNS — últimas ${hours}h</b>`;
 
   return `${title}\n\n${lines.join('\n')}\n\n📊 ${events.length} queries | ⚠️ ${anomalies.length} anomalias`;
+}
+
+// ─── /hunts ─────────────────────────────────────────────────────────────────
+
+async function getThreatHuntResults(): Promise<string> {
+  const findings = await db.select()
+    .from(threatHuntFindings)
+    .orderBy(desc(threatHuntFindings.runAt))
+    .limit(20);
+
+  if (findings.length === 0) {
+    return '🔍 <b>Threat Hunting</b>\n\nNenhum resultado ainda. O worker executa a cada 4h (primeiro ciclo em 5min após o boot).\n\nQuando houver achados de alta/crítica severidade, você receberá uma notificação automática.';
+  }
+
+  const sevIcon: Record<string, string> = { critical: '🔴', high: '🟠', medium: '🟡', low: '🔵' };
+
+  // Group by run (same minute)
+  const runs = new Map<string, typeof findings>();
+  for (const f of findings) {
+    const key = new Date(f.runAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    if (!runs.has(key)) runs.set(key, []);
+    runs.get(key)!.push(f);
+  }
+
+  const lines: string[] = [];
+  let runIdx = 0;
+  for (const [runTime, runFindings] of runs) {
+    if (runIdx >= 5) break;
+    const eventsCount = runFindings[0].eventsAnalyzed;
+    const provider = runFindings[0].aiProvider ?? 'ai';
+    lines.push(`\n📅 <b>${runTime}</b> <i>(${eventsCount} eventos, ${provider})</i>`);
+    for (const f of runFindings) {
+      const icon = sevIcon[f.severity ?? 'medium'] ?? '🔵';
+      const text = (f.finding ?? '').split('\n')[0];
+      const rec = (f.finding ?? '').split('\n').find((l: string) => l.startsWith('Recommendation:'))?.replace('Recommendation:', '').trim();
+      lines.push(`${icon} ${text}`);
+      if (rec) lines.push(`   ↳ <i>${rec}</i>`);
+    }
+    runIdx++;
+  }
+
+  const totalRuns = runs.size;
+  return `🔍 <b>Threat Hunting — Últimos ${totalRuns} ciclos</b>${lines.join('\n')}`;
+}
+
+// ─── /rate-limits ───────────────────────────────────────────────────────────
+
+async function getRateLimits(): Promise<string> {
+  const limits = await db.select()
+    .from(rateLimitedIps)
+    .where(eq(rateLimitedIps.active, true))
+    .orderBy(desc(rateLimitedIps.appliedAt))
+    .limit(20);
+
+  if (limits.length === 0) {
+    return '✅ <b>Rate Limits</b>\n\nNenhum IP em rate-limit ativo no momento.';
+  }
+
+  const serverNames = await getServerNameMap();
+
+  const lines = limits.map(r => {
+    const server = serverNames.get(r.serverId) ?? `Server #${r.serverId}`;
+    const since = timeAgo(r.appliedAt);
+    const escalated = r.escalatedAt ? ` ⚠️ escalado ${timeAgo(r.escalatedAt)}` : '';
+    return `🟡 <code>${r.ip}</code> [${server}]\n   ${r.limitPerSec}req/s burst ${r.burst} — há ${since}${escalated}\n   ${r.reason ?? ''}`;
+  });
+
+  return `🚦 <b>Rate Limits Ativos (${limits.length})</b>\n\n${lines.join('\n\n')}\n\n<i>IPs em rate-limit são verificados a cada 2min — se o ataque continuar, são bloqueados permanentemente.</i>`;
+}
+
+// ─── /playbook-log ──────────────────────────────────────────────────────────
+
+async function getPlaybookLog(): Promise<string> {
+  const executions = await db.select()
+    .from(playbookExecutions)
+    .orderBy(desc(playbookExecutions.startedAt))
+    .limit(15);
+
+  if (executions.length === 0) {
+    return '📋 <b>Playbook Log</b>\n\nNenhuma execução registrada ainda.';
+  }
+
+  const statusIcon: Record<string, string> = { completed: '✅', failed: '❌', running: '⚙️', partial: '⚠️' };
+
+  const lines = executions.map(e => {
+    const icon = statusIcon[e.status] ?? '⚙️';
+    const steps = (e.stepsCompleted as string[] | null) ?? [];
+    const failed = (e.stepsFailed as string[] | null) ?? [];
+    const duration = e.completedAt
+      ? `${Math.round((new Date(e.completedAt).getTime() - new Date(e.startedAt).getTime()) / 1000)}s`
+      : 'em andamento';
+    const stepsInfo = steps.length > 0 ? ` ${steps.length} passos` : '';
+    const failInfo = failed.length > 0 ? ` ❌${failed.length} falhos` : '';
+    const time = timeAgo(e.startedAt);
+    return `${icon} <b>${e.playbookName}</b> — ${e.status} (${duration})\n   Server #${e.serverId ?? '?'} · ${e.triggerType ?? '?'} · ${time}${stepsInfo}${failInfo}`;
+  });
+
+  return `📋 <b>Playbook Log (${executions.length})</b>\n\n${lines.join('\n\n')}`;
+}
+
+// ─── /versions ──────────────────────────────────────────────────────────────
+
+async function getRuntimeVersions(serverArg?: string): Promise<string> {
+  const servers = await ServerService.getEnabled();
+  if (servers.length === 0) return '⚠️ Nenhum servidor configurado.';
+
+  const targets = serverArg
+    ? servers.filter(s => s.name.toLowerCase().includes(serverArg.toLowerCase()) || String(s.id) === serverArg)
+    : servers;
+
+  if (targets.length === 0) return `⚠️ Servidor "${serverArg}" não encontrado.`;
+
+  const lines: string[] = ['🔧 <b>Runtime Versions</b>\n'];
+  let hasIssues = false;
+
+  for (const server of targets) {
+    const target = ServerService.toSSHTarget(server);
+    const runtimes = await RuntimeVersionScanner.scan(target);
+
+    lines.push(`<b>${server.name}</b>:`);
+    if (runtimes.length === 0) {
+      lines.push('  Nenhum runtime detectado');
+      continue;
+    }
+
+    for (const rt of runtimes) {
+      const icon = rt.isEol ? '🔴' : rt.isNearEol ? '🟡' : '✅';
+      const eolNote = rt.isEol ? ` (EOL ${rt.eolDate})` : rt.isNearEol ? ` (EOL em ${rt.eolDate})` : '';
+      lines.push(`  ${icon} ${rt.name} <code>${rt.version}</code>${eolNote}`);
+      if (rt.isEol || rt.isNearEol) hasIssues = true;
+    }
+    lines.push('');
+  }
+
+  if (hasIssues) {
+    lines.push('⚠️ Use /vulns para ver as vulnerabilidades registradas.');
+  }
+
+  return lines.join('\n');
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

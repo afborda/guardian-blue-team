@@ -553,6 +553,102 @@ export function layout(title: string, content: string): string {
       .pipeline { flex-wrap: wrap; }
     }
 
+    /* ─── RESPONSIVE TABLE WRAPPER ───────────── */
+    .table-wrap {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    @media (max-width: 768px) {
+      .card, .threat-card, .action-card {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      table { min-width: 480px; }
+      .score-grid-table { min-width: 600px; }
+      /* score grid tables need their own wrapper scroll */
+      .card:has(.score-grid-table) { overflow-x: auto; }
+    }
+
+    /* ─── HAMBURGER MENU ─────────────────────── */
+    .nav-toggle {
+      display: none;
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--cyan);
+      cursor: pointer;
+      padding: 0.4rem 0.75rem;
+      font-size: 1.1rem;
+      margin: 0.5rem 1rem;
+      min-height: 44px;
+      min-width: 44px;
+    }
+
+    /* ─── TABLET (768px) ────────────────────── */
+    @media (max-width: 768px) {
+      .main { padding: 1rem; }
+      .header { padding: 0.75rem 1rem; }
+      .kpi-grid { grid-template-columns: repeat(2, 1fr); gap: 0.75rem; }
+      .kpi-value { font-size: 1.5rem; }
+      .score-circle { width: 110px; height: 110px; }
+      .score-circle .value { font-size: 2rem; }
+      h2 { font-size: 1.1rem; }
+      table { font-size: 0.78rem; }
+      thead th, tbody td { padding: 0.5rem 0.6rem; }
+      button, .btn { min-height: 44px; padding: 0.5rem 0.9rem; }
+    }
+
+    /* ─── MOBILE (480px) ────────────────────── */
+    @media (max-width: 480px) {
+      .main { padding: 0.75rem; }
+      .header { padding: 0.5rem 0.75rem; }
+      .header-badges { display: none; }
+      .nav-toggle { display: flex; align-items: center; justify-content: center; }
+      .nav {
+        flex-direction: column;
+        padding: 0;
+        gap: 0;
+        overflow: hidden;
+        max-height: 0;
+        transition: max-height 0.3s ease;
+        border-bottom: none;
+      }
+      .nav.open {
+        max-height: 600px;
+        border-bottom: 1px solid var(--border);
+      }
+      .nav a {
+        padding: 0.9rem 1.25rem;
+        border-bottom: 1px solid rgba(255,255,255,0.04);
+        border-left: none;
+        font-size: 0.9rem;
+        min-height: 44px;
+        display: flex;
+        align-items: center;
+      }
+      .nav a.active {
+        border-left: 3px solid var(--cyan);
+        border-bottom-color: transparent;
+      }
+      .kpi-grid { grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+      .kpi { padding: 0.85rem; }
+      .kpi-value { font-size: 1.3rem; }
+      .kpi-label { font-size: 0.65rem; }
+      .card { padding: 0.85rem; }
+      .grid-2, .grid-3 { grid-template-columns: 1fr; gap: 1rem; }
+      .score-circle { width: 90px; height: 90px; }
+      .score-circle .value { font-size: 1.6rem; }
+      .score-ring { padding: 1rem; }
+      .pipeline-step { min-width: 70px; padding: 0.4rem 0.6rem; }
+      .pipeline-step .step-label { font-size: 0.6rem; }
+      h2 { font-size: 1rem; margin-bottom: 1rem; }
+      table { font-size: 0.72rem; }
+      thead th, tbody td { padding: 0.4rem 0.5rem; }
+      button, .btn { min-height: 44px; width: 100%; }
+      .footer { padding: 1rem; font-size: 0.65rem; }
+    }
+
     /* ─── LINKS / A ──────────────────────────── */
     a { color: var(--cyan); text-decoration: none; transition: color 0.2s; }
     a:hover { color: var(--primary-bright); }
@@ -604,6 +700,7 @@ export function layout(title: string, content: string): string {
     </div>
   </header>
 
+  <button class="nav-toggle" aria-label="Toggle navigation" onclick="this.nextElementSibling.classList.toggle('open')">&#9776;</button>
   <nav class="nav">
     <a href="/dashboard?token=${token}" class="${title === 'Overview' ? 'active' : ''}">Overview</a>
     <a href="/dashboard/health?token=${token}" class="${title === 'Fleet Health' ? 'active' : ''}">Fleet Health</a>
@@ -618,6 +715,7 @@ export function layout(title: string, content: string): string {
     <a href="/dashboard/containers?token=${token}" class="${title === 'Containers' ? 'active' : ''}">Containers</a>
     <a href="/dashboard/apis?token=${token}" class="${title === 'API Status' ? 'active' : ''}">APIs</a>
     <a href="/dashboard/intelligence?token=${token}" class="${title === 'Intelligence' ? 'active' : ''}">Intelligence</a>
+    <a href="/dashboard/hunting?token=${token}" class="${title === 'Threat Hunting' ? 'active' : ''}">Hunting</a>
   </nav>
 
   <main class="main">

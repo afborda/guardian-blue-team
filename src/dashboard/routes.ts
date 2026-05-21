@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import { db, dbFalse, dbNow } from '../database/connection.js';
-import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts, serverMetrics, serverScores, behaviorProfiles, containerSnapshots } from '../database/schema.js';
+import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts, serverMetrics, serverScores, behaviorProfiles, containerSnapshots, threatHuntFindings, rateLimitedIps, playbookExecutions, cveEpss, cveKev, vulnerabilities } from '../database/schema.js';
 import { IntelligenceWorker } from '../workers/intelligence.worker.js';
 import { ScoreCalculatorWorker } from '../workers/score-calculator.worker.js';
 import { CVEMonitorWorker } from '../workers/cve-monitor.worker.js';
 import { CVEIntelFeedsWorker } from '../workers/cve-intel-feeds.worker.js';
 import { requireRole } from './auth.js';
-import { eq, count, desc, and, gte, ne, sql } from 'drizzle-orm';
+import { eq, count, desc, and, gte, ne, sql, inArray } from 'drizzle-orm';
 import { config } from '../config/environment.js';
 import { layout } from './views/layout.js';
 import { overviewPage } from './views/overview.js';
@@ -55,7 +55,7 @@ dashboardPages.get('/', async (_req, res) => {
       ? Math.round(allScores.reduce((sum, s) => sum + s.overall, 0) / allScores.length)
       : 0;
 
-    const serverList = await db.select({ name: socServers.name, lastSeen: socServers.lastSeenAt })
+    const serverList = await db.select({ name: socServers.name, lastSeen: socServers.lastSeenAt, id: socServers.id })
       .from(socServers)
       .where(eq(socServers.enabled, true));
 
@@ -66,7 +66,7 @@ dashboardPages.get('/', async (_req, res) => {
       pendingCves: cveCount.cnt,
       eventsToday: eventsCount.cnt,
       overallScore,
-      serverList: serverList.map(s => ({ name: s.name, lastSeen: s.lastSeen })),
+      serverList: serverList.map(s => ({ name: s.name, lastSeen: s.lastSeen, id: s.id })),
     });
 
     res.send(layout('Overview', content));
@@ -102,7 +102,23 @@ dashboardPages.get('/cve', (_req, res) => {
   const token = config.dashboard.token || '';
   const content = `
     <h2>CVE Alerts</h2>
-    <div id="cve-list" hx-get="/api/dashboard/cve-alerts?token=${token}" hx-trigger="load" hx-swap="innerHTML">
+
+    <div class="kpi-grid" style="margin-bottom:1.5rem"
+         id="cve-kpis"
+         hx-get="/api/dashboard/cve-kpis?token=${token}"
+         hx-trigger="load"
+         hx-swap="innerHTML">
+      <p aria-busy="true">Loading…</p>
+    </div>
+
+    <div style="display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap;">
+      <button hx-get="/api/dashboard/cve-alerts?token=${token}&status=pending" hx-target="#cve-list" hx-swap="innerHTML">Pending</button>
+      <button hx-get="/api/dashboard/cve-alerts?token=${token}&status=all" hx-target="#cve-list" hx-swap="innerHTML">All</button>
+      <button hx-get="/api/dashboard/cve-alerts?token=${token}&category=runtime" hx-target="#cve-list" hx-swap="innerHTML">Runtime EOL</button>
+      <button hx-get="/api/dashboard/cve-alerts?token=${token}&kev=1" hx-target="#cve-list" hx-swap="innerHTML" style="border-color:var(--critical);color:var(--critical)">KEV Only</button>
+    </div>
+
+    <div id="cve-list" hx-get="/api/dashboard/cve-alerts?token=${token}&status=pending" hx-trigger="load" hx-swap="innerHTML">
       <p aria-busy="true">Loading...</p>
     </div>
   `;
@@ -254,8 +270,31 @@ dashboardPages.get('/approvals', (_req, res) => {
     <div id="feedback-list" hx-get="/api/dashboard/incidents-feedback?token=${token}" hx-trigger="load" hx-swap="innerHTML">
       <p aria-busy="true">Loading...</p>
     </div>
+    <h2 style="margin-top:2rem;">Playbook Execution History</h2>
+    <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:1rem;">All playbooks executed (manual and automated), last 50.</p>
+    <div hx-get="/api/dashboard/playbook-history?token=${token}" hx-trigger="load" hx-swap="innerHTML">
+      <p aria-busy="true">Loading...</p>
+    </div>
   `;
   res.send(layout('Approvals', content));
+});
+
+dashboardPages.get('/hunting', (_req, res) => {
+  const token = config.dashboard.token || '';
+  const content = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;">
+      <div>
+        <h2 style="margin-bottom:0.25rem;">Threat Hunting</h2>
+        <p style="color:var(--text-muted);font-size:0.82rem;">
+          Resultados da análise proativa de padrões executada pela IA a cada 4 horas.
+        </p>
+      </div>
+    </div>
+    <div hx-get="/api/dashboard/hunting?token=${token}" hx-trigger="load" hx-swap="innerHTML">
+      <p aria-busy="true">Loading threat hunt results...</p>
+    </div>
+  `;
+  res.send(layout('Threat Hunting', content));
 });
 
 dashboardPages.get('/containers', (_req, res) => {
@@ -290,6 +329,115 @@ dashboardApi.get('/stats', async (_req, res) => {
   } catch (err) {
     logger.error({ err }, 'Dashboard stats API error');
     res.status(500).json({ error: 'internal' });
+  }
+});
+
+dashboardApi.get('/server-fleet', async (_req, res) => {
+  try {
+    const servers = await db.select().from(socServers).where(eq(socServers.enabled, true));
+
+    if (servers.length === 0) {
+      res.send('<p style="color:var(--text-dim)">No servers configured.</p>');
+      return;
+    }
+
+    // Latest metrics per server (network I/O + CPU/RAM)
+    const latestMetrics = new Map<number, typeof serverMetrics.$inferSelect>();
+    for (const srv of servers) {
+      const [m] = await db.select().from(serverMetrics)
+        .where(eq(serverMetrics.serverId, srv.id))
+        .orderBy(desc(serverMetrics.collectedAt))
+        .limit(1);
+      if (m) latestMetrics.set(srv.id, m);
+    }
+
+    // 24h auth events per server: success vs failed
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const authEvents = await db.select({
+      serverId: securityEvents.serverId,
+      eventType: securityEvents.eventType,
+      cnt: count(),
+    })
+      .from(securityEvents)
+      .where(and(
+        gte(securityEvents.timestamp, since24h),
+        inArray(securityEvents.eventType, ['ssh_login_success', 'ssh_key_login', 'ssh_login_fail', 'ssh_brute_force']),
+      ))
+      .groupBy(securityEvents.serverId, securityEvents.eventType);
+
+    const authMap = new Map<number, { secure: number; failed: number; brute: number }>();
+    for (const row of authEvents) {
+      const existing = authMap.get(row.serverId) ?? { secure: 0, failed: 0, brute: 0 };
+      if (row.eventType === 'ssh_login_success' || row.eventType === 'ssh_key_login') {
+        existing.secure += row.cnt;
+      } else if (row.eventType === 'ssh_login_fail') {
+        existing.failed += row.cnt;
+      } else if (row.eventType === 'ssh_brute_force') {
+        existing.brute += row.cnt;
+      }
+      authMap.set(row.serverId, existing);
+    }
+
+    const rows = servers.map(srv => {
+      const metrics = latestMetrics.get(srv.id);
+      const auth = authMap.get(srv.id) ?? { secure: 0, failed: 0, brute: 0 };
+      const isOnline = srv.lastSeenAt && (Date.now() - new Date(srv.lastSeenAt).getTime() < 10 * 60 * 1000);
+      const statusDot = isOnline
+        ? '<span style="color:var(--success)">&#9679;</span>'
+        : '<span style="color:var(--critical)">&#9679;</span>';
+      const statusLabel = isOnline ? 'Online' : 'Offline';
+
+      // Network I/O totals from latest metrics
+      let rxDisplay = '—';
+      let txDisplay = '—';
+      if (metrics?.networkIo && Array.isArray(metrics.networkIo)) {
+        const totalRx = (metrics.networkIo as Array<{ rxBps: number }>).reduce((s, i) => s + (i.rxBps ?? 0), 0);
+        const totalTx = (metrics.networkIo as Array<{ txBps: number }>).reduce((s, i) => s + (i.txBps ?? 0), 0);
+        rxDisplay = totalRx > 1_000_000 ? `${(totalRx / 1_000_000).toFixed(1)} MB/s` : `${(totalRx / 1000).toFixed(0)} KB/s`;
+        txDisplay = totalTx > 1_000_000 ? `${(totalTx / 1_000_000).toFixed(1)} MB/s` : `${(totalTx / 1000).toFixed(0)} KB/s`;
+      }
+
+      const cpu = metrics?.load1 != null ? `${metrics.load1.toFixed(2)}` : '—';
+      const ram = metrics?.memTotalBytes && metrics.memUsedBytes
+        ? `${((metrics.memUsedBytes / metrics.memTotalBytes) * 100).toFixed(0)}%`
+        : '—';
+
+      const secureLabel = auth.secure > 0
+        ? `<span style="color:var(--success)">&#128274; ${auth.secure} secure</span>`
+        : `<span style="color:var(--text-dim)">—</span>`;
+      const failLabel = auth.failed > 0
+        ? `<span style="color:var(--warning)">&#128683; ${auth.failed} failed</span>`
+        : `<span style="color:var(--text-dim)">0 failed</span>`;
+      const bruteLabel = auth.brute > 0
+        ? `<span style="color:var(--critical)">&#9888; ${auth.brute} brute</span>`
+        : '';
+
+      const lastSeen = srv.lastSeenAt
+        ? `${Math.floor((Date.now() - new Date(srv.lastSeenAt).getTime()) / 60000)}m ago`
+        : 'never';
+
+      return `<tr>
+        <td>${statusDot} <b>${escapeHtml(srv.name)}</b></td>
+        <td><span style="color:${isOnline ? 'var(--success)' : 'var(--critical)'}">${statusLabel}</span></td>
+        <td style="font-family:var(--font-mono)">${cpu}</td>
+        <td style="font-family:var(--font-mono)">${ram}</td>
+        <td style="font-family:var(--font-mono)">&#8595; ${rxDisplay}</td>
+        <td style="font-family:var(--font-mono)">&#8593; ${txDisplay}</td>
+        <td>${secureLabel} ${failLabel} ${bruteLabel}</td>
+        <td style="color:var(--text-dim)">${lastSeen}</td>
+      </tr>`;
+    });
+
+    res.send(`<table>
+      <thead><tr>
+        <th>Server</th><th>Status</th><th>Load</th><th>RAM</th>
+        <th>Network In</th><th>Network Out</th><th>Access (24h)</th><th>Last Seen</th>
+      </tr></thead>
+      <tbody>${rows.join('')}</tbody>
+    </table>`);
+  } catch (err) {
+    logger.error({ err }, 'Server fleet API error');
+    res.status(500).send('<p class="severity-critical">Error loading fleet data</p>');
   }
 });
 
@@ -446,32 +594,126 @@ dashboardApi.get('/servers', async (_req, res) => {
   }
 });
 
-dashboardApi.get('/cve-alerts', async (_req, res) => {
+dashboardApi.get('/cve-kpis', async (_req, res) => {
   try {
-    const alerts = await db.select().from(cveAlerts)
-      .where(eq(cveAlerts.status, 'pending'))
-      .orderBy(desc(cveAlerts.createdAt))
-      .limit(50);
+    const [pending] = await db.select({ cnt: count() }).from(cveAlerts).where(eq(cveAlerts.status, 'pending'));
+    const [kevCount] = await db.select({ cnt: count() }).from(cveKev);
+    const [epssHigh] = await db.select({ cnt: count() }).from(cveEpss).where(gte(cveEpss.epssScore, 0.5));
+    const [runtimeEol] = await db.select({ cnt: count() }).from(vulnerabilities).where(and(eq(vulnerabilities.category, 'runtime'), eq(vulnerabilities.status, 'open')));
 
-    if (alerts.length === 0) {
-      res.send('<p style="color:var(--success);">&#9989; No pending CVE alerts.</p>');
+    res.send(`
+      <div class="kpi kpi-red"><div class="kpi-label">Pending CVEs</div><div class="kpi-value kpi-value-red">${pending.cnt}</div></div>
+      <div class="kpi kpi-yellow"><div class="kpi-label">EPSS ≥50%</div><div class="kpi-value kpi-value-yellow">${epssHigh.cnt}</div></div>
+      <div class="kpi kpi-red"><div class="kpi-label">KEV (CISA)</div><div class="kpi-value kpi-value-red">${kevCount.cnt}</div></div>
+      <div class="kpi kpi-yellow"><div class="kpi-label">Runtime EOL</div><div class="kpi-value kpi-value-yellow">${runtimeEol.cnt}</div></div>
+    `);
+  } catch (err) {
+    logger.error({ err }, 'CVE KPIs error');
+    res.status(500).send('');
+  }
+});
+
+dashboardApi.get('/cve-alerts', async (req, res) => {
+  try {
+    const token = config.dashboard.token || '';
+    const statusFilter = String(req.query.status ?? 'pending');
+    const kevOnly = req.query.kev === '1';
+    const categoryFilter = req.query.category ? String(req.query.category) : null;
+
+    // Fetch KEV IDs for enrichment (cheap set lookup)
+    const kevRows = await db.select({ cveId: cveKev.cveId }).from(cveKev);
+    const kevSet = new Set(kevRows.map(r => r.cveId));
+
+    // Fetch EPSS scores map
+    const epssRows = await db.select({ cveId: cveEpss.cveId, score: cveEpss.epssScore }).from(cveEpss);
+    const epssMap = new Map(epssRows.map(r => [r.cveId, r.score]));
+
+    // Fetch server names
+    const serverRows = await db.select({ id: socServers.id, name: socServers.name }).from(socServers);
+    const serverMap = new Map(serverRows.map(s => [s.id, s.name]));
+
+    if (kevOnly) {
+      // Show KEV table — actively exploited CVEs from CISA
+      const kevList = await db.select().from(cveKev).orderBy(desc(cveKev.dateAdded)).limit(50);
+      if (kevList.length === 0) {
+        res.send('<p style="color:var(--success)">&#9989; No CISA KEV entries loaded. Run CVE Intel Feeds worker to populate.</p>');
+        return;
+      }
+      const html = `<div class="card-header"><span class="dot dot-red"></span>CISA Known Exploited Vulnerabilities (${kevList.length})</div>
+      <table><thead><tr><th>CVE</th><th>Product</th><th>Vuln Name</th><th>Date Added</th><th>Ransomware</th></tr></thead><tbody>${
+        kevList.map(k => `<tr>
+          <td><code>${escapeHtml(k.cveId)}</code></td>
+          <td>${escapeHtml(k.vendorProject ?? '')} / ${escapeHtml(k.product ?? '')}</td>
+          <td>${escapeHtml(k.vulnerabilityName ?? '')}</td>
+          <td>${k.dateAdded ? String(k.dateAdded).slice(0, 10) : '?'}</td>
+          <td>${k.ransomwareUse ? '<span class="severity-critical">&#9888; Yes</span>' : '<span style="color:var(--text-dim)">No</span>'}</td>
+        </tr>`).join('')
+      }</tbody></table>`;
+      res.send(html);
       return;
     }
 
-    const token = config.dashboard.token || '';
-    const html = `<table><thead><tr><th>CVE</th><th>Package</th><th>CVSS</th><th>Fix Available</th><th>Actions</th></tr></thead><tbody>${
+    if (categoryFilter === 'runtime') {
+      // Show runtime EOL findings from vulnerabilities table
+      const vulns = await db.select().from(vulnerabilities)
+        .where(and(eq(vulnerabilities.category, 'runtime'), eq(vulnerabilities.status, 'open')))
+        .orderBy(desc(vulnerabilities.detectedAt))
+        .limit(50);
+      if (vulns.length === 0) {
+        res.send('<p style="color:var(--success)">&#9989; No runtime EOL findings. Run a vulnerability scan to detect outdated runtimes.</p>');
+        return;
+      }
+      const html = `<div class="card-header"><span class="dot dot-yellow"></span>Runtime EOL / Near-EOL Findings</div>
+      <table><thead><tr><th>Server</th><th>Runtime</th><th>Severity</th><th>Details</th><th>Remediation</th></tr></thead><tbody>${
+        vulns.map(v => {
+          const sevClass = v.severity === 'critical' ? 'severity-critical' : v.severity === 'high' ? 'severity-high' : 'severity-medium';
+          return `<tr>
+            <td>${escapeHtml(serverMap.get(v.serverId) ?? String(v.serverId))}</td>
+            <td>${escapeHtml(v.title ?? '')}</td>
+            <td><span class="${sevClass}">${(v.severity ?? '?').toUpperCase()}</span></td>
+            <td>${new Date(v.detectedAt).toLocaleDateString('pt-BR')}</td>
+            <td style="max-width:300px;font-size:0.75rem;color:var(--text-muted)">${escapeHtml(v.remediation ?? '—')}</td>
+          </tr>`;
+        }).join('')
+      }</tbody></table>`;
+      res.send(html);
+      return;
+    }
+
+    // Standard CVE alerts from cve_alerts table
+    const whereClause = statusFilter === 'all'
+      ? undefined
+      : eq(cveAlerts.status, 'pending');
+
+    const alerts = whereClause
+      ? await db.select().from(cveAlerts).where(whereClause).orderBy(desc(cveAlerts.createdAt)).limit(100)
+      : await db.select().from(cveAlerts).orderBy(desc(cveAlerts.createdAt)).limit(100);
+
+    if (alerts.length === 0) {
+      res.send('<p style="color:var(--success);">&#9989; No CVE alerts found. Either no vulnerabilities detected or CVE Monitor not yet run.</p>');
+      return;
+    }
+
+    const html = `<table><thead><tr><th>CVE</th><th>Server</th><th>Package</th><th>CVSS</th><th>EPSS</th><th>KEV</th><th>Fix</th><th>Actions</th></tr></thead><tbody>${
       alerts.map(a => {
         const cvss = a.cvssScore ? (a.cvssScore / 10).toFixed(1) : '?';
         const cvssNum = Number(cvss);
-        const cvssClass = cvssNum >= 9 ? 'severity-critical' : cvssNum >= 7 ? 'severity-high' : 'severity-medium';
-        const actions = [
+        const cvssClass = cvssNum >= 9 ? 'severity-critical' : cvssNum >= 7 ? 'severity-high' : cvssNum >= 4 ? 'severity-medium' : 'severity-low';
+        const epss = epssMap.get(a.cveId);
+        const epssDisplay = epss !== undefined ? `${(epss * 100).toFixed(1)}%` : '—';
+        const epssColor = epss !== undefined && epss >= 0.5 ? 'var(--critical)' : epss !== undefined && epss >= 0.1 ? 'var(--warning)' : 'var(--text-dim)';
+        const isKev = kevSet.has(a.cveId);
+        const actions = a.status === 'pending' ? [
           a.fixedVersion ? `<button hx-post="/api/dashboard/cve/${a.id}/update?token=${token}" hx-swap="outerHTML" hx-target="closest tr" class="success">Patch</button>` : '',
           `<button hx-post="/api/dashboard/cve/${a.id}/ignore?token=${token}" hx-swap="outerHTML" hx-target="closest tr" class="danger">Ignore</button>`,
-        ].filter(Boolean).join(' ');
+        ].filter(Boolean).join(' ') : `<span style="color:var(--text-dim)">${escapeHtml(a.status)}</span>`;
         return `<tr>
-          <td><code>${escapeHtml(a.cveId)}</code></td>
-          <td>${escapeHtml(a.packageName)} <span style="color:var(--text-dim)">${escapeHtml(a.installedVersion)}</span></td>
+          <td><code>${escapeHtml(a.cveId)}</code>${isKev ? ' <span class="severity-critical" title="CISA Known Exploited">&#9888;KEV</span>' : ''}</td>
+          <td>${escapeHtml(serverMap.get(a.serverId) ?? String(a.serverId))}</td>
+          <td>${escapeHtml(a.packageName)} <span style="color:var(--text-dim);font-size:0.72rem">${escapeHtml(a.installedVersion)}</span></td>
           <td><span class="${cvssClass}">${cvss}</span></td>
+          <td><span style="color:${epssColor};font-family:var(--font-mono)">${epssDisplay}</span></td>
+          <td>${isKev ? '<span class="severity-critical">&#9888; Yes</span>' : '<span style="color:var(--text-dim)">—</span>'}</td>
           <td>${a.fixedVersion ? `<code>${escapeHtml(a.fixedVersion)}</code>` : '<span style="color:var(--text-dim)">—</span>'}</td>
           <td>${actions}</td>
         </tr>`;
@@ -507,6 +749,93 @@ dashboardApi.post('/cve/:id/ignore', async (req, res) => {
   }
 });
 
+// ─── Threat Hunt Findings API ───────────────────────────────────────────────
+
+dashboardApi.get('/hunting', async (_req, res) => {
+  try {
+    const findings = await db.select()
+      .from(threatHuntFindings)
+      .orderBy(desc(threatHuntFindings.runAt))
+      .limit(50);
+
+    if (findings.length === 0) {
+      res.send('<p style="color:var(--text-dim)">Nenhum resultado de threat hunt ainda. O worker executa a cada 4h após 5min de warm-up.</p>');
+      return;
+    }
+
+    const sevColor: Record<string, string> = {
+      critical: 'var(--critical)',
+      high: 'var(--warning)',
+      medium: '#fbbf24',
+      low: 'var(--primary-bright)',
+    };
+
+    const sevIcon: Record<string, string> = {
+      critical: '&#128308;',
+      high: '&#128992;',
+      medium: '&#128993;',
+      low: '&#128309;',
+    };
+
+    // Group findings by hunt run (same minute)
+    const runs = new Map<string, typeof findings>();
+    for (const f of findings) {
+      const key = new Date(f.runAt).toLocaleString();
+      if (!runs.has(key)) runs.set(key, []);
+      runs.get(key)!.push(f);
+    }
+
+    let html = '';
+    for (const [runTime, runFindings] of runs) {
+      const topSev = runFindings.reduce((max, f) => {
+        const rank = (s: string) => ({ critical: 4, high: 3, medium: 2, low: 1 }[s] ?? 0);
+        return rank(f.severity ?? 'low') > rank(max) ? (f.severity ?? 'low') : max;
+      }, 'low');
+
+      const color = sevColor[topSev] ?? 'var(--text-muted)';
+      const provider = runFindings[0].aiProvider ?? 'ai';
+      const eventsAnalyzed = runFindings[0].eventsAnalyzed;
+
+      html += `
+        <div class="card" style="margin-bottom:1rem;border-left:3px solid ${color};">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;">
+            <div style="display:flex;align-items:center;gap:0.75rem;">
+              <span style="font-size:1.1rem;">${sevIcon[topSev] ?? '&#9888;'}</span>
+              <div>
+                <div style="font-weight:600;font-size:0.88rem;">${runTime}</div>
+                <div style="font-size:0.72rem;color:var(--text-dim);">${eventsAnalyzed} eventos analisados &middot; via ${escapeHtml(provider)}</div>
+              </div>
+            </div>
+            <span style="font-size:0.7rem;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:${color};padding:2px 8px;border:1px solid ${color};border-radius:4px;">${topSev}</span>
+          </div>
+          <div style="display:grid;gap:0.5rem;">
+            ${runFindings.map(f => {
+              const lines = (f.finding ?? '').split('\n');
+              const description = lines[0] ?? '';
+              const recommendation = lines.find((l: string) => l.startsWith('Recommendation:'))?.replace('Recommendation:', '').trim() ?? '';
+              const fc = sevColor[f.severity ?? 'low'] ?? 'var(--text-muted)';
+              return `
+                <div style="background:rgba(255,255,255,0.02);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0.75rem;">
+                  <div style="display:flex;align-items:flex-start;gap:0.5rem;">
+                    <span style="font-size:0.85rem;">${sevIcon[f.severity ?? 'low'] ?? '&#9898;'}</span>
+                    <div style="flex:1;">
+                      <div style="font-size:0.82rem;color:${fc};margin-bottom:${recommendation ? '0.4rem' : '0'};">${escapeHtml(description)}</div>
+                      ${recommendation ? `<div style="font-size:0.75rem;color:var(--text-muted);">&#8594; ${escapeHtml(recommendation)}</div>` : ''}
+                    </div>
+                  </div>
+                </div>`;
+            }).join('')}
+          </div>
+        </div>`;
+    }
+
+    res.send(html);
+  } catch (err) {
+    logger.error({ err }, 'Threat hunt API error');
+    res.status(500).send('<p class="severity-critical">Error loading threat hunt findings</p>');
+  }
+});
+
 dashboardApi.get('/blocks', async (_req, res) => {
   try {
     const allBlocks = await db.select().from(blockedIps)
@@ -515,22 +844,56 @@ dashboardApi.get('/blocks', async (_req, res) => {
 
     const blocks = allBlocks.filter(b => b.active);
 
-    if (blocks.length === 0) {
-      res.send('<p style="color:var(--success);">&#9989; No active IP blocks.</p>');
+    const rateLimits = await db.select().from(rateLimitedIps)
+      .where(eq(rateLimitedIps.active, true))
+      .orderBy(desc(rateLimitedIps.appliedAt))
+      .limit(30);
+
+    let html = '';
+
+    if (blocks.length === 0 && rateLimits.length === 0) {
+      res.send('<p style="color:var(--success);">&#9989; No active IP blocks or rate limits.</p>');
       return;
     }
 
     const token = config.dashboard.token || '';
-    const html = `<table><thead><tr><th>IP</th><th>Server</th><th>Reason</th><th>Blocked At</th><th>Expires</th><th>Actions</th></tr></thead><tbody>${
-      blocks.map(b => `<tr>
-        <td><span class="ip-tag">${escapeHtml(b.ip)}</span></td>
-        <td>Server #${b.serverId}</td>
-        <td style="font-size:0.78rem; color:var(--text-muted);">${escapeHtml(b.reason)}</td>
-        <td style="color:var(--text-dim)">${new Date(b.blockedAt).toLocaleString()}</td>
-        <td style="color:var(--text-dim)">${b.expiresAt ? new Date(b.expiresAt).toLocaleString() : 'permanent'}</td>
-        <td><button class="danger" hx-post="/api/dashboard/blocks/${b.id}/unblock?token=${token}" hx-swap="outerHTML" hx-target="closest tr">Unblock</button></td>
-      </tr>`).join('')
-    }</tbody></table>`;
+
+    if (blocks.length > 0) {
+      html += `
+        <h3 class="section-title">Permanent Blocks (${blocks.length})</h3>
+        <table><thead><tr><th>IP</th><th>Server</th><th>Reason</th><th>Blocked At</th><th>Expires</th><th>Actions</th></tr></thead><tbody>${
+        blocks.map(b => `<tr>
+          <td><span class="ip-tag">${escapeHtml(b.ip)}</span></td>
+          <td>Server #${b.serverId}</td>
+          <td style="font-size:0.78rem; color:var(--text-muted);">${escapeHtml(b.reason)}</td>
+          <td style="color:var(--text-dim)">${new Date(b.blockedAt).toLocaleString()}</td>
+          <td style="color:var(--text-dim)">${b.expiresAt ? new Date(b.expiresAt).toLocaleString() : 'permanent'}</td>
+          <td><button class="danger" hx-post="/api/dashboard/blocks/${b.id}/unblock?token=${token}" hx-swap="outerHTML" hx-target="closest tr">Unblock</button></td>
+        </tr>`).join('')
+      }</tbody></table>`;
+    } else {
+      html += '<p style="color:var(--success);margin-bottom:1.5rem;">&#9989; No active IP blocks.</p>';
+    }
+
+    if (rateLimits.length > 0) {
+      html += `
+        <h3 class="section-title" style="margin-top:2rem;">Rate Limits — DDoS Graduated Response (${rateLimits.length} active)</h3>
+        <p style="color:var(--text-muted);font-size:0.78rem;margin-bottom:1rem;">
+          IPs em rate-limit são monitorados a cada 2min — se o ataque continuar, são promovidos a bloqueio permanente automaticamente.
+        </p>
+        <table><thead><tr><th>IP</th><th>Server</th><th>Limite</th><th>Motivo</th><th>Aplicado</th><th>Escalado</th></tr></thead><tbody>${
+        rateLimits.map(r => `<tr>
+          <td><span class="ip-tag">${escapeHtml(r.ip)}</span></td>
+          <td>Server #${r.serverId}</td>
+          <td style="font-family:var(--font-mono);font-size:0.78rem;color:var(--warning);">${r.limitPerSec} req/s (burst ${r.burst})</td>
+          <td style="font-size:0.78rem;color:var(--text-muted);">${escapeHtml(r.reason ?? '—')}</td>
+          <td style="color:var(--text-dim)">${new Date(r.appliedAt).toLocaleString()}</td>
+          <td style="color:var(--text-dim)">${r.escalatedAt ? new Date(r.escalatedAt).toLocaleString() : '<span style="color:var(--success)">Não escalado</span>'}</td>
+        </tr>`).join('')
+      }</tbody></table>`;
+    } else {
+      html += '<p style="color:var(--success);margin-top:1.5rem;">&#9989; No active rate limits.</p>';
+    }
 
     res.send(html);
   } catch (err) {
@@ -547,6 +910,55 @@ dashboardApi.post('/blocks/:id/unblock', async (req, res) => {
   } catch (err) {
     logger.error({ err }, 'Dashboard unblock error');
     res.status(500).send('<tr><td colspan="6" class="severity-critical">Error</td></tr>');
+  }
+});
+
+// ─── Playbook Execution History API ─────────────────────────────────────────
+
+dashboardApi.get('/playbook-history', async (_req, res) => {
+  try {
+    const executions = await db.select().from(playbookExecutions)
+      .orderBy(desc(playbookExecutions.startedAt))
+      .limit(50);
+
+    if (executions.length === 0) {
+      res.send('<p style="color:var(--text-dim)">Nenhuma execução de playbook registrada ainda.</p>');
+      return;
+    }
+
+    const statusIcon: Record<string, string> = {
+      completed: '<span style="color:var(--success)">&#10003;</span>',
+      failed: '<span style="color:var(--critical)">&#10007;</span>',
+      running: '<span style="color:var(--warning)">&#9881;</span>',
+      partial: '<span style="color:#fbbf24">&#9888;</span>',
+    };
+
+    const html = `<table>
+      <thead><tr><th>Playbook</th><th>Status</th><th>Trigger</th><th>Server</th><th>Passos OK</th><th>Passos Falhos</th><th>Início</th><th>Duração</th></tr></thead>
+      <tbody>${executions.map(e => {
+        const icon = statusIcon[e.status] ?? statusIcon.running;
+        const steps = (e.stepsCompleted as string[] | null) ?? [];
+        const failed = (e.stepsFailed as string[] | null) ?? [];
+        const duration = e.completedAt
+          ? `${Math.round((new Date(e.completedAt).getTime() - new Date(e.startedAt).getTime()) / 1000)}s`
+          : '—';
+        return `<tr>
+          <td><strong style="font-size:0.82rem;">${escapeHtml(e.playbookName)}</strong></td>
+          <td>${icon} <span style="font-size:0.78rem;color:${e.status === 'completed' ? 'var(--success)' : e.status === 'failed' ? 'var(--critical)' : 'var(--warning)'};">${e.status}</span></td>
+          <td style="font-size:0.75rem;color:var(--text-muted);">${escapeHtml(e.triggerType ?? '—')}</td>
+          <td style="color:var(--text-dim)">Server #${e.serverId ?? '—'}</td>
+          <td style="font-size:0.78rem;">${steps.length > 0 ? `<span style="color:var(--success)">${steps.length}</span> <span style="color:var(--text-dim);font-size:0.7rem;">${steps.slice(0, 2).map(s => escapeHtml(s)).join(', ')}${steps.length > 2 ? '…' : ''}</span>` : '<span style="color:var(--text-dim)">—</span>'}</td>
+          <td style="font-size:0.78rem;">${failed.length > 0 ? `<span style="color:var(--critical)">${failed.length}</span> <span style="color:var(--text-dim);font-size:0.7rem;">${failed.slice(0, 2).map(s => escapeHtml(s)).join(', ')}${failed.length > 2 ? '…' : ''}</span>` : '<span style="color:var(--text-dim)">—</span>'}</td>
+          <td style="color:var(--text-dim);font-size:0.75rem;">${new Date(e.startedAt).toLocaleString()}</td>
+          <td style="font-family:var(--font-mono);font-size:0.75rem;color:var(--text-muted);">${duration}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>`;
+
+    res.send(html);
+  } catch (err) {
+    logger.error({ err }, 'Playbook history API error');
+    res.status(500).send('<p class="severity-critical">Error loading playbook history</p>');
   }
 });
 
@@ -713,6 +1125,48 @@ dashboardApi.get('/server/:id/metrics', async (req, res) => {
       html += `<h3 class="section-title">Failed Services</h3><div class="threat-card">${
         failedUnits.map((u: string) => `<div class="threat-item"><span class="threat-icon">&#9888;</span><code>${escapeHtml(u)}</code></div>`).join('')
       }</div>`;
+    }
+
+    const kernelErrors = latest.kernelErrors ?? 0;
+    const journalErrors = latest.journalErrors ?? 0;
+    if (kernelErrors > 0 || journalErrors > 0) {
+      html += `
+        <h3 class="section-title">System Errors</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
+          <div class="kpi ${kernelErrors > 5 ? 'kpi-red' : kernelErrors > 0 ? 'kpi-yellow' : 'kpi-green'}">
+            <div class="kpi-label">Kernel Errors</div>
+            <div class="kpi-value ${kernelErrors > 5 ? 'kpi-value-red' : kernelErrors > 0 ? 'kpi-value-yellow' : 'kpi-value-green'}">${kernelErrors}</div>
+          </div>
+          <div class="kpi ${journalErrors > 10 ? 'kpi-red' : journalErrors > 0 ? 'kpi-yellow' : 'kpi-green'}">
+            <div class="kpi-label">Journal Errors</div>
+            <div class="kpi-value ${journalErrors > 10 ? 'kpi-value-red' : journalErrors > 0 ? 'kpi-value-yellow' : 'kpi-value-green'}">${journalErrors}</div>
+          </div>
+        </div>`;
+    }
+
+    const diskIo = latest.diskIo as Record<string, { readBytesPerSec?: number; writeBytesPerSec?: number }> | null;
+    const networkIo = latest.networkIo as Record<string, { rxBytesPerSec?: number; txBytesPerSec?: number }> | null;
+
+    if (diskIo && Object.keys(diskIo).length > 0) {
+      html += `<h3 class="section-title">Disk I/O</h3>
+        <table><thead><tr><th>Device</th><th>Read</th><th>Write</th></tr></thead><tbody>${
+        Object.entries(diskIo).map(([dev, io]) => `<tr>
+          <td><code>${escapeHtml(dev)}</code></td>
+          <td style="font-family:var(--font-mono);font-size:0.78rem;">${io.readBytesPerSec != null ? (io.readBytesPerSec / 1048576).toFixed(1) + ' MB/s' : '—'}</td>
+          <td style="font-family:var(--font-mono);font-size:0.78rem;">${io.writeBytesPerSec != null ? (io.writeBytesPerSec / 1048576).toFixed(1) + ' MB/s' : '—'}</td>
+        </tr>`).join('')
+      }</tbody></table>`;
+    }
+
+    if (networkIo && Object.keys(networkIo).length > 0) {
+      html += `<h3 class="section-title">Network I/O</h3>
+        <table><thead><tr><th>Interface</th><th>RX</th><th>TX</th></tr></thead><tbody>${
+        Object.entries(networkIo).map(([iface, io]) => `<tr>
+          <td><code>${escapeHtml(iface)}</code></td>
+          <td style="font-family:var(--font-mono);font-size:0.78rem;color:var(--cyan);">${io.rxBytesPerSec != null ? (io.rxBytesPerSec / 1048576).toFixed(2) + ' MB/s' : '—'}</td>
+          <td style="font-family:var(--font-mono);font-size:0.78rem;color:var(--warning);">${io.txBytesPerSec != null ? (io.txBytesPerSec / 1048576).toFixed(2) + ' MB/s' : '—'}</td>
+        </tr>`).join('')
+      }</tbody></table>`;
     }
 
     res.send(html);
@@ -1391,6 +1845,73 @@ dashboardApi.get('/intelligence', async (_req, res) => {
           Status atual: ${profileCount.cnt >= 10 ? '<span style="color:var(--success)">Dados suficientes para detecção</span>' : `<span style="color:var(--warning)">${profileCount.cnt} amostras — precisa de 10+ para começar a detectar</span>`}
         </p>
       </div>
+
+      <!-- CVE Intel Feeds — EPSS & KEV -->
+      ${await (async () => {
+        try {
+          const topEpss = await db.select().from(cveEpss)
+            .orderBy(desc(cveEpss.epssScore))
+            .limit(5);
+          const [kevCount] = await db.select({ cnt: count() }).from(cveKev);
+          const [latestEpss] = await db.select({ at: cveEpss.fetchedAt }).from(cveEpss).orderBy(desc(cveEpss.fetchedAt)).limit(1);
+          const [latestKev] = await db.select({ at: cveKev.fetchedAt }).from(cveKev).orderBy(desc(cveKev.fetchedAt)).limit(1);
+
+          if (topEpss.length === 0 && kevCount.cnt === 0) {
+            return `
+              <div class="card">
+                <div class="card-header"><span class="dot dot-yellow"></span> CVE Intel Feeds — EPSS & CISA KEV</div>
+                <p style="color:var(--text-dim);font-size:0.8rem;">
+                  Feeds não populados ainda. Configure <code>CVE_INTEL_FEEDS_ENABLED=true</code> e aguarde o próximo ciclo, ou use o botão "Recalcular Agora" acima.
+                </p>
+              </div>`;
+          }
+
+          const epssRows = topEpss.map(e => {
+            const pct = (e.epssScore * 100).toFixed(2);
+            const barWidth = Math.round(e.epssScore * 100);
+            const color = e.epssScore >= 0.5 ? 'var(--critical)' : e.epssScore >= 0.1 ? 'var(--warning)' : 'var(--primary-bright)';
+            return `<tr>
+              <td><code style="font-size:0.78rem;">${escapeHtml(e.cveId)}</code></td>
+              <td>
+                <div style="display:flex;align-items:center;gap:0.5rem;">
+                  <div style="background:${color};height:6px;width:${Math.max(barWidth, 2)}px;max-width:120px;border-radius:3px;"></div>
+                  <span style="font-family:var(--font-mono);font-size:0.78rem;color:${color};">${pct}%</span>
+                </div>
+              </td>
+              <td style="font-size:0.72rem;color:var(--text-dim);">${e.fetchedAt ? fmtAgo(e.fetchedAt) : '—'}</td>
+            </tr>`;
+          }).join('');
+
+          return `
+            <div class="card">
+              <div class="card-header"><span class="dot dot-yellow"></span> CVE Intel Feeds — EPSS & CISA KEV</div>
+              <p style="color:var(--text-muted);font-size:0.78rem;margin:0.5rem 0 1rem;">
+                <strong>EPSS</strong>: probabilidade de exploração nos próximos 30 dias (0–100%).
+                <strong>KEV</strong>: lista CISA de CVEs com exploração ativa confirmada em produção.
+              </p>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem;">
+                <div class="kpi kpi-yellow">
+                  <div class="kpi-label">CVEs no CISA KEV</div>
+                  <div class="kpi-value kpi-value-yellow">${kevCount.cnt}</div>
+                  <div style="font-size:0.7rem;color:var(--text-dim);margin-top:0.25rem;">${latestKev?.at ? 'Atualizado ' + fmtAgo(latestKev.at) : 'Nunca'}</div>
+                </div>
+                <div class="kpi kpi-red">
+                  <div class="kpi-label">CVEs com EPSS</div>
+                  <div class="kpi-value kpi-value-red">${topEpss.length > 0 ? '✓' : '0'}</div>
+                  <div style="font-size:0.7rem;color:var(--text-dim);margin-top:0.25rem;">${latestEpss?.at ? 'Atualizado ' + fmtAgo(latestEpss.at) : 'Nunca'}</div>
+                </div>
+              </div>
+              ${topEpss.length > 0 ? `
+                <h4 style="font-size:0.82rem;margin-bottom:0.5rem;color:var(--text-muted);">Top 5 CVEs por EPSS (maior risco de exploração)</h4>
+                <table style="width:100%;font-size:0.82rem;">
+                  <thead><tr><th>CVE</th><th>Probabilidade EPSS</th><th>Atualizado</th></tr></thead>
+                  <tbody>${epssRows}</tbody>
+                </table>` : ''}
+            </div>`;
+        } catch {
+          return '';
+        }
+      })()}
 
     </div>`;
 

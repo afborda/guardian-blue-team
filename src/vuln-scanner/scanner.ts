@@ -2,6 +2,7 @@ import { ServerService } from '../services/server.service.js';
 import { PortScanner } from './port-scanner.js';
 import { PackageAuditor } from './package-audit.js';
 import { DockerAuditor } from './docker-audit.js';
+import { RuntimeVersionScanner } from './runtime-versions.js';
 import { db } from '../database/connection.js';
 import { vulnerabilities } from '../database/schema.js';
 import { eq, and } from 'drizzle-orm';
@@ -15,6 +16,7 @@ export interface ScanResult {
   securityUpdates: number;
   dockerIssues: number;
   sslIssues: number;
+  runtimeEolCount: number;
   totalFindings: number;
 }
 
@@ -26,10 +28,11 @@ export class VulnScanner {
 
     const target = ServerService.toSSHTarget(server);
 
-    const [ports, packages, docker] = await Promise.all([
+    const [ports, packages, docker, runtimes] = await Promise.all([
       PortScanner.scan(target, server.tags),
       PackageAuditor.audit(target),
       DockerAuditor.audit(target),
+      RuntimeVersionScanner.scan(target),
     ]);
 
     for (const p of ports.unexpected) {
@@ -44,6 +47,21 @@ export class VulnScanner {
       await this.upsertVuln(serverId, 'docker', d.severity, `${d.image}:${d.tag} — ${d.issue}`, d.cveId);
     }
 
+    let runtimeEolCount = 0;
+    for (const rt of runtimes) {
+      if (rt.isEol || rt.isNearEol) {
+        runtimeEolCount++;
+        await this.upsertVuln(
+          serverId,
+          'runtime',
+          rt.severity,
+          `${rt.name} ${rt.version} — ${rt.isEol ? 'End of Life' : 'Near EOL'} (${rt.eolDate})`,
+          undefined,
+          rt.remediation,
+        );
+      }
+    }
+
     return {
       serverName: server.name,
       portsOpen: ports.open.length,
@@ -52,7 +70,8 @@ export class VulnScanner {
       securityUpdates: packages.securityUpdates,
       dockerIssues: docker.length,
       sslIssues: 0,
-      totalFindings: ports.unexpected.length + packages.securityUpdates + docker.length,
+      runtimeEolCount,
+      totalFindings: ports.unexpected.length + packages.securityUpdates + docker.length + runtimeEolCount,
     };
   }
 
@@ -89,7 +108,7 @@ export class VulnScanner {
     });
   }
 
-  private static async upsertVuln(serverId: number, category: string, severity: string, title: string, cveId?: string): Promise<void> {
+  private static async upsertVuln(serverId: number, category: string, severity: string, title: string, cveId?: string, remediation?: string): Promise<void> {
     const existing = await db.select()
       .from(vulnerabilities)
       .where(and(
@@ -100,7 +119,7 @@ export class VulnScanner {
       .then(rows => rows[0]);
 
     if (!existing) {
-      await db.insert(vulnerabilities).values({ serverId, category, severity, title, cveId });
+      await db.insert(vulnerabilities).values({ serverId, category, severity, title, cveId, remediation });
     }
   }
 }

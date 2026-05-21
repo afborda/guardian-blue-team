@@ -224,6 +224,7 @@ async function registerTelegramWebhook(): Promise<void> {
           { command: 'ask', description: 'Pergunte qualquer coisa à AI' },
           { command: 'report', description: 'Relatório de segurança' },
           { command: 'vulns', description: 'Vulnerabilidades CVE' },
+          { command: 'versions', description: 'Versões de runtimes (Node, Docker, nginx…)' },
           { command: 'servers', description: 'Servidores monitorados' },
           { command: 'help', description: 'Todos os comandos disponíveis' },
         ],

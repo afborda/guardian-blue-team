@@ -1,19 +1,19 @@
-FROM node:20-alpine AS builder
+FROM node:20-slim AS builder
 
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci && npm cache clean --force
-COPY tsconfig.json ./
+COPY tsconfig.json tsup.config.ts ./
 COPY src/ ./src/
 RUN npm run build
 
-FROM node:20-alpine
+FROM node:20-slim
 
 LABEL org.opencontainers.image.source="https://github.com/afborda/guardian-blue-team"
 LABEL org.opencontainers.image.description="Lightweight SOAR for the rest of us"
 LABEL org.opencontainers.image.licenses="AGPL-3.0"
 
-RUN apk add --no-cache openssh-client curl
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client curl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY package.json package-lock.json* ./

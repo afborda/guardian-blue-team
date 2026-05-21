@@ -12,6 +12,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${SSH_KEY_DIR:-~/.ssh}:/home/node/.ssh:ro
+      - ./models:/app/models:ro
     networks:
       - guardian-internal
       - traefik-public

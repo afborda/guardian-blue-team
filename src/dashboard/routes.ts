@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db, dbFalse, dbNow } from '../database/connection.js';
-import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts, serverMetrics, serverScores, behaviorProfiles, containerSnapshots, threatHuntFindings, rateLimitedIps, playbookExecutions, cveEpss, cveKev, vulnerabilities } from '../database/schema.js';
+import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts, serverMetrics, serverScores, behaviorProfiles, containerSnapshots, threatHuntFindings, rateLimitedIps, playbookExecutions, cveEpss, cveKev, vulnerabilities, threatIntelCache } from '../database/schema.js';
 import { IntelligenceWorker } from '../workers/intelligence.worker.js';
 import { ScoreCalculatorWorker } from '../workers/score-calculator.worker.js';
 import { CVEMonitorWorker } from '../workers/cve-monitor.worker.js';
@@ -80,7 +80,12 @@ dashboardPages.get('/incidents', (_req, res) => {
   const token = config.dashboard.token || '';
   const content = `
     <h2>Incidents</h2>
-    <div hx-get="/api/dashboard/incidents?token=${token}" hx-trigger="load" hx-swap="innerHTML">
+    <div style="display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap;">
+      <button hx-get="/api/dashboard/incidents?token=${token}&status=open" hx-target="#incidents-list" hx-swap="innerHTML" style="border-color:var(--critical);color:var(--critical)">Open</button>
+      <button hx-get="/api/dashboard/incidents?token=${token}&status=resolved" hx-target="#incidents-list" hx-swap="innerHTML">Resolved</button>
+      <button hx-get="/api/dashboard/incidents?token=${token}&status=all" hx-target="#incidents-list" hx-swap="innerHTML">All (last 100)</button>
+    </div>
+    <div id="incidents-list" hx-get="/api/dashboard/incidents?token=${token}&status=all" hx-trigger="load" hx-swap="innerHTML">
       <p aria-busy="true">Loading...</p>
     </div>
   `;
@@ -533,28 +538,35 @@ dashboardApi.get('/recent-actions', async (_req, res) => {
 
 dashboardApi.get('/incidents', async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
-    const status = req.query.status as string || 'open';
+    const limit = Math.min(parseInt(req.query.limit as string) || 100, 200);
+    const status = req.query.status as string || 'all';
 
-    const incidents = await db.select()
-      .from(socIncidents)
-      .where(eq(socIncidents.status, status))
-      .orderBy(desc(socIncidents.lastSeenAt))
-      .limit(limit);
+    const incidents = status === 'all'
+      ? await db.select().from(socIncidents).orderBy(desc(socIncidents.lastSeenAt)).limit(limit)
+      : await db.select().from(socIncidents).where(eq(socIncidents.status, status)).orderBy(desc(socIncidents.lastSeenAt)).limit(limit);
 
     if (incidents.length === 0) {
-      res.send('<p style="padding:1rem; color:var(--text-dim)">No incidents found.</p>');
+      const msg = status === 'open'
+        ? 'Nenhum incidente aberto — todos foram resolvidos automaticamente após o bloqueio dos IPs.'
+        : 'Nenhum incidente encontrado.';
+      res.send(`<p style="padding:1rem; color:var(--text-dim)">${msg}</p>`);
       return;
     }
 
-    const html = `<table><thead><tr><th>ID</th><th>Title</th><th>Severity</th><th>Events</th><th>Last Seen</th></tr></thead><tbody>${
-      incidents.map(i => `<tr>
-        <td><code>#${i.id}</code></td>
-        <td>${escapeHtml(i.title)}</td>
-        <td><span class="severity-${i.severity}">${i.severity}</span></td>
-        <td>${i.eventCount}</td>
-        <td style="color:var(--text-dim)">${new Date(i.lastSeenAt).toLocaleString()}</td>
-      </tr>`).join('')
+    const statusIcon = (s: string) => s === 'open' ? '🔴' : s === 'resolved' ? '✅' : '⚪';
+    const html = `<table><thead><tr><th>ID</th><th>Título</th><th>Severidade</th><th>Status</th><th>Eventos</th><th>Última atividade</th></tr></thead><tbody>${
+      incidents.map(i => {
+        const ago = Math.floor((Date.now() - new Date(i.lastSeenAt).getTime()) / 60000);
+        const agoStr = ago < 60 ? `${ago}m atrás` : ago < 1440 ? `${Math.floor(ago/60)}h atrás` : `${Math.floor(ago/1440)}d atrás`;
+        return `<tr>
+          <td><code>#${i.id}</code></td>
+          <td>${escapeHtml(i.title)}</td>
+          <td><span class="severity-${i.severity}">${i.severity?.toUpperCase()}</span></td>
+          <td>${statusIcon(i.status)} <span style="color:var(--text-muted);font-size:0.75rem">${i.status}</span></td>
+          <td>${i.eventCount}</td>
+          <td style="color:var(--text-dim);font-size:0.78rem">${agoStr}</td>
+        </tr>`;
+      }).join('')
     }</tbody></table>`;
 
     res.send(html);
@@ -573,21 +585,94 @@ dashboardApi.get('/servers', async (_req, res) => {
       return;
     }
 
-    const html = `<table><thead><tr><th>Name</th><th>Host</th><th>Status</th><th>Last Seen</th></tr></thead><tbody>${
-      servers.map(s => {
-        const statusDot = s.enabled
-          ? '<span style="color:var(--success);">&#9679;</span> Active'
-          : '<span style="color:var(--critical);">&#9679;</span> Disabled';
-        return `<tr>
-          <td><strong>${escapeHtml(s.name)}</strong></td>
-          <td><code>${escapeHtml(s.host)}:${s.sshPort}</code></td>
-          <td>${statusDot}</td>
-          <td style="color:var(--text-dim)">${s.lastSeenAt ? new Date(s.lastSeenAt).toLocaleString() : 'never'}</td>
-        </tr>`;
-      }).join('')
-    }</tbody></table>`;
+    // Latest metrics per server
+    const metricsMap = new Map<number, typeof serverMetrics.$inferSelect>();
+    for (const srv of servers) {
+      const [m] = await db.select().from(serverMetrics)
+        .where(eq(serverMetrics.serverId, srv.id))
+        .orderBy(desc(serverMetrics.collectedAt))
+        .limit(1);
+      if (m) metricsMap.set(srv.id, m);
+    }
 
-    res.send(html);
+    // Latest score per server
+    const scoresMap = new Map<number, number>();
+    for (const srv of servers) {
+      const [s] = await db.select({ overall: serverScores.overallScore })
+        .from(serverScores)
+        .where(eq(serverScores.serverId, srv.id))
+        .orderBy(desc(serverScores.periodStart))
+        .limit(1);
+      if (s) scoresMap.set(srv.id, s.overall);
+    }
+
+    // 24h events per server (non-info)
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const evtRows = await db.select({ serverId: securityEvents.serverId, cnt: count() })
+      .from(securityEvents)
+      .where(and(gte(securityEvents.timestamp, since24h), ne(securityEvents.severity, 'info')))
+      .groupBy(securityEvents.serverId);
+    const evtMap = new Map(evtRows.map(r => [r.serverId, r.cnt]));
+
+    // 24h incidents total
+    const [incTotal] = await db.select({ cnt: count() })
+      .from(socIncidents)
+      .where(gte(socIncidents.lastSeenAt, since24h));
+    void incTotal; // available for future use
+
+    const rows = servers.map(s => {
+      const m = metricsMap.get(s.id);
+      const score = scoresMap.get(s.id);
+      const events24h = evtMap.get(s.id) ?? 0;
+
+      const isOnline = s.lastSeenAt && (Date.now() - new Date(s.lastSeenAt).getTime() < 10 * 60 * 1000);
+      const statusDot = isOnline
+        ? '<span style="color:var(--success)">&#9679; Online</span>'
+        : s.enabled
+          ? '<span style="color:var(--warning)">&#9679; Offline</span>'
+          : '<span style="color:var(--text-dim)">&#9679; Disabled</span>';
+
+      const load = m?.load1 != null ? m.load1.toFixed(2) : '—';
+      const ram = m?.memTotalBytes && m.memUsedBytes
+        ? `${((m.memUsedBytes / m.memTotalBytes) * 100).toFixed(0)}%`
+        : '—';
+      const rootDisk = Array.isArray(m?.disks) ? (m.disks as Array<{mountpoint:string;usedPercent:number}>).find(d => d.mountpoint === '/') : null;
+      const disk = rootDisk ? `${rootDisk.usedPercent.toFixed(0)}%` : '—';
+
+      let rxDisplay = '—', txDisplay = '—';
+      if (m?.networkIo && Array.isArray(m.networkIo)) {
+        const totalRx = (m.networkIo as Array<{rxBps:number}>).reduce((a,i)=>a+(i.rxBps??0),0);
+        const totalTx = (m.networkIo as Array<{txBps:number}>).reduce((a,i)=>a+(i.txBps??0),0);
+        rxDisplay = totalRx > 1e6 ? `${(totalRx/1e6).toFixed(1)}MB/s` : `${(totalRx/1000).toFixed(0)}KB/s`;
+        txDisplay = totalTx > 1e6 ? `${(totalTx/1e6).toFixed(1)}MB/s` : `${(totalTx/1000).toFixed(0)}KB/s`;
+      }
+
+      const scoreColor = score == null ? 'var(--text-dim)' : score >= 80 ? 'var(--success)' : score >= 60 ? 'var(--warning)' : 'var(--critical)';
+      const scoreStr = score != null ? `<span style="color:${scoreColor};font-weight:700">${score}</span>` : '—';
+      const evtColor = events24h > 100 ? 'var(--critical)' : events24h > 20 ? 'var(--warning)' : 'var(--text-muted)';
+
+      const ago = s.lastSeenAt
+        ? `${Math.floor((Date.now()-new Date(s.lastSeenAt).getTime())/60000)}m atrás`
+        : 'never';
+
+      return `<tr>
+        <td><strong>${escapeHtml(s.name)}</strong><br><span style="color:var(--text-dim);font-size:0.72rem;font-family:var(--font-mono)">${escapeHtml(s.host)}</span></td>
+        <td>${statusDot}<br><span style="color:var(--text-dim);font-size:0.72rem">${ago}</span></td>
+        <td style="font-family:var(--font-mono)">${load}</td>
+        <td style="font-family:var(--font-mono)">${ram}</td>
+        <td style="font-family:var(--font-mono)">${disk}</td>
+        <td style="font-family:var(--font-mono);font-size:0.75rem">&#8595;${rxDisplay}<br>&#8593;${txDisplay}</td>
+        <td style="text-align:center">${scoreStr}</td>
+        <td><span style="color:${evtColor}">${events24h} eventos 24h</span></td>
+      </tr>`;
+    });
+
+    res.send(`<table>
+      <thead><tr>
+        <th>Servidor</th><th>Status</th><th>Load</th><th>RAM</th><th>Disco</th><th>Rede</th><th>Score</th><th>Atividade 24h</th>
+      </tr></thead>
+      <tbody>${rows.join('')}</tbody>
+    </table>`);
   } catch (err) {
     logger.error({ err }, 'Dashboard servers API error');
     res.status(500).send('<p class="severity-critical">Error loading servers</p>');
@@ -840,14 +925,14 @@ dashboardApi.get('/blocks', async (_req, res) => {
   try {
     const allBlocks = await db.select().from(blockedIps)
       .orderBy(desc(blockedIps.blockedAt))
-      .limit(50);
+      .limit(200);
 
     const blocks = allBlocks.filter(b => b.active);
 
     const rateLimits = await db.select().from(rateLimitedIps)
       .where(eq(rateLimitedIps.active, true))
       .orderBy(desc(rateLimitedIps.appliedAt))
-      .limit(30);
+      .limit(50);
 
     let html = '';
 
@@ -858,18 +943,64 @@ dashboardApi.get('/blocks', async (_req, res) => {
 
     const token = config.dashboard.token || '';
 
+    // Load all servers for name resolution
+    const allServers = await db.select({ id: socServers.id, name: socServers.name }).from(socServers);
+    const serverMap = new Map(allServers.map(s => [s.id, s.name]));
+
+    // Load cached threat intel for all blocked IPs (no live API calls)
+    const blockIps = blocks.map(b => b.ip);
+    const cachedIntel = blockIps.length > 0
+      ? await db.select({ indicator: threatIntelCache.indicator, data: threatIntelCache.data })
+          .from(threatIntelCache)
+          .where(inArray(threatIntelCache.indicator, blockIps.slice(0, 100)))
+      : [];
+    const intelMap = new Map(cachedIntel.map(c => [c.indicator, c.data as Record<string, unknown>]));
+
+    const scoreColor = (score: number) => score >= 80 ? 'var(--critical)' : score >= 50 ? 'var(--warning)' : 'var(--success)';
+    const scoreIcon = (score: number) => score >= 80 ? '&#128308;' : score >= 50 ? '&#128993;' : '&#128994;';
+
     if (blocks.length > 0) {
       html += `
         <h3 class="section-title">Permanent Blocks (${blocks.length})</h3>
-        <table><thead><tr><th>IP</th><th>Server</th><th>Reason</th><th>Blocked At</th><th>Expires</th><th>Actions</th></tr></thead><tbody>${
-        blocks.map(b => `<tr>
-          <td><span class="ip-tag">${escapeHtml(b.ip)}</span></td>
-          <td>Server #${b.serverId}</td>
-          <td style="font-size:0.78rem; color:var(--text-muted);">${escapeHtml(b.reason)}</td>
-          <td style="color:var(--text-dim)">${new Date(b.blockedAt).toLocaleString()}</td>
-          <td style="color:var(--text-dim)">${b.expiresAt ? new Date(b.expiresAt).toLocaleString() : 'permanent'}</td>
-          <td><button class="danger" hx-post="/api/dashboard/blocks/${b.id}/unblock?token=${token}" hx-swap="outerHTML" hx-target="closest tr">Unblock</button></td>
-        </tr>`).join('')
+        <table><thead><tr>
+          <th>IP + Threat Intel</th>
+          <th>Server</th>
+          <th>Reason</th>
+          <th>Blocked At</th>
+          <th>Actions</th>
+        </tr></thead><tbody>${
+        blocks.map(b => {
+          const intel = intelMap.get(b.ip);
+          const score = intel ? (intel.score as number ?? 0) : null;
+          const country = intel ? (intel.country as string ?? '') : '';
+          const isp = intel ? (intel.isp as string ?? '') : '';
+          const vt = intel ? (intel.virusTotal as Record<string, number> | null ?? null) : null;
+          const serverName = serverMap.get(b.serverId) ?? `Server #${b.serverId}`;
+
+          const intelBadge = score !== null
+            ? `<span style="color:${scoreColor(score)};font-size:0.75rem;margin-left:6px;">${scoreIcon(score)} ${score}/100</span>`
+            : `<button style="font-size:0.7rem;padding:2px 6px;margin-left:6px;" hx-get="/api/dashboard/ip-intel/${encodeURIComponent(b.ip)}?token=${token}" hx-target="closest td" hx-swap="innerHTML"><span class="ip-tag">${escapeHtml(b.ip)}</span> &#128269;</button>`;
+
+          const geoLine = (country || isp)
+            ? `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px;">${country ? `&#127760; ${escapeHtml(country)}` : ''} ${isp ? `&middot; ${escapeHtml(isp)}` : ''}</div>`
+            : '';
+
+          const vtLine = vt
+            ? `<div style="font-size:0.72rem;color:var(--text-muted);">VT: &#128680;${vt.malicious} mal &middot; &#9888;${vt.suspicious} susp</div>`
+            : '';
+
+          const ipCell = score !== null
+            ? `<span class="ip-tag">${escapeHtml(b.ip)}</span>${intelBadge}${geoLine}${vtLine}`
+            : intelBadge;
+
+          return `<tr>
+            <td>${ipCell}</td>
+            <td style="color:var(--text-muted);font-size:0.82rem;">${escapeHtml(serverName)}</td>
+            <td style="font-size:0.78rem; color:var(--text-muted);">${escapeHtml(b.reason)}</td>
+            <td style="color:var(--text-dim);font-size:0.78rem;">${new Date(b.blockedAt).toLocaleString()}</td>
+            <td><button class="danger" hx-post="/api/dashboard/blocks/${b.id}/unblock?token=${token}" hx-swap="outerHTML" hx-target="closest tr">Unblock</button></td>
+          </tr>`;
+        }).join('')
       }</tbody></table>`;
     } else {
       html += '<p style="color:var(--success);margin-bottom:1.5rem;">&#9989; No active IP blocks.</p>';
@@ -882,14 +1013,17 @@ dashboardApi.get('/blocks', async (_req, res) => {
           IPs em rate-limit são monitorados a cada 2min — se o ataque continuar, são promovidos a bloqueio permanente automaticamente.
         </p>
         <table><thead><tr><th>IP</th><th>Server</th><th>Limite</th><th>Motivo</th><th>Aplicado</th><th>Escalado</th></tr></thead><tbody>${
-        rateLimits.map(r => `<tr>
-          <td><span class="ip-tag">${escapeHtml(r.ip)}</span></td>
-          <td>Server #${r.serverId}</td>
-          <td style="font-family:var(--font-mono);font-size:0.78rem;color:var(--warning);">${r.limitPerSec} req/s (burst ${r.burst})</td>
-          <td style="font-size:0.78rem;color:var(--text-muted);">${escapeHtml(r.reason ?? '—')}</td>
-          <td style="color:var(--text-dim)">${new Date(r.appliedAt).toLocaleString()}</td>
-          <td style="color:var(--text-dim)">${r.escalatedAt ? new Date(r.escalatedAt).toLocaleString() : '<span style="color:var(--success)">Não escalado</span>'}</td>
-        </tr>`).join('')
+        rateLimits.map(r => {
+          const serverName = serverMap.get(r.serverId) ?? `Server #${r.serverId}`;
+          return `<tr>
+            <td><span class="ip-tag">${escapeHtml(r.ip)}</span></td>
+            <td style="color:var(--text-muted);font-size:0.82rem;">${escapeHtml(serverName)}</td>
+            <td style="font-family:var(--font-mono);font-size:0.78rem;color:var(--warning);">${r.limitPerSec} req/s (burst ${r.burst})</td>
+            <td style="font-size:0.78rem;color:var(--text-muted);">${escapeHtml(r.reason ?? '—')}</td>
+            <td style="color:var(--text-dim)">${new Date(r.appliedAt).toLocaleString()}</td>
+            <td style="color:var(--text-dim)">${r.escalatedAt ? new Date(r.escalatedAt).toLocaleString() : '<span style="color:var(--success)">Não escalado</span>'}</td>
+          </tr>`;
+        }).join('')
       }</tbody></table>`;
     } else {
       html += '<p style="color:var(--success);margin-top:1.5rem;">&#9989; No active rate limits.</p>';
@@ -906,12 +1040,45 @@ dashboardApi.post('/blocks/:id/unblock', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     await db.update(blockedIps).set({ active: dbFalse, unblockedAt: dbNow() }).where(eq(blockedIps.id, id));
-    res.send(`<tr><td colspan="6" style="color:var(--success);">&#9989; Block #${id} removed</td></tr>`);
+    res.send(`<tr><td colspan="5" style="color:var(--success);">&#9989; Block #${id} removed</td></tr>`);
   } catch (err) {
     logger.error({ err }, 'Dashboard unblock error');
-    res.status(500).send('<tr><td colspan="6" class="severity-critical">Error</td></tr>');
+    res.status(500).send('<tr><td colspan="5" class="severity-critical">Error</td></tr>');
   }
 });
+
+// On-demand AbuseIPDB + VirusTotal lookup for a specific IP
+dashboardApi.get('/ip-intel/:ip', async (req, res) => {
+  const ip = req.params.ip;
+  try {
+    const report = await ThreatIntelManager.lookupIP(ip);
+    if (!report) {
+      res.send(`<span class="ip-tag">${escapeHtml(ip)}</span> <span style="color:var(--text-muted);font-size:0.75rem;">AbuseIPDB não configurado</span>`);
+      return;
+    }
+
+    const scoreColor = report.score >= 80 ? 'var(--critical)' : report.score >= 50 ? 'var(--warning)' : 'var(--success)';
+    const scoreIcon = report.score >= 80 ? '&#128308;' : report.score >= 50 ? '&#128993;' : '&#128994;';
+
+    let html = `<span class="ip-tag">${escapeHtml(ip)}</span>
+      <span style="color:${scoreColor};font-size:0.75rem;margin-left:6px;">${scoreIcon} ${report.score}/100</span>
+      <div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px;">&#127760; ${escapeHtml(report.country)} &middot; ${escapeHtml(report.isp || '—')}</div>
+      <div style="font-size:0.72rem;color:var(--text-muted);">&#128202; ${report.totalReports} reports &middot; ${escapeHtml(report.usageType || 'unknown')}</div>`;
+
+    if (report.virusTotal) {
+      html += `<div style="font-size:0.72rem;color:var(--text-muted);">VT: &#128680;${report.virusTotal.malicious} mal &middot; &#9888;${report.virusTotal.suspicious} susp</div>`;
+    }
+    if (report.cached) {
+      html += `<div style="font-size:0.68rem;color:var(--text-dim);">&#128230; cache</div>`;
+    }
+
+    res.send(html);
+  } catch (err) {
+    logger.warn({ err, ip }, 'IP intel lookup failed');
+    res.send(`<span class="ip-tag">${escapeHtml(ip)}</span> <span style="color:var(--warning);font-size:0.75rem;">&#9888; Lookup falhou (rate limit?)</span>`);
+  }
+});
+
 
 // ─── Playbook Execution History API ─────────────────────────────────────────
 

@@ -343,6 +343,24 @@ export const trustedEntities = pgTable('trusted_entities', {
   typeValueIdx: uniqueIndex('trusted_entities_type_value_idx').on(table.entityType, table.value),
 }));
 
+export const ipThreatScores = pgTable('ip_threat_scores', {
+  id: serial('id').primaryKey(),
+  ip: varchar('ip', { length: 45 }).notNull().unique(),
+  threatScore: real('threat_score').notNull(),
+  isDangerous: boolean('is_dangerous').default(false).notNull(),
+  features: jsonb('features').$type<Record<string, number>>(),
+  country: varchar('country', { length: 10 }),
+  isp: text('isp'),
+  abuseScore: integer('abuse_score'),
+  vtMalicious: integer('vt_malicious'),
+  source: varchar('source', { length: 20 }).default('heuristic').notNull(),
+  scoredAt: timestamp('scored_at').defaultNow().notNull(),
+  expiresAt: timestamp('expires_at').notNull(),
+}, (table) => ({
+  ipIdx: index('ip_threat_scores_ip_idx').on(table.ip),
+  dangerousIdx: index('ip_threat_scores_dangerous_idx').on(table.isDangerous, table.scoredAt),
+}));
+
 export const auditLogs = pgTable('audit_logs', {
   id: serial('id').primaryKey(),
   category: varchar('category', { length: 30 }).notNull(), // operational | access | block

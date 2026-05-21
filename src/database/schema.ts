@@ -19,4 +19,5 @@ export {
   containerSnapshots,
   auditLogs,
   trustedEntities,
+  ipThreatScores,
 } from './guardian-schema.js';

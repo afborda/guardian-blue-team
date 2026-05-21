@@ -1575,8 +1575,8 @@ dashboardApi.get('/geo-attacks', async (_req, res) => {
   try {
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-    // Raw event aggregation — count and max severity per IP
-    const attacks = await db.select({
+    // Raw event aggregation — count and max severity per IP (top 100 by volume)
+    const topByVolume = await db.select({
       ip: securityEvents.sourceIp,
       cnt: count(),
       severity: sql<string>`MAX(${securityEvents.severity})`,
@@ -1590,6 +1590,32 @@ dashboardApi.get('/geo-attacks', async (_req, res) => {
       .groupBy(securityEvents.sourceIp)
       .orderBy(desc(count()))
       .limit(100);
+
+    // Always include confirmed dangerous IPs regardless of recent event volume
+    const dangerousScores = await db.select({ ip: ipThreatScores.ip })
+      .from(ipThreatScores)
+      .where(sql`${ipThreatScores.isDangerous} = true`);
+
+    const topIpSet = new Set(topByVolume.map(a => a.ip));
+    const extraDangerousIps = dangerousScores.map(r => r.ip).filter(ip => !topIpSet.has(ip));
+
+    // Fetch event counts for dangerous IPs not already in top list
+    const extraAttacks = extraDangerousIps.length > 0
+      ? await db.select({
+          ip: securityEvents.sourceIp,
+          cnt: count(),
+          severity: sql<string>`MAX(${securityEvents.severity})`,
+        })
+          .from(securityEvents)
+          .where(and(
+            gte(securityEvents.timestamp, weekAgo),
+            sql`${securityEvents.sourceIp} IS NOT NULL`,
+            inArray(securityEvents.sourceIp, extraDangerousIps),
+          ))
+          .groupBy(securityEvents.sourceIp)
+      : [];
+
+    const attacks = [...topByVolume, ...extraAttacks];
 
     // Load ML threat scores for all these IPs in one query
     const ips = attacks.map(a => a.ip).filter(Boolean) as string[];
@@ -1605,7 +1631,7 @@ dashboardApi.get('/geo-attacks', async (_req, res) => {
           source: ipThreatScores.source,
         })
           .from(ipThreatScores)
-          .where(inArray(ipThreatScores.ip, ips.slice(0, 100)))
+          .where(inArray(ipThreatScores.ip, ips))
       : [];
 
     const scoreMap = new Map(scoreRows.map(s => [s.ip, s]));

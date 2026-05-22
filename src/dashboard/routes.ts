@@ -20,6 +20,7 @@ import { FalsePositiveFilter } from '../intelligence/false-positive-filter.js';
 import { CONSTANTS } from '../config/constants.js';
 import { ServerService } from '../services/server.service.js';
 import { killContainerProcess, restartContainer, disconnectContainer, pullContainerImage, recreateContainer } from '../playbooks/actions/container-actions.js';
+import { AIProvider } from '../services/ai-provider.js';
 
 const TRUSTED_IPS_SET = new Set(CONSTANTS.trustedIps);
 
@@ -313,7 +314,7 @@ dashboardPages.get('/containers', (_req, res) => {
         </p>
       </div>
     </div>
-    <div hx-get="/api/dashboard/containers?token=${token}" hx-trigger="load, every 60s" hx-swap="innerHTML">
+    <div hx-get="/api/dashboard/containers?token=${token}" hx-trigger="load" hx-swap="innerHTML" id="containers-section">
       <p aria-busy="true">Loading container security data...</p>
     </div>
   `;
@@ -2457,7 +2458,13 @@ dashboardApi.get('/containers', async (_req, res) => {
     const token = config.dashboard.token || '';
     html += `
     <div class="card" style="margin-bottom:1.5rem;">
-      <div class="card-header"><span class="dot dot-cyan"></span> Container Fleet</div>
+      <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;">
+        <span><span class="dot dot-cyan"></span> Container Fleet</span>
+        <button style="font-size:0.72rem;padding:2px 8px;"
+          hx-get="/api/dashboard/containers?token=${token}"
+          hx-target="#containers-section"
+          hx-swap="innerHTML">&#8635; Atualizar</button>
+      </div>
       <p style="color:var(--text-muted);font-size:0.8rem;margin-bottom:0.75rem;">
         Todos os containers em execucao. Use as acoes para intervir diretamente.
       </p>
@@ -2480,26 +2487,47 @@ dashboardApi.get('/containers', async (_req, res) => {
     for (const snap of snapshots) {
       const procs = (snap.processes as Array<unknown>) ?? [];
       const conns = (snap.network as Array<unknown>) ?? [];
-      const cfg = snap.securityConfig as { readOnly?: boolean; noNewPrivs?: boolean; capDrop?: string[] } | null;
+      const cfg = snap.securityConfig as { readOnly?: boolean; noNewPrivs?: boolean; capDrop?: string[]; memoryLimit?: number } | null;
+
+      // Build specific missing-config list for tooltip and inline detail
+      const missing: string[] = [];
+      if (cfg) {
+        if (!cfg.readOnly) missing.push('read-only filesystem');
+        if (!cfg.noNewPrivs) missing.push('no-new-privileges');
+        if (!cfg.capDrop || cfg.capDrop.length === 0) missing.push('cap_drop ALL');
+        if (!cfg.memoryLimit || cfg.memoryLimit === 0) missing.push('memory limit');
+      }
 
       let configBadge: string;
-      if (cfg && cfg.readOnly && cfg.noNewPrivs) {
-        configBadge = '<span style="color:var(--success);" title="read_only + no-new-privileges + cap_drop">&#10003; Hardened</span>';
-      } else if (cfg && (cfg.readOnly || (cfg.capDrop && cfg.capDrop.length > 0))) {
-        configBadge = '<span style="color:var(--warning);" title="Parcialmente protegido — faltam configs">&#9888; Parcial</span>';
-      } else if (cfg) {
-        configBadge = '<span style="color:var(--critical);" title="Sem protecoes de security — veja recomendacoes abaixo">&#10007; Inseguro</span>';
-      } else {
+      if (!cfg) {
         configBadge = '<span style="color:var(--text-dim);">—</span>';
+      } else if (missing.length === 0) {
+        configBadge = '<span style="color:var(--success);" title="read_only + no-new-privileges + cap_drop">&#10003; Hardened</span>';
+      } else if (missing.length <= 2) {
+        configBadge = `<span style="color:var(--warning);" title="Faltando: ${missing.join(', ')}">&#9888; Parcial</span>
+          <div style="font-size:0.68rem;color:var(--warning);margin-top:2px;">falta: ${missing.join(', ')}</div>`;
+      } else {
+        configBadge = `<span style="color:var(--critical);" title="Faltando: ${missing.join(', ')}">&#10007; Inseguro</span>
+          <div style="font-size:0.68rem;color:var(--critical);margin-top:2px;">falta: ${missing.join(' · ')}</div>`;
       }
 
       const imageShort = (snap.imageName ?? '').split('/').pop()?.slice(0, 30) ?? '—';
       const lastSeen = snap.collectedAt ? new Date(snap.collectedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '—';
       const safeContainer = encodeURIComponent(snap.containerName);
       const safeServer = encodeURIComponent(snap.serverName ?? '');
+      // uid for HTML IDs must be CSS-selector-safe (no %, spaces, etc.)
+      const uid = `${snap.serverId}-${snap.containerName.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+
+      const aiAnalyzeBtn = missing.length > 0
+        ? `<button style="font-size:0.68rem;padding:2px 6px;" title="Analisar riscos com IA local (Ollama)"
+            hx-get="/api/dashboard/containers/analyze?token=${token}&container=${safeContainer}&server=${safeServer}"
+            hx-target="#ai-${uid}"
+            hx-swap="innerHTML">
+            &#129504; IA</button>`
+        : '';
 
       html += `
-            <tr id="fleet-${safeContainer}">
+            <tr id="fleet-${uid}">
               <td><code>${escapeHtml(snap.serverName ?? `#${snap.serverId}`)}</code></td>
               <td><strong>${escapeHtml(snap.containerName)}</strong></td>
               <td style="color:var(--text-muted);font-size:0.78rem;" title="${escapeHtml(snap.imageName ?? '')}">${escapeHtml(imageShort)}</td>
@@ -2511,13 +2539,19 @@ dashboardApi.get('/containers', async (_req, res) => {
                 <button style="font-size:0.68rem;padding:2px 6px;" title="Reiniciar container (para limpar processos maliciosos)"
                   hx-post="/api/dashboard/containers/restart?token=${token}&container=${safeContainer}&server=${safeServer}"
                   hx-confirm="Reiniciar '${escapeHtml(snap.containerName)}'?"
-                  hx-target="#fleet-${safeContainer}"
+                  hx-target="#fleet-${uid}"
                   hx-swap="outerHTML">&#8635;</button>
                 <button style="font-size:0.68rem;padding:2px 6px;" title="Isolar da rede (corta todas conexoes externas)"
                   hx-post="/api/dashboard/containers/disconnect?token=${token}&container=${safeContainer}&server=${safeServer}"
                   hx-confirm="Isolar '${escapeHtml(snap.containerName)}' da rede?"
-                  hx-target="#fleet-${safeContainer}"
+                  hx-target="#fleet-${uid}"
                   hx-swap="outerHTML">&#128274;</button>
+                ${aiAnalyzeBtn}
+              </td>
+            </tr>
+            <tr style="${missing.length > 0 ? '' : 'display:none;'}">
+              <td colspan="8" style="padding:0;">
+                <div id="ai-${uid}" style="padding:0.5rem 1rem;font-size:0.8rem;color:var(--text-muted);"></div>
               </td>
             </tr>`;
     }
@@ -2789,4 +2823,87 @@ dashboardApi.post('/containers/update-image', async (req, res) => {
       ? `Imagem atualizada e container recriado: ${container}`
       : recreateResult.message
   ));
+});
+
+// ── Container AI Analysis ──────────────────────────────────────────────────
+dashboardApi.get('/containers/analyze', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const containerName = decodeURIComponent(req.query.container as string ?? '');
+  const serverParam = decodeURIComponent(req.query.server as string ?? '');
+  if (!containerName) {
+    res.send('<span style="color:var(--text-dim);">Container nao especificado.</span>');
+    return;
+  }
+
+  const snap = await db.select({
+    containerName: containerSnapshots.containerName,
+    imageName: containerSnapshots.imageName,
+    securityConfig: containerSnapshots.securityConfig,
+    processes: containerSnapshots.processes,
+    network: containerSnapshots.network,
+  })
+    .from(containerSnapshots)
+    .where(eq(containerSnapshots.containerName, containerName))
+    .orderBy(desc(containerSnapshots.collectedAt))
+    .limit(1)
+    .then(r => r[0] ?? null);
+
+  if (!snap) {
+    res.send('<span style="color:var(--text-dim);">Snapshot nao encontrado.</span>');
+    return;
+  }
+
+  if (!AIProvider.isAvailable()) {
+    const cfg = snap.securityConfig as { readOnly?: boolean; noNewPrivs?: boolean; capDrop?: string[]; memoryLimit?: number } | null;
+    const missing: string[] = [];
+    if (cfg) {
+      if (!cfg.readOnly) missing.push('read-only filesystem (--read-only)');
+      if (!cfg.noNewPrivs) missing.push('no-new-privileges (--security-opt no-new-privileges)');
+      if (!cfg.capDrop || cfg.capDrop.length === 0) missing.push('cap_drop ALL (--cap-drop=ALL)');
+      if (!cfg.memoryLimit || cfg.memoryLimit === 0) missing.push('memory limit (--memory=512m)');
+    }
+    res.send(`<div style="background:rgba(245,158,11,0.06);border:1px solid rgba(245,158,11,0.2);border-radius:6px;padding:0.75rem;margin-top:4px;">
+      <div style="color:var(--warning);font-size:0.8rem;font-weight:600;margin-bottom:0.4rem;">&#9888; IA nao disponivel — analise basica:</div>
+      <ul style="color:var(--text-muted);font-size:0.78rem;margin:0;padding-left:1.2rem;line-height:1.8;">
+        ${missing.map(m => `<li>Adicionar: <code>${escapeHtml(m)}</code></li>`).join('')}
+      </ul>
+    </div>`);
+    return;
+  }
+
+  const cfg = snap.securityConfig as Record<string, unknown> | null;
+  const procs = (snap.processes as Array<{ name?: string; pid?: number }>) ?? [];
+  const conns = (snap.network as Array<{ remoteAddr?: string; state?: string }>) ?? [];
+
+  // Compact config summary to reduce prompt size (faster Ollama inference)
+  const cfgSummary = cfg ? Object.entries(cfg)
+    .map(([k, v]) => `${k}=${Array.isArray(v) ? (v as unknown[]).join(',') || '[]' : v}`)
+    .join('; ') : 'nenhuma config disponivel';
+
+  const prompt = `/no_think Especialista Docker. Container: ${containerName} (${snap.imageName ?? '?'}) em ${serverParam || '?'}.
+Config: ${cfgSummary}
+Processos: ${procs.slice(0, 5).map(p => p.name ?? '?').join(', ')}
+Conexoes: ${conns.slice(0, 3).map(c => c.remoteAddr ?? '?').join(', ')}
+
+Em HTML simples PT-BR (sem markdown), maximo 150 palavras:
+<strong>Riscos</strong>: liste cada config ausente e risco concreto.
+<strong>Correcao</strong>: comandos docker-compose para cada item.
+<strong>Prioridade</strong>: o que corrigir primeiro.`;
+
+  try {
+    const response = await AIProvider.chat(prompt, 'Responda em HTML simples em português. Sem markdown. Sem blocos de código.', { preferCloud: true });
+    if (!response?.text) {
+      logger.warn({ containerName }, 'Container AI analysis: no response from any provider');
+      res.send('<span style="color:var(--text-dim);">IA nao retornou resposta.</span>');
+      return;
+    }
+
+    res.send(`<div style="background:rgba(0,102,204,0.06);border:1px solid rgba(0,102,204,0.2);border-radius:6px;padding:0.75rem;margin-top:4px;">
+      <div style="color:var(--cyan);font-size:0.75rem;font-weight:600;margin-bottom:0.5rem;">&#129504; Analise IA (${escapeHtml(response.provider)})</div>
+      <div style="color:var(--text);font-size:0.8rem;line-height:1.7;">${response.text}</div>
+    </div>`);
+  } catch (err) {
+    logger.error({ err }, 'Container AI analysis error');
+    res.send('<span style="color:var(--critical);">Erro ao chamar IA.</span>');
+  }
 });

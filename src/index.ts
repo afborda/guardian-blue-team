@@ -28,6 +28,7 @@ import { handleTelegramCallback } from './telegram/callbacks.js';
 import { registerBuiltinPlugins, PluginManager } from './plugins/index.js';
 import { dashboardPages, dashboardApi } from './dashboard/routes.js';
 import { dashboardAuth } from './dashboard/auth.js';
+import { AIProvider } from './services/ai-provider.js';
 import { CONSTANTS } from './config/constants.js';
 import { safeCompare } from './utils/sanitize.js';
 import { rateLimiter } from './middleware/rate-limiter.js';
@@ -303,6 +304,7 @@ async function start(): Promise<void> {
   }
 
   logger.info('All workers started');
+  AIProvider.warmUpOllama();
   AuditLogger.operational(null, 'guardian_start', 'success', { version: APP_VERSION }).catch(() => {});
 }
 

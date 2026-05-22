@@ -580,7 +580,7 @@ export function layout(title: string, content: string): string {
       cursor: pointer;
       padding: 0.4rem 0.75rem;
       font-size: 1.1rem;
-      margin: 0.5rem 1rem;
+      margin-left: auto;
       min-height: 44px;
       min-width: 44px;
     }
@@ -645,7 +645,7 @@ export function layout(title: string, content: string): string {
       h2 { font-size: 1rem; margin-bottom: 1rem; }
       table { font-size: 0.72rem; }
       thead th, tbody td { padding: 0.4rem 0.5rem; }
-      button, .btn { min-height: 44px; width: 100%; }
+      button:not(.nav-toggle), .btn { min-height: 44px; width: 100%; }
       .footer { padding: 1rem; font-size: 0.65rem; }
     }
 
@@ -698,10 +698,10 @@ export function layout(title: string, content: string): string {
       <span class="badge">AI-Powered</span>
       <span class="badge">Mobile-First</span>
     </div>
+    <button class="nav-toggle" aria-label="Toggle navigation" onclick="document.getElementById('main-nav').classList.toggle('open')">&#9776;</button>
   </header>
 
-  <button class="nav-toggle" aria-label="Toggle navigation" onclick="this.nextElementSibling.classList.toggle('open')">&#9776;</button>
-  <nav class="nav">
+  <nav class="nav" id="main-nav">
     <a href="/dashboard?token=${token}" class="${title === 'Overview' ? 'active' : ''}">Overview</a>
     <a href="/dashboard/health?token=${token}" class="${title === 'Fleet Health' ? 'active' : ''}">Fleet Health</a>
     <a href="/dashboard/scores?token=${token}" class="${title === 'Scores' ? 'active' : ''}">Scores</a>

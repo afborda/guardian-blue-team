@@ -13,11 +13,8 @@ export class ThreatHunterWorker {
   static start(): void {
     if (this.intervalId) return;
 
-    // First run after 5 minutes (let other workers warm up)
-    setTimeout(() => {
-      this.hunt().catch(err => logger.error({ err }, 'Threat hunter error'));
-    }, 5 * 60 * 1000);
-
+    // Run immediately, then every 4h
+    this.hunt().catch(err => logger.error({ err }, 'Threat hunter error'));
     this.intervalId = setInterval(() => {
       this.hunt().catch(err => logger.error({ err }, 'Threat hunter error'));
     }, this.INTERVAL_MS);

@@ -10,8 +10,8 @@ export interface AIResponse {
 }
 
 export class AIProvider {
-  static async chat(prompt: string, systemPrompt?: string): Promise<AIResponse | null> {
-    const providers = this.getProviderOrder();
+  static async chat(prompt: string, systemPrompt?: string, opts?: { preferCloud?: boolean }): Promise<AIResponse | null> {
+    const providers = opts?.preferCloud ? this.getCloudFirstOrder() : this.getProviderOrder();
 
     for (const provider of providers) {
       const start = Date.now();
@@ -32,6 +32,24 @@ export class AIProvider {
 
   static isAvailable(): boolean {
     return !!(config.ai.geminiApiKey || config.ai.openaiApiKey || config.ai.anthropicApiKey || config.ai.ollamaUrl);
+  }
+
+  // Fire-and-forget: loads the Ollama model into RAM so first real request is fast
+  static warmUpOllama(): void {
+    if (!config.ai.ollamaUrl) return;
+    const body = JSON.stringify({
+      model: config.ai.ollamaModel,
+      prompt: 'hi',
+      stream: false,
+      keep_alive: '10m',
+    });
+    fetch(`${config.ai.ollamaUrl}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      signal: AbortSignal.timeout(180_000),
+    }).catch(() => { /* ignore — best-effort warm-up */ });
+    logger.debug({ model: config.ai.ollamaModel }, 'Ollama warm-up triggered');
   }
 
   private static getProviderOrder(): AIProviderName[] {
@@ -64,6 +82,17 @@ export class AIProvider {
     if (config.ai.openaiApiKey) order.push('openai');
     if (config.ai.anthropicApiKey) order.push('claude');
     return order;
+  }
+
+  // Cloud-first order for interactive/latency-sensitive requests
+  private static getCloudFirstOrder(): AIProviderName[] {
+    if (config.ai.strategy === 'local-only') return ['ollama'];
+    const order: AIProviderName[] = [];
+    if (config.ai.geminiApiKey) order.push('gemini');
+    if (config.ai.openaiApiKey) order.push('openai');
+    if (config.ai.anthropicApiKey) order.push('claude');
+    if (config.ai.ollamaUrl) order.push('ollama');
+    return order.length ? order : ['ollama'];
   }
 
   static getStatus(): Array<{ name: string; available: boolean; model: string; priority: number }> {
@@ -103,10 +132,9 @@ export class AIProvider {
         case 'ollama': return await this.callOllama(prompt, systemPrompt);
       }
     } catch (err) {
-      logger.debug({ provider, err }, 'AI provider call failed');
+      logger.warn({ provider, err: String(err) }, 'AI provider call failed');
       return null;
-    }
-  }
+    }  }
 
   private static async callGemini(prompt: string, systemPrompt?: string): Promise<string | null> {
     if (!config.ai.geminiApiKey) return null;
@@ -126,9 +154,15 @@ export class AIProvider {
       body: JSON.stringify(body),
     });
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      logger.warn({ status: res.status, errBody: errBody.substring(0, 200) }, 'Gemini API error');
+      return null;
+    }
     const data = await res.json() as any;
-    return data.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+    if (!text) logger.warn({ candidates: JSON.stringify(data.candidates ?? null).substring(0, 300) }, 'Gemini returned empty text');
+    return text;
   }
 
   private static async callOpenAI(prompt: string, systemPrompt?: string): Promise<string | null> {
@@ -206,12 +240,15 @@ export class AIProvider {
         model: config.ai.ollamaModel,
         prompt: systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt,
         stream: false,
+        keep_alive: '10m',
       }),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(180_000),
     });
 
     if (!res.ok) return null;
     const data = await res.json() as any;
-    return data.response ?? null;
+    const text: string | null = data.response ?? null;
+    if (!text) logger.warn({ done: data.done, done_reason: data.done_reason, responseLen: String(data.response ?? '').length }, 'Ollama returned empty response');
+    return text;
   }
 }

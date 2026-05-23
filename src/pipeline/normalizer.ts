@@ -754,7 +754,7 @@ export class EventNormalizer {
       timestamp: entry.timestamp,
       source: 'container_filesystem',
       category: 'container',
-      severity: changeType === 'A' ? 'high' : 'medium',
+      severity: changeType === 'A' ? 'low' : 'info',
       eventType: changeType === 'A' ? 'container_file_added' : 'container_file_changed',
       sourceIp: null,
       destinationPort: null,

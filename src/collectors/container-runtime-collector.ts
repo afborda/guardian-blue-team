@@ -117,7 +117,7 @@ export class ContainerRuntimeCollector {
   static async collectContainerFilesystem(target: SSHTarget): Promise<RawLogEntry[]> {
     const cmd = `for cid in $(docker ps -q 2>/dev/null); do
       name=$(docker inspect --format '{{.Name}}' $cid 2>/dev/null | tr -d /);
-      diff=$(docker diff $cid 2>/dev/null | grep -E '^[AC] .*(tmp|dev/shm|bin|usr/bin|usr/local/bin)');
+      diff=$(docker diff $cid 2>/dev/null | grep -E '^[AC] .*(tmp|dev/shm|bin|usr/bin|usr/local/bin)' | grep -Ev 'node-compile-cache|qdrant.*(snapshots|tmp)|guardian-ssh-|/tmp/\\.mc|dotnet-diagnostic|clr-debug-pipe|jellyfin');
       [ -n "$diff" ] && echo "---CONTAINER:$name---" && echo "$diff";
     done 2>/dev/null || echo ''`;
 

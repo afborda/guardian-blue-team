@@ -1,7 +1,7 @@
 import { SSHCollector } from '../../collectors/ssh-collector.js';
 import { ServerService } from '../../services/server.service.js';
-import { db, dbTrue, dbFalse, dbNow } from '../../database/connection.js';
-import { blockedIps } from '../../database/schema.js';
+import { db, dbTrue, dbFalse, dbNow, dbDate } from '../../database/connection.js';
+import { blockedIps, blockPropagationQueue } from '../../database/schema.js';
 import { and, eq } from 'drizzle-orm';
 import type { PlaybookContext } from '../engine.js';
 import { logger } from '../../utils/logger.js';
@@ -143,64 +143,57 @@ export async function blockIP(ctx: PlaybookContext, params?: Record<string, unkn
     method, duration, verified, server: ctx.serverName,
   });
 
-  if (isPermanent(duration)) {
-    propagateBlock(ctx.sourceIp, ctx.serverId, ctx.incidentId);
-  }
+  // Propagate to every other monitored server. Time-limited blocks propagate
+  // too — otherwise an attacker hitting server A simply pivots to server B.
+  propagateBlock(ctx.sourceIp, ctx.serverId, ctx.incidentId);
 
   return { success: true, message: `Blocked ${ctx.sourceIp} on ${ctx.serverName} via ${method} (${expiresLabel}, ${verifiedLabel})` };
 }
 
-export function propagateBlock(ip: string, excludeServerId: number, incidentId?: number): void {
-  ServerService.getEnabled().then(async (servers) => {
-    for (const server of servers) {
-      if (server.id === excludeServerId) continue;
+/**
+ * Enqueue a block to be applied on every other monitored server. Returns
+ * immediately — the BlockPropagationWorker drains the queue with retry/backoff.
+ *
+ * Inserting via `ON CONFLICT DO NOTHING` is impractical here because the queue
+ * has no natural unique key (the same IP/server pair can be re-queued after a
+ * previous attempt was completed or gave up). Idempotency is enforced by the
+ * worker checking `blocked_ips` before re-applying.
+ */
+export function propagateBlock(
+  ip: string,
+  excludeServerId: number,
+  incidentId?: number,
+): void {
+  if (!isValidIp(ip)) return;
 
-      const existing = await db.select({ id: blockedIps.id }).from(blockedIps)
-        .where(and(
-          eq(blockedIps.ip, ip),
-          eq(blockedIps.serverId, server.id),
-          eq(blockedIps.active, dbTrue),
-        ))
-        .then(rows => rows[0]);
+  ServerService.getEnabled()
+    .then(async (servers) => {
+      const targets = servers.filter((s) => s.id !== excludeServerId);
+      if (targets.length === 0) return;
 
-      if (existing) continue;
-
-      const target = ServerService.toSSHTarget(server);
-      let method: 'fail2ban' | 'ufw';
-      const f2bSuccess = await tryFail2ban(target, ip, 'permanent');
-
-      if (f2bSuccess) {
-        method = 'fail2ban';
-      } else {
-        const ufwSuccess = await tryUfw(target, ip);
-        if (!ufwSuccess) {
-          logger.warn({ ip, server: server.name }, 'Propagate block failed (both methods)');
-          continue;
-        }
-        method = 'ufw';
-      }
-
-      const verified = await verifyBlock(target, ip, method);
+      const rows = targets.map((s) => ({
+        ip,
+        targetServerId: s.id,
+        sourceServerId: excludeServerId,
+        incidentId: incidentId ?? null,
+        reason: `Propagated from server ${excludeServerId}`,
+        attempts: 0,
+        maxAttempts: 5,
+        status: 'pending' as const,
+        nextRetryAt: dbDate(new Date()),
+      }));
 
       try {
-        await db.insert(blockedIps).values({
-          ip,
-          serverId: server.id,
-          reason: `Propagated block (incident #${incidentId ?? 'n/a'})`,
-          playbookExecutionId: null,
-          incidentId: incidentId ?? null,
-          expiresAt: null,
-          verified,
-          method,
-        });
-      } catch (err: any) {
-        if (err?.code === '23505' || err?.message?.includes('UNIQUE constraint')) continue;
-        logger.error({ err, ip, server: server.name }, 'Propagate block DB insert failed');
+        await db.insert(blockPropagationQueue).values(rows);
+        logger.info(
+          { ip, queued: rows.length, excludeServerId, incidentId },
+          'Block enqueued for propagation',
+        );
+      } catch (err) {
+        logger.error({ err, ip, excludeServerId }, 'Failed to enqueue block propagation');
       }
-
-      logger.info({ ip, server: server.name, method, verified }, 'Block propagated');
-    }
-  }).catch(err => logger.error({ err, ip }, 'propagateBlock failed'));
+    })
+    .catch((err) => logger.error({ err, ip }, 'propagateBlock: getEnabled failed'));
 }
 
 export async function syncBlocksToServer(serverId: number): Promise<number> {

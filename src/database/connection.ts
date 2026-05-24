@@ -210,6 +210,27 @@ async function createPostgresTables(pool: Pool): Promise<void> {
 
       ALTER TABLE blocked_ips ADD COLUMN IF NOT EXISTS verified BOOLEAN DEFAULT false;
       ALTER TABLE blocked_ips ADD COLUMN IF NOT EXISTS method VARCHAR(20);
+      ALTER TABLE blocked_ips ADD COLUMN IF NOT EXISTS last_verified_at TIMESTAMP;
+      ALTER TABLE blocked_ips ADD COLUMN IF NOT EXISTS consecutive_verify_failures INTEGER NOT NULL DEFAULT 0;
+
+      CREATE TABLE IF NOT EXISTS block_propagation_queue (
+        id SERIAL PRIMARY KEY,
+        ip VARCHAR(45) NOT NULL,
+        target_server_id INTEGER NOT NULL,
+        source_server_id INTEGER,
+        incident_id INTEGER,
+        reason VARCHAR(255),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 5,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        last_error VARCHAR(500),
+        next_retry_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        last_tried_at TIMESTAMP,
+        completed_at TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS block_prop_status_retry_idx ON block_propagation_queue(status, next_retry_at);
+      CREATE INDEX IF NOT EXISTS block_prop_ip_target_idx ON block_propagation_queue(ip, target_server_id);
 
       -- Falco deploy state (migration 008). Idempotent ALTER so deployments
       -- that bootstrapped before PR #8 pick up the column on next start.
@@ -431,6 +452,7 @@ async function initSqlite(): Promise<void> {
   sqlite.pragma('foreign_keys = ON');
 
   createSqliteTables(sqlite);
+  sqliteSafeAddColumns(sqlite);
 
   // Cast to NodePgDatabase — Drizzle's query builder API is identical at runtime
   _db = sqliteDrizzle(sqlite) as unknown as NodePgDatabase;
@@ -602,11 +624,34 @@ function createSqliteTables(sqlite: { exec: (sql: string) => void }): void {
       blocked_at TEXT NOT NULL DEFAULT (datetime('now')),
       expires_at TEXT,
       unblocked_at TEXT,
-      active INTEGER NOT NULL DEFAULT 1
+      active INTEGER NOT NULL DEFAULT 1,
+      verified INTEGER DEFAULT 0,
+      method VARCHAR(20),
+      last_verified_at TEXT,
+      consecutive_verify_failures INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS blocked_ips_active_idx ON blocked_ips(active);
     CREATE INDEX IF NOT EXISTS blocked_ips_expires_idx ON blocked_ips(expires_at);
     CREATE INDEX IF NOT EXISTS blocked_ips_ip_server_idx ON blocked_ips(ip, server_id);
+
+    CREATE TABLE IF NOT EXISTS block_propagation_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ip VARCHAR(45) NOT NULL,
+      target_server_id INTEGER NOT NULL,
+      source_server_id INTEGER,
+      incident_id INTEGER,
+      reason VARCHAR(255),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 5,
+      status VARCHAR(20) NOT NULL DEFAULT 'pending',
+      last_error VARCHAR(500),
+      next_retry_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_tried_at TEXT,
+      completed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS block_prop_status_retry_idx ON block_propagation_queue(status, next_retry_at);
+    CREATE INDEX IF NOT EXISTS block_prop_ip_target_idx ON block_propagation_queue(ip, target_server_id);
 
     CREATE TABLE IF NOT EXISTS rate_limited_ips (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -729,6 +774,26 @@ function createSqliteTables(sqlite: { exec: (sql: string) => void }): void {
     CREATE INDEX IF NOT EXISTS ip_threat_scores_ip_idx ON ip_threat_scores(ip);
     CREATE INDEX IF NOT EXISTS ip_threat_scores_dangerous_idx ON ip_threat_scores(is_dangerous, scored_at);
   `);
+}
+
+// SQLite has no `ADD COLUMN IF NOT EXISTS` — query PRAGMA table_info first.
+// Fresh installs already get the columns via CREATE TABLE; this only patches
+// existing DBs created before the columns were added.
+function sqliteSafeAddColumns(sqlite: {
+  prepare: (sql: string) => { all: () => Array<{ name: string }> };
+  exec: (sql: string) => void;
+}): void {
+  const runSql = (sql: string) => sqlite.exec(sql);
+  const ensureColumn = (table: string, column: string, definition: string) => {
+    const cols = sqlite.prepare(`PRAGMA table_info(${table})`).all();
+    if (!cols.some((c) => c.name === column)) {
+      runSql(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+  };
+  ensureColumn('blocked_ips', 'verified', 'INTEGER DEFAULT 0');
+  ensureColumn('blocked_ips', 'method', 'VARCHAR(20)');
+  ensureColumn('blocked_ips', 'last_verified_at', 'TEXT');
+  ensureColumn('blocked_ips', 'consecutive_verify_failures', 'INTEGER NOT NULL DEFAULT 0');
 }
 
 export async function initDatabase(): Promise<void> {

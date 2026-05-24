@@ -64,14 +64,23 @@ export class FalsePositiveFilter {
         category: incidentMemory.category,
         sourceIps: incidentMemory.sourceIps,
         falsePositive: incidentMemory.falsePositive,
+        tags: incidentMemory.tags,
       }).from(incidentMemory);
 
       const newCache = new Map<string, SuppressionRule>();
 
       for (const mem of allMemory) {
         const ips = (mem.sourceIps ?? []) as string[];
+        const tags = (mem.tags ?? []) as string[];
+        const isBackfill = tags.includes('backfill');
 
-        this.incrementRule(newCache, mem.category, undefined, undefined, mem.falsePositive);
+        // Backfill entries (bulk FP-marking from cleanup operations) only
+        // count toward per-IP rules, not category-wide rules. Otherwise a
+        // 114-IP cleanup would push port_scan to 98% FP and silence real
+        // reconnaissance attempts from new IPs we've never seen.
+        if (!isBackfill) {
+          this.incrementRule(newCache, mem.category, undefined, undefined, mem.falsePositive);
+        }
 
         for (const ip of ips) {
           this.incrementRule(newCache, mem.category, ip, undefined, mem.falsePositive);

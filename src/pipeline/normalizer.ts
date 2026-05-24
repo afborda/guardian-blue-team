@@ -54,6 +54,25 @@ const AUTH_PATTERNS = [
 ];
 
 const UFW_PATTERN = /\[UFW (\w+)\].*SRC=([\da-fA-F.:]+)\s.*DPT=(\d+)/;
+const UFW_SPT_PATTERN = /SPT=(\d+)/;
+const UFW_DST_PATTERN = /DST=([\da-fA-F.:]+)/;
+
+// SRC port belongs to a service that's responding to a query *we* (or our
+// downstream NAT) made. These are not scans — UFW just blocks them when the
+// conntrack entry has expired or the destination IP is not local (transit
+// traffic, BGP weirdness). Including 53 DNS, 123 NTP, 80/443 HTTP(S) replies.
+const REPLY_SERVICE_PORTS = new Set([53, 80, 123, 443]);
+
+// CGNAT (RFC 6598) and private ranges. Packets with these as DST landing on
+// our public NIC are transit junk — not aimed at us, no point alerting.
+function isNonLocalDst(dst: string): boolean {
+  if (!dst) return false;
+  if (dst.startsWith('100.')) {
+    const second = parseInt(dst.split('.')[1] ?? '0', 10);
+    if (second >= 64 && second <= 127) return true; // 100.64.0.0/10
+  }
+  return false;
+}
 
 export class EventNormalizer {
   static normalize(entry: RawLogEntry): NormalizedEvent | null {
@@ -137,6 +156,20 @@ export class EventNormalizer {
     const srcIp = match[2];
     const dstPort = parseInt(match[3]);
 
+    const sptMatch = entry.line.match(UFW_SPT_PATTERN);
+    const sourcePort = sptMatch ? parseInt(sptMatch[1]) : null;
+    const dstMatch = entry.line.match(UFW_DST_PATTERN);
+    const dst = dstMatch ? dstMatch[1] : '';
+
+    // Drop service-reply traffic (NTP/DNS/HTTP[S] from SRC) and transit
+    // packets aimed at non-local CGNAT destinations. Both are noise, not
+    // attacks. Returning null skips the event entirely.
+    const isServiceReply = sourcePort !== null && REPLY_SERVICE_PORTS.has(sourcePort);
+    const isTransit = isNonLocalDst(dst);
+    if (action === 'BLOCK' && (isServiceReply || isTransit)) {
+      return null;
+    }
+
     const severity = action === 'BLOCK' ? 'low' : 'info';
     const eventType = action === 'BLOCK' ? 'firewall_block' : 'firewall_allow';
 
@@ -152,7 +185,7 @@ export class EventNormalizer {
       userName: null,
       processName: null,
       rawLog: entry.line,
-      metadata: { action },
+      metadata: { action, sourcePort, dst },
     };
   }
 

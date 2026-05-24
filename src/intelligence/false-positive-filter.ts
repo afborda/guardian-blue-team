@@ -16,7 +16,10 @@ export class FalsePositiveFilter {
   private static lastRefresh = 0;
   private static readonly CACHE_TTL_MS = 15 * 60 * 1000;
   private static readonly SUPPRESSION_THRESHOLD = 0.7;
-  private static readonly MIN_SAMPLES = 3;
+  // Lowered from 3 to 2: with auto-resolved entries no longer polluting
+  // incident_memory, every FP record is human-confirmed signal — two of
+  // them is already a strong "stop alerting on this" vote.
+  private static readonly MIN_SAMPLES = 2;
 
   static async shouldSuppress(category: string, sourceIp?: string, userName?: string): Promise<{ suppress: boolean; confidence: number; reason?: string }> {
     await this.refreshCacheIfNeeded();

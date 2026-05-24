@@ -2,7 +2,6 @@ import { db, dbNow } from '../database/connection.js';
 import { playbookExecutions } from '../database/schema.js';
 import { eq } from 'drizzle-orm';
 import { logger } from '../utils/logger.js';
-import { IncidentMemoryService } from '../services/incident-memory.service.js';
 
 export interface PlaybookStep {
   action: string;
@@ -105,7 +104,13 @@ export class PlaybookEngine {
       // notifyCompletion removed: the `notify` action already sends the alert
       // body and feedback buttons. A third "✅ Playbook Executed" recap was
       // pure noise.
-      await this.autoLearn(playbook, ctx, stepsCompleted);
+      //
+      // autoLearn(stepsCompleted) was also removed — it stored an
+      // `outcome='resolved'` row in incident_memory for every successful
+      // execution, which polluted FalsePositiveFilter's signal: the human
+      // marking an incident as "false positive" got drowned in auto-resolved
+      // execution logs. Real learning only fires from explicit human
+      // feedback via the Telegram inline buttons.
     }
 
     return { success, executionId: execution.id };
@@ -140,18 +145,6 @@ export class PlaybookEngine {
       case '==': return actual === value;
       case '!=': return actual !== value;
       default: return false;
-    }
-  }
-
-  private static async autoLearn(playbook: PlaybookDefinition, ctx: PlaybookContext, steps: string[]): Promise<void> {
-    if (!ctx.incidentId) return;
-
-    try {
-      const resolution = `Auto-resolved by playbook "${playbook.name}": ${steps.join('; ')}`;
-      await IncidentMemoryService.store(ctx.incidentId, resolution, 'resolved');
-      logger.debug({ incidentId: ctx.incidentId, playbook: playbook.name }, 'Auto-learned from playbook resolution');
-    } catch (err) {
-      logger.debug({ err }, 'Auto-learn failed (non-critical)');
     }
   }
 }

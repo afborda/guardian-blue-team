@@ -347,14 +347,27 @@ async function handleIncidentFeedback(
   }
 }
 
-export function buildIncidentFeedbackKeyboard(incidentId: number) {
-  return {
-    inline_keyboard: [[
-      { text: '🏷️ Falso Positivo', callback_data: `incident_fp_${incidentId}` },
-      { text: '✅ Confirmar', callback_data: `incident_confirm_${incidentId}` },
-      { text: '👁️ Monitorar', callback_data: `incident_monitor_${incidentId}` },
-    ]],
-  };
+export function buildIncidentFeedbackKeyboard(incidentId: number, sourceIp?: string) {
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+
+  // Action row only when we have an IP — these buttons replace the
+  // text-instructions ("/threat <ip> — investigar IP") that the body used to
+  // print. One tap, no copy-paste.
+  if (sourceIp) {
+    rows.push([
+      { text: '🔍 Investigar IP', callback_data: `incident_threat_${incidentId}_${sourceIp}` },
+      { text: '🔒 Bloquear IP', callback_data: `incident_block_${incidentId}_${sourceIp}` },
+    ]);
+  }
+
+  // Feedback row — feeds the false-positive filter learning loop.
+  rows.push([
+    { text: '🏷️ Falso Positivo', callback_data: `incident_fp_${incidentId}` },
+    { text: '✅ Confirmar', callback_data: `incident_confirm_${incidentId}` },
+    { text: '👁️ Monitorar', callback_data: `incident_monitor_${incidentId}` },
+  ]);
+
+  return { inline_keyboard: rows };
 }
 
 async function answerCallback(callbackId: string, text: string): Promise<void> {

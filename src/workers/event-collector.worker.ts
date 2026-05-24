@@ -248,8 +248,11 @@ export class EventCollectorWorker {
       }
 
       for (const playbook of matchingPlaybooks) {
-        // Dedup: skip if same playbook+IP+server triggered in last 5min
-        const dedupKey = `${playbook.name}:${result.event.sourceIp ?? ''}:${result.event.serverId}`;
+        // Dedup: same playbook+IP within 5min only fires once across the
+        // whole fleet. Previously included serverId in the key — that meant
+        // an IP scanning 3 servers triggered 3 alerts in 30 seconds, which
+        // was the visible source of the "spam" pattern.
+        const dedupKey = `${playbook.name}:${result.event.sourceIp ?? `srv-${result.event.serverId}`}`;
         if (this.recentlyTriggered.has(dedupKey)) continue;
 
         const ctx: PlaybookContext = {

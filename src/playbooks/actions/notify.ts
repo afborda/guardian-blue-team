@@ -1,6 +1,7 @@
 import { NotifierManager } from '../../plugins/notifier-manager.js';
 import { buildIncidentFeedbackKeyboard } from '../../telegram/callbacks.js';
 import { config } from '../../config/environment.js';
+import { logger } from '../../utils/logger.js';
 import type { PlaybookContext } from '../engine.js';
 
 export async function notify(ctx: PlaybookContext, params?: Record<string, unknown>): Promise<{ success: boolean; message: string }> {
@@ -10,15 +11,19 @@ export async function notify(ctx: PlaybookContext, params?: Record<string, unkno
   const body = buildNotificationBody(ctx, severity, customMessage);
 
   try {
-    await NotifierManager.notify({
-      title: 'Playbook Alert',
-      body,
-      severity: severity as 'critical' | 'high' | 'medium' | 'low',
-      metadata: { server: ctx.serverName, triggeredBy: ctx.triggeredBy },
-    });
-
     if (ctx.incidentId) {
-      await sendFeedbackButtons(ctx.incidentId, ctx.serverName, ctx.sourceIp, severity, body);
+      // Single message: alert body + inline action buttons. Replaces the
+      // previous "alert + separate classify message" pair so each incident
+      // costs one notification, not two.
+      await sendCombinedAlert(ctx.incidentId, ctx.serverName, ctx.sourceIp, severity, body);
+    } else {
+      // No incident — fall back to the plugin notifier (Slack/Discord/etc.).
+      await NotifierManager.notify({
+        title: 'Playbook Alert',
+        body,
+        severity: severity as 'critical' | 'high' | 'medium' | 'low',
+        metadata: { server: ctx.serverName, triggeredBy: ctx.triggeredBy },
+      });
     }
 
     return { success: true, message: `Notified (${severity})` };
@@ -38,7 +43,8 @@ function buildNotificationBody(ctx: PlaybookContext, severity: string, customMes
     lines.push('');
   }
 
-  // Always include structured context
+  lines.push(`🚨 <b>Playbook Alert</b>`);
+  lines.push('');
   lines.push(`<b>Servidor:</b> ${ctx.serverName}`);
   if (containerName) lines.push(`<b>Container:</b> ${containerName}`);
   if (ctx.sourceIp) lines.push(`<b>IP origem:</b> <code>${ctx.sourceIp}</code>`);
@@ -46,9 +52,11 @@ function buildNotificationBody(ctx: PlaybookContext, severity: string, customMes
   lines.push(`<b>Severidade:</b> ${severityLabel(severity)}`);
   lines.push(`<b>Acionado por:</b> ${ctx.triggeredBy === 'auto' ? 'deteccao automatica' : ctx.triggeredBy}`);
 
-  // Add action guidance based on context
-  lines.push('');
+  // Container alerts still need text guidance — they don't have IP-based
+  // action buttons. IP alerts get the buttons via the inline keyboard, so
+  // we strip the redundant "/threat ... — investigar IP" instructions.
   if (isContainerAlert) {
+    lines.push('');
     lines.push('<b>O que fazer:</b>');
     lines.push(`  /incidents — ver detalhes do incidente`);
     lines.push(`  /dashboard — abrir painel com acoes visuais`);
@@ -59,14 +67,6 @@ function buildNotificationBody(ctx: PlaybookContext, severity: string, customMes
       lines.push(`  &#8594; Investigue manualmente antes de agir`);
       lines.push(`  &#8594; No dashboard: botoes de Kill/Isolar/Reiniciar`);
     }
-  } else if (ctx.sourceIp) {
-    lines.push('<b>O que fazer:</b>');
-    lines.push(`  /threat ${ctx.sourceIp} — investigar IP`);
-    lines.push(`  /block ${ctx.sourceIp} — bloquear manualmente`);
-    lines.push(`  /incidents — ver todos os incidentes`);
-  } else {
-    lines.push(`  /incidents — ver incidentes`);
-    lines.push(`  /dashboard — painel completo`);
   }
 
   return lines.join('\n');
@@ -82,15 +82,14 @@ function severityLabel(severity: string): string {
   }
 }
 
-async function sendFeedbackButtons(incidentId: number, serverName: string, sourceIp?: string, severity?: string, bodyPreview?: string): Promise<void> {
-  const keyboard = buildIncidentFeedbackKeyboard(incidentId);
-  const shortBody = (bodyPreview ?? '').split('\n').slice(0, 2).join('\n');
-  const text = [
-    `&#128203; <b>Incidente #${incidentId}</b> — Classificar:`,
-    `&#128421; ${serverName} | &#127919; ${sourceIp ?? 'n/a'} | &#9888; ${severity}`,
-    '',
-    `<i>${shortBody}</i>`,
-  ].join('\n');
+async function sendCombinedAlert(
+  incidentId: number,
+  _serverName: string,
+  sourceIp: string | undefined,
+  _severity: string,
+  body: string,
+): Promise<void> {
+  const keyboard = buildIncidentFeedbackKeyboard(incidentId, sourceIp);
 
   try {
     await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
@@ -98,12 +97,12 @@ async function sendFeedbackButtons(incidentId: number, serverName: string, sourc
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chat_id: config.telegram.chatId,
-        text,
+        text: body,
         parse_mode: 'HTML',
         reply_markup: keyboard,
       }),
     });
-  } catch {
-    // Non-critical — feedback buttons are optional
+  } catch (err) {
+    logger.warn({ err, incidentId }, 'Failed to send combined alert');
   }
 }

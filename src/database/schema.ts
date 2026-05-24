@@ -20,4 +20,5 @@ export {
   auditLogs,
   trustedEntities,
   ipThreatScores,
+  blockPropagationQueue,
 } from './guardian-schema.js';

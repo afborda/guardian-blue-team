@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db, dbFalse, dbNow } from '../database/connection.js';
-import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts, serverMetrics, serverScores, behaviorProfiles, containerSnapshots, threatHuntFindings, rateLimitedIps, playbookExecutions, cveEpss, cveKev, vulnerabilities, threatIntelCache, ipThreatScores } from '../database/schema.js';
+import { socServers, securityEvents, socIncidents, blockedIps, cveAlerts, serverMetrics, serverScores, behaviorProfiles, containerSnapshots, threatHuntFindings, rateLimitedIps, playbookExecutions, cveEpss, cveKev, vulnerabilities, threatIntelCache, ipThreatScores, blockPropagationQueue } from '../database/schema.js';
 import { IntelligenceWorker } from '../workers/intelligence.worker.js';
 import { ScoreCalculatorWorker } from '../workers/score-calculator.worker.js';
 import { CVEMonitorWorker } from '../workers/cve-monitor.worker.js';
@@ -1028,6 +1028,65 @@ dashboardApi.get('/blocks', async (_req, res) => {
       }</tbody></table>`;
     } else {
       html += '<p style="color:var(--success);margin-top:1.5rem;">&#9989; No active rate limits.</p>';
+    }
+
+    // ── Block propagation queue health ────────────────────────────────────
+    const queueStats = await db
+      .select({
+        status: blockPropagationQueue.status,
+        cnt: sql<number>`count(*)::int`,
+      })
+      .from(blockPropagationQueue)
+      .groupBy(blockPropagationQueue.status);
+
+    const statMap = new Map(queueStats.map((r) => [r.status, Number(r.cnt)]));
+    const pending = statMap.get('pending') ?? 0;
+    const completed = statMap.get('completed') ?? 0;
+    const gaveUp = statMap.get('gave_up') ?? 0;
+
+    let recentFailures: Array<{ ip: string; targetServerId: number; attempts: number; lastError: string | null; lastTriedAt: Date | null }> = [];
+    if (gaveUp > 0) {
+      recentFailures = await db
+        .select({
+          ip: blockPropagationQueue.ip,
+          targetServerId: blockPropagationQueue.targetServerId,
+          attempts: blockPropagationQueue.attempts,
+          lastError: blockPropagationQueue.lastError,
+          lastTriedAt: blockPropagationQueue.lastTriedAt,
+        })
+        .from(blockPropagationQueue)
+        .where(eq(blockPropagationQueue.status, 'gave_up'))
+        .orderBy(desc(blockPropagationQueue.lastTriedAt))
+        .limit(20);
+    }
+
+    const gaveUpColor = gaveUp > 0 ? 'var(--critical)' : 'var(--text-muted)';
+    html += `
+      <h3 class="section-title" style="margin-top:2rem;">Block Propagation Queue</h3>
+      <p style="color:var(--text-muted);font-size:0.78rem;margin-bottom:1rem;">
+        Quando um IP é bloqueado num servidor, o block é propagado para os outros via fila com retry (1m → 5m → 15m → 1h → 6h, então alerta).
+      </p>
+      <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem;">
+        <div><strong style="color:var(--warning);">${pending}</strong> pendentes</div>
+        <div><strong style="color:var(--success);">${completed}</strong> propagados</div>
+        <div><strong style="color:${gaveUpColor};">${gaveUp}</strong> falharam (gave_up)</div>
+      </div>
+    `;
+
+    if (recentFailures.length > 0) {
+      html += `
+        <table><thead><tr><th>IP</th><th>Servidor alvo</th><th>Tentativas</th><th>Último erro</th><th>Última tentativa</th></tr></thead><tbody>${
+        recentFailures.map((f) => {
+          const serverName = serverMap.get(f.targetServerId) ?? `Server #${f.targetServerId}`;
+          return `<tr>
+            <td><span class="ip-tag">${escapeHtml(f.ip)}</span></td>
+            <td style="color:var(--text-muted);font-size:0.82rem;">${escapeHtml(serverName)}</td>
+            <td style="text-align:center;">${f.attempts}</td>
+            <td style="font-size:0.75rem;color:var(--critical);max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(f.lastError ?? '—')}</td>
+            <td style="color:var(--text-dim);font-size:0.78rem;">${f.lastTriedAt ? new Date(f.lastTriedAt).toLocaleString() : '—'}</td>
+          </tr>`;
+        }).join('')
+      }</tbody></table>`;
     }
 
     res.send(html);

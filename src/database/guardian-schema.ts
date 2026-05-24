@@ -194,10 +194,35 @@ export const blockedIps = pgTable('blocked_ips', {
   active: boolean('active').default(true).notNull(),
   verified: boolean('verified').default(false),
   method: varchar('method', { length: 20 }),
+  lastVerifiedAt: timestamp('last_verified_at'),
+  consecutiveVerifyFailures: integer('consecutive_verify_failures').notNull().default(0),
 }, (table) => ({
   activeIdx: index('blocked_ips_active_idx').on(table.active),
   expiresIdx: index('blocked_ips_expires_idx').on(table.expiresAt),
   ipServerIdx: index('blocked_ips_ip_server_idx').on(table.ip, table.serverId),
+}));
+
+// ─── Block Propagation Queue ────────────────────────────────────────────────
+// Persistent queue ensuring every blocked IP reaches every monitored server,
+// even when servers are temporarily offline. Drained by BlockPropagationWorker.
+export const blockPropagationQueue = pgTable('block_propagation_queue', {
+  id: serial('id').primaryKey(),
+  ip: varchar('ip', { length: 45 }).notNull(),
+  targetServerId: integer('target_server_id').notNull(),
+  sourceServerId: integer('source_server_id'),
+  incidentId: integer('incident_id'),
+  reason: varchar('reason', { length: 255 }),
+  attempts: integer('attempts').notNull().default(0),
+  maxAttempts: integer('max_attempts').notNull().default(5),
+  status: varchar('status', { length: 20 }).notNull().default('pending'),
+  lastError: varchar('last_error', { length: 500 }),
+  nextRetryAt: timestamp('next_retry_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  lastTriedAt: timestamp('last_tried_at'),
+  completedAt: timestamp('completed_at'),
+}, (table) => ({
+  statusRetryIdx: index('block_prop_status_retry_idx').on(table.status, table.nextRetryAt),
+  ipTargetIdx: index('block_prop_ip_target_idx').on(table.ip, table.targetServerId),
 }));
 
 // ─── Rate Limiting (DDoS Graduated Response) ────────────────────────────────────

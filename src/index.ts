@@ -9,6 +9,8 @@ import { DailyReportWorker } from './workers/daily-report.worker.js';
 import { EventCollectorWorker } from './workers/event-collector.worker.js';
 import { VulnScannerWorker } from './workers/vuln-scanner.worker.js';
 import { BlockCleanupWorker } from './workers/block-cleanup.worker.js';
+import { BlockPropagationWorker } from './workers/block-propagation.worker.js';
+import { BlockReconcileWorker } from './workers/block-reconcile.worker.js';
 import { CVEMonitorWorker } from './workers/cve-monitor.worker.js';
 import { CVEIntelFeedsWorker } from './workers/cve-intel-feeds.worker.js';
 import { ScoreCalculatorWorker } from './workers/score-calculator.worker.js';
@@ -288,6 +290,8 @@ async function start(): Promise<void> {
   DailyReportWorker.start();
   VulnScannerWorker.start();
   BlockCleanupWorker.start();
+  BlockPropagationWorker.start();
+  BlockReconcileWorker.start();
   DiscoveryWorker.start();
   ThreatHunterWorker.start();
   DDoSEscalationWorker.start();
@@ -324,6 +328,8 @@ async function shutdown(signal: string): Promise<void> {
     IntelligenceWorker.stop(),
     VulnScannerWorker.stop(),
     BlockCleanupWorker.stop(),
+    BlockPropagationWorker.stop(),
+    BlockReconcileWorker.stop(),
     CVEMonitorWorker.stop(),
     CVEIntelFeedsWorker.stop(),
     DiscoveryWorker.stop(),

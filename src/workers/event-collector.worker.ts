@@ -143,7 +143,14 @@ export class EventCollectorWorker {
       }
 
       if (newIncidentResults.length > 0) {
-        await this.notifyNewIncidents(newIncidentResults.filter(r => r.isNewIncident).length);
+        // Only send the aggregate "N novos incidentes" header when N>1.
+        // For a single incident the Playbook Alert that follows already has
+        // all the detail (server, IP, severity, actions) — sending both is
+        // pure noise.
+        const newCount = newIncidentResults.filter(r => r.isNewIncident).length;
+        if (newCount > 1) {
+          await this.notifyNewIncidents(newCount);
+        }
         await this.triggerPlaybooks(newIncidentResults);
       }
 

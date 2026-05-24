@@ -61,6 +61,30 @@ export class EventEnricher {
     for (const event of events) {
       let enriched = event;
 
+      // Suppress repeat noise from IPs already blocked everywhere. When an IP
+      // is in `blocked_ips`, every new low/medium event from it is just the
+      // attacker still hammering — fail2ban/UFW are doing their job. Marking
+      // as `info` makes the correlator skip incident creation (it has an early
+      // `if (severity === 'info') return null`). High/critical still pass —
+      // those may indicate evasion attempts on a different vector.
+      if (
+        event.sourceIp &&
+        blocked.has(event.sourceIp) &&
+        (event.severity === 'low' || event.severity === 'medium')
+      ) {
+        enrichedEvents.push({
+          ...event,
+          severity: 'info',
+          metadata: {
+            ...event.metadata,
+            suppressed: true,
+            suppressionReason: 'ip_already_blocked',
+            originalSeverity: event.severity,
+          },
+        });
+        continue;
+      }
+
       // False positive suppression based on learned patterns
       if (event.severity !== 'info') {
         const fpCheck = await FalsePositiveFilter.shouldSuppress(

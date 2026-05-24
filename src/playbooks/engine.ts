@@ -2,7 +2,6 @@ import { db, dbNow } from '../database/connection.js';
 import { playbookExecutions } from '../database/schema.js';
 import { eq } from 'drizzle-orm';
 import { logger } from '../utils/logger.js';
-import { config } from '../config/environment.js';
 import { IncidentMemoryService } from '../services/incident-memory.service.js';
 
 export interface PlaybookStep {
@@ -103,7 +102,9 @@ export class PlaybookEngine {
     }, 'Playbook finished');
 
     if (success) {
-      await this.notifyCompletion(playbook, ctx, stepsCompleted);
+      // notifyCompletion removed: the `notify` action already sends the alert
+      // body and feedback buttons. A third "✅ Playbook Executed" recap was
+      // pure noise.
       await this.autoLearn(playbook, ctx, stepsCompleted);
     }
 
@@ -139,32 +140,6 @@ export class PlaybookEngine {
       case '==': return actual === value;
       case '!=': return actual !== value;
       default: return false;
-    }
-  }
-
-  private static async notifyCompletion(playbook: PlaybookDefinition, ctx: PlaybookContext, steps: string[]): Promise<void> {
-    const message = [
-      `⚡ <b>Playbook Executed</b>`,
-      `📋 ${playbook.name}`,
-      `🖥️ Server: ${ctx.serverName}`,
-      `🎯 IP: ${ctx.sourceIp ?? 'n/a'}`,
-      ``,
-      `Steps:`,
-      ...steps.map(s => `  ✅ ${s}`),
-    ].join('\n');
-
-    try {
-      await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: config.telegram.chatId,
-          text: message,
-          parse_mode: 'HTML',
-        }),
-      });
-    } catch {
-      logger.warn('Failed to notify playbook completion');
     }
   }
 

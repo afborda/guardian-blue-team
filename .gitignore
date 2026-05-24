@@ -38,3 +38,7 @@ coverage/
 
 # Docker
 docker-compose.override.yml
+
+# Local dev artefacts (Playwright MCP traces, screenshots dropped in repo root)
+.playwright-mcp/
+/*.png

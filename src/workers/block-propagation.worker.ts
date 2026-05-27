@@ -152,7 +152,8 @@ export class BlockPropagationWorker {
       return;
     }
 
-    const verified = await verifyBlock(target, ip, method).catch(() => false);
+    const verifyResult = await verifyBlock(target, ip, method).catch(() => ({ verified: false, method }));
+    const verified = verifyResult.verified;
 
     try {
       await db.insert(blockedIps).values({

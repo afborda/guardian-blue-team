@@ -52,17 +52,32 @@ async function tryUfw(target: ReturnType<typeof ServerService.toSSHTarget>, ip: 
 export async function verifyBlock(
   target: ReturnType<typeof ServerService.toSSHTarget>,
   ip: string,
-  method: 'fail2ban' | 'ufw'
-): Promise<boolean> {
-  if (!isValidIp(ip)) return false;
+  method: 'fail2ban' | 'ufw' | null
+): Promise<{ verified: boolean; method: 'fail2ban' | 'ufw' | null }> {
+  if (!isValidIp(ip)) return { verified: false, method };
 
+  // When method is known, check only that backend.
   if (method === 'fail2ban') {
     const result = await SSHCollector.run(target, `sudo fail2ban-client status guardian-jail 2>/dev/null | grep -q "${ip}"`, 10_000);
-    return result.success;
+    return { verified: result.success, method: 'fail2ban' };
+  }
+  if (method === 'ufw') {
+    const result = await SSHCollector.run(target, `sudo ufw status | grep -q "${ip}"`, 10_000);
+    return { verified: result.success, method: 'ufw' };
   }
 
-  const result = await SSHCollector.run(target, `sudo ufw status | grep -q "${ip}"`, 10_000);
-  return result.success;
+  // Unknown method (legacy rows where the column was never populated). Probe
+  // UFW first because that's what enforceBlocks() uses by default; fall back
+  // to fail2ban for hosts that have a guardian-jail configured. Whichever
+  // backend confirms the rule wins and the caller persists `method` so the
+  // next reverify is cheap.
+  const ufwResult = await SSHCollector.run(target, `sudo ufw status | grep -q "${ip}"`, 10_000);
+  if (ufwResult.success) return { verified: true, method: 'ufw' };
+
+  const f2bResult = await SSHCollector.run(target, `sudo fail2ban-client status guardian-jail 2>/dev/null | grep -q "${ip}"`, 10_000);
+  if (f2bResult.success) return { verified: true, method: 'fail2ban' };
+
+  return { verified: false, method: null };
 }
 
 export async function blockIP(ctx: PlaybookContext, params?: Record<string, unknown>): Promise<{ success: boolean; message: string }> {
@@ -110,7 +125,7 @@ export async function blockIP(ctx: PlaybookContext, params?: Record<string, unkn
   }
 
   // Verify the block actually exists in the firewall
-  const verified = await verifyBlock(target, ctx.sourceIp, method);
+  const { verified } = await verifyBlock(target, ctx.sourceIp, method);
 
   const durationMs = parseDuration(duration);
   const expiresAt = durationMs === -1 ? null : new Date(Date.now() + durationMs);
@@ -234,7 +249,7 @@ export async function syncBlocksToServer(serverId: number): Promise<number> {
       method = 'ufw';
     }
 
-    const verified = await verifyBlock(target, ip, method);
+    const { verified } = await verifyBlock(target, ip, method);
 
     try {
       await db.insert(blockedIps).values({

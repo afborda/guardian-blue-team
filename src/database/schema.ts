@@ -21,4 +21,5 @@ export {
   trustedEntities,
   ipThreatScores,
   blockPropagationQueue,
+  discoveryBaselines,
 } from './guardian-schema.js';

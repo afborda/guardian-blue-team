@@ -357,6 +357,15 @@ async function createPostgresTables(pool: Pool): Promise<void> {
       CREATE INDEX IF NOT EXISTS ip_threat_scores_ip_idx ON ip_threat_scores(ip);
       CREATE INDEX IF NOT EXISTS ip_threat_scores_dangerous_idx ON ip_threat_scores(is_dangerous, scored_at DESC);
 
+      CREATE TABLE IF NOT EXISTS discovery_baselines (
+        server_name VARCHAR(255) PRIMARY KEY,
+        services JSONB NOT NULL DEFAULT '[]'::jsonb,
+        ports JSONB NOT NULL DEFAULT '[]'::jsonb,
+        architecture VARCHAR(100) NOT NULL DEFAULT '',
+        known_containers JSONB NOT NULL DEFAULT '[]'::jsonb,
+        captured_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+
       CREATE TABLE IF NOT EXISTS behavior_profiles (
         id SERIAL PRIMARY KEY,
         server_id INTEGER NOT NULL,
@@ -773,6 +782,15 @@ function createSqliteTables(sqlite: { exec: (sql: string) => void }): void {
     );
     CREATE INDEX IF NOT EXISTS ip_threat_scores_ip_idx ON ip_threat_scores(ip);
     CREATE INDEX IF NOT EXISTS ip_threat_scores_dangerous_idx ON ip_threat_scores(is_dangerous, scored_at);
+
+    CREATE TABLE IF NOT EXISTS discovery_baselines (
+      server_name VARCHAR(255) PRIMARY KEY,
+      services TEXT NOT NULL DEFAULT '[]',
+      ports TEXT NOT NULL DEFAULT '[]',
+      architecture VARCHAR(100) NOT NULL DEFAULT '',
+      known_containers TEXT NOT NULL DEFAULT '[]',
+      captured_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 }
 

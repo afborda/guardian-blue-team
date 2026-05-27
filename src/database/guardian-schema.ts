@@ -405,3 +405,17 @@ export const auditLogs = pgTable('audit_logs', {
   categoryIdx: index('audit_logs_category_idx').on(table.category, table.eventType),
   timestampIdx: index('audit_logs_timestamp_idx').on(table.timestamp),
 }));
+
+// Persistent baseline for DiscoveryWorker. Stored per server-name (not id) so
+// renaming a soc_servers row doesn't lose the baseline. Baseline survives
+// container restarts — without this, every restart caused the next 24h cycle
+// to fire a "Re-Discovery: changes detected" false positive against an empty
+// in-memory Map.
+export const discoveryBaselines = pgTable('discovery_baselines', {
+  serverName: varchar('server_name', { length: 255 }).primaryKey(),
+  services: jsonb('services').$type<string[]>().default([]).notNull(),
+  ports: jsonb('ports').$type<number[]>().default([]).notNull(),
+  architecture: varchar('architecture', { length: 100 }).default('').notNull(),
+  knownContainers: jsonb('known_containers').$type<string[]>().default([]).notNull(),
+  capturedAt: timestamp('captured_at').defaultNow().notNull(),
+});

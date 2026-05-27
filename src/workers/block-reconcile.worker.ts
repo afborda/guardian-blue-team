@@ -132,12 +132,15 @@ export class BlockReconcileWorker {
         const server = serverMap.get(row.serverId);
         if (!server) continue; // server disabled — leave alone, reconcile handles it
 
-        const method = (row.method as 'fail2ban' | 'ufw' | null) ?? 'fail2ban';
+        const storedMethod = (row.method as 'fail2ban' | 'ufw' | null) ?? null;
         const target = ServerService.toSSHTarget(server);
 
         let isVerified = false;
+        let resolvedMethod: 'fail2ban' | 'ufw' | null = storedMethod;
         try {
-          isVerified = await verifyBlock(target, row.ip, method);
+          const result = await verifyBlock(target, row.ip, storedMethod);
+          isVerified = result.verified;
+          resolvedMethod = result.method;
         } catch (err) {
           logger.warn({ err, ip: row.ip, server: server.name }, 'verifyBlock threw — counting as failure');
           isVerified = false;
@@ -145,13 +148,18 @@ export class BlockReconcileWorker {
 
         if (isVerified) {
           verified++;
-          if (row.consecutiveVerifyFailures > 0 || !row.verified) {
+          // Persist resolved method when discovered for the first time, so
+          // the next reverify pass can target the right backend without
+          // probing both.
+          const methodChanged = resolvedMethod && resolvedMethod !== storedMethod;
+          if (row.consecutiveVerifyFailures > 0 || !row.verified || methodChanged) {
             await db
               .update(blockedIps)
               .set({
                 verified: true,
                 lastVerifiedAt: dbDate(new Date()),
                 consecutiveVerifyFailures: 0,
+                ...(methodChanged ? { method: resolvedMethod } : {}),
               })
               .where(eq(blockedIps.id, row.id));
           } else {
@@ -196,7 +204,7 @@ export class BlockReconcileWorker {
             title: 'Block lost on monitored server',
             body:
               `Block of ${row.ip} on ${server.name} failed verification ${newFailures} times.\n` +
-              `Method: ${method}. Last verified: ${row.lastVerifiedAt ? new Date(row.lastVerifiedAt).toISOString() : 'never'}.\n\n` +
+              `Method: ${storedMethod ?? 'unknown'}. Last verified: ${row.lastVerifiedAt ? new Date(row.lastVerifiedAt).toISOString() : 'never'}.\n\n` +
               `Re-enqueued for reapply. If this repeats, the firewall on this server may have been flushed.`,
             severity: 'high',
             metadata: {

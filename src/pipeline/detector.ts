@@ -3,6 +3,7 @@ import { logger } from '../utils/logger.js';
 import { CONSTANTS } from '../config/constants.js';
 import { db } from '../database/connection.js';
 import { trustedEntities } from '../database/schema.js';
+import { isPrivateIp } from '../utils/sanitize.js';
 
 export interface DetectionRule {
   name: string;
@@ -17,8 +18,7 @@ const TRUSTED_IPS = new Set(CONSTANTS.trustedIps);
 
 function isTrustedIp(ip: string): boolean {
   if (TRUSTED_IPS.has(ip)) return true;
-  if (ip.startsWith('172.') || ip.startsWith('10.') || ip.startsWith('192.168.')) return true;
-  return false;
+  return isPrivateIp(ip);
 }
 
 const TRUSTED_FINGERPRINTS = new Set(CONSTANTS.trustedFingerprints);

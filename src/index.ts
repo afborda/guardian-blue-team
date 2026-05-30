@@ -64,7 +64,6 @@ app.get('/health', async (_req, res) => {
     status,
     uptime: Math.floor(process.uptime()),
     database: dbOk ? 'connected' : 'unreachable',
-    version: APP_VERSION,
   });
 });
 
@@ -82,12 +81,16 @@ function isRateLimited(chatId: string): boolean {
 }
 
 app.post('/webhook/telegram', async (req, res) => {
-  if (config.telegram.webhookSecret) {
-    const token = req.headers['x-telegram-bot-api-secret-token'];
-    if (!token || !safeCompare(String(token), config.telegram.webhookSecret)) {
-      res.status(401).json({ error: 'unauthorized' });
-      return;
-    }
+  // Fail-closed: sem secret configurado, rota não autentica nada — recusa todos
+  // os requests para evitar exposição anônima do handler de comandos do bot.
+  if (!config.telegram.webhookSecret) {
+    res.status(503).json({ error: 'webhook_not_configured' });
+    return;
+  }
+  const token = req.headers['x-telegram-bot-api-secret-token'];
+  if (!token || !safeCompare(String(token), config.telegram.webhookSecret)) {
+    res.status(401).json({ error: 'unauthorized' });
+    return;
   }
 
   const update = req.body;

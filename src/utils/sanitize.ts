@@ -20,6 +20,28 @@ export function isValidIp(ip: string): boolean {
   return IPV6_RE.test(ip);
 }
 
+export function isPrivateIp(ip: string): boolean {
+  if (IPV4_RE.test(ip)) {
+    const parts = ip.split('.').map(o => parseInt(o, 10));
+    if (parts.some(n => Number.isNaN(n) || n < 0 || n > 255)) return false;
+    const [a, b] = parts;
+    if (a === 10) return true;                          // 10.0.0.0/8
+    if (a === 172 && b >= 16 && b <= 31) return true;   // 172.16.0.0/12
+    if (a === 192 && b === 168) return true;            // 192.168.0.0/16
+    if (a === 127) return true;                         // 127.0.0.0/8 loopback
+    if (a === 169 && b === 254) return true;            // 169.254.0.0/16 link-local
+    return false;
+  }
+  if (!IPV6_RE.test(ip)) return false;
+  const lower = ip.toLowerCase();
+  if (lower === '::1') return true;                      // loopback v6
+  // fe80::/10 — first 10 bits 1111111010, so high byte 0xfe and second-byte
+  // high nibble ∈ {8,9,a,b}. Plain startsWith('fe80:') misses fe9x/feax/febx.
+  if (/^fe[89ab][0-9a-f]?:/.test(lower)) return true;
+  if (lower.startsWith('fc') || lower.startsWith('fd')) return true;        // fc00::/7 ULA
+  return false;
+}
+
 export function isValidHostname(host: string): boolean {
   return HOSTNAME_RE.test(host) && host.length <= 255;
 }

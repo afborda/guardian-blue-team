@@ -11,7 +11,7 @@ import { config } from '../config/environment.js';
 import { layout } from './views/layout.js';
 import { overviewPage } from './views/overview.js';
 import { logger } from '../utils/logger.js';
-import { escapeHtml } from '../utils/sanitize.js';
+import { escapeHtml, isPrivateIp } from '../utils/sanitize.js';
 import { ThreatIntelManager } from '../threat-intel/manager.js';
 import { PlaybookRegistry } from '../playbooks/registry.js';
 import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
@@ -25,7 +25,7 @@ import { AIProvider } from '../services/ai-provider.js';
 const TRUSTED_IPS_SET = new Set(CONSTANTS.trustedIps);
 
 function ipTag(ip: string): string {
-  if (TRUSTED_IPS_SET.has(ip) || ip.startsWith('10.') || ip.startsWith('172.') || ip.startsWith('192.168.')) {
+  if (TRUSTED_IPS_SET.has(ip) || isPrivateIp(ip)) {
     return `<span class="ip-tag-safe">${escapeHtml(ip)}</span>`;
   }
   return `<span class="ip-tag">${escapeHtml(ip)}</span>`;

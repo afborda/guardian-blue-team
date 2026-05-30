@@ -6,13 +6,13 @@ import { CONSTANTS } from '../config/constants.js';
 import { db } from '../database/connection.js';
 import { blockedIps } from '../database/schema.js';
 import { logger } from '../utils/logger.js';
+import { isPrivateIp } from '../utils/sanitize.js';
 
 const TRUSTED_IPS = new Set(CONSTANTS.trustedIps);
 
 function isSkippableIp(ip: string): boolean {
   if (TRUSTED_IPS.has(ip)) return true;
-  if (ip.startsWith('172.') || ip.startsWith('10.') || ip.startsWith('192.168.')) return true;
-  return false;
+  return isPrivateIp(ip);
 }
 
 let blockedIpCache = new Set<string>();

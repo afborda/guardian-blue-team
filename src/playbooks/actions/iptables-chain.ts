@@ -7,7 +7,7 @@ export const GUARDIAN_CHAIN = 'GUARDIAN-INPUT';
 type SSHTarget = ReturnType<typeof ServerService.toSSHTarget>;
 
 // Per-server cache: once we've ensured the chain exists in the current Guardian
-// process lifetime, skip the four SSH probes. Reset on process restart so an
+// process lifetime, skip the SSH probes. Reset on process restart so an
 // operator who flushed the chain manually triggers a re-check.
 const chainEnsured = new Set<number>();
 
@@ -30,22 +30,19 @@ export async function ensureGuardianChain(
 ): Promise<boolean> {
   if (chainEnsured.has(serverId)) return true;
 
-  // Step 1: create chain if missing. `-N` errors if it exists, so we check first.
-  const exists = await SSHCollector.run(
-    target,
-    `sudo iptables -S ${GUARDIAN_CHAIN} 2>/dev/null | head -1`,
-    5_000,
-  );
-  if (!exists.success || !exists.stdout.trim()) {
-    const create = await SSHCollector.run(target, `sudo iptables -N ${GUARDIAN_CHAIN} 2>&1`, 5_000);
-    // Race: two concurrent callers pass the `-S` probe and both run `-N`. The
-    // loser sees "Chain already exists" — that's the state we wanted, so treat
-    // it as success rather than aborting the rate-limit/block.
-    const alreadyExists = !create.success && /already exists/i.test(create.error ?? create.stdout ?? '');
-    if (!create.success && !alreadyExists) {
-      logger.warn({ serverId, err: create.error }, 'ensureGuardianChain: iptables -N failed');
-      return false;
-    }
+  // Step 1: create chain. `-N` is idempotent in spirit — if the chain exists
+  // it returns RC=1 with "Chain already exists", which is the state we wanted.
+  // We deliberately do NOT probe with `-S` first: on hosts where iptables-nft
+  // and iptables-legacy modules coexist (Debian 12+ default), `-S` against an
+  // absent chain returns the misleading "Incompatible with this kernel" error
+  // instead of "No chain/target/match by that name" — making the probe brittle
+  // across backends. Going straight to `-N` is one fewer round-trip and one
+  // fewer parsing surface.
+  const create = await SSHCollector.run(target, `sudo iptables -N ${GUARDIAN_CHAIN} 2>&1`, 5_000);
+  const alreadyExists = !create.success && /already exists/i.test(create.error ?? create.stdout ?? '');
+  if (!create.success && !alreadyExists) {
+    logger.warn({ serverId, err: create.error }, 'ensureGuardianChain: iptables -N failed');
+    return false;
   }
 
   // Step 2: ensure INPUT jumps to GUARDIAN-INPUT. `-C` returns success if rule

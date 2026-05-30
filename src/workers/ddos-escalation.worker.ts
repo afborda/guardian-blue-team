@@ -28,7 +28,15 @@ export class DDoSEscalationWorker {
     const escalationCutoff = new Date(Date.now() - CONSTANTS.ddos.escalationWindowMs);
 
     for (const rl of activeRateLimits) {
-      // Check if this IP triggered new DDoS events since being rate-limited
+      // Check if this IP triggered new DDoS events since being rate-limited.
+      //
+      // syn_flood is intentionally NOT in this list. SYN floods are trivially
+      // spoofed at the IP layer (no completed three-way handshake means the
+      // source address is attacker-controlled), so escalating to a permanent
+      // block on srcIP would let an attacker convince Guardian to ban arbitrary
+      // third parties — e.g. flooding with srcIP=8.8.8.8 to break DNS for the
+      // host. The local rate-limit in GUARDIAN-INPUT applied at first detection
+      // is fine (it just drops; bans no one), but escalation is not.
       const newEvents = await db.select().from(securityEvents)
         .where(and(
           eq(securityEvents.sourceIp, rl.ip),
@@ -36,7 +44,7 @@ export class DDoSEscalationWorker {
           gte(securityEvents.timestamp, escalationCutoff),
         ))
         .then(rows => rows.filter(e =>
-          e.eventType === 'syn_flood' || e.eventType === 'connection_rate_spike' || e.eventType === 'connection_flood'
+          e.eventType === 'connection_rate_spike' || e.eventType === 'connection_flood'
         ));
 
       if (newEvents.length > 0) {

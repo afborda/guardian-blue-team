@@ -5,7 +5,7 @@ import { logger } from '../utils/logger.js';
 import { ServerService } from '../services/server.service.js';
 import { isValidIp } from '../utils/sanitize.js';
 import { NotifierManager } from '../plugins/notifier-manager.js';
-import { verifyBlock } from '../playbooks/actions/block-ip.js';
+import { verifyBlock, type BlockMethod } from '../playbooks/actions/block-ip.js';
 
 const RECONCILE_INTERVAL_MS = 60 * 60_000;     // 1 hour
 const REVERIFY_INTERVAL_MS = 6 * 60 * 60_000;  // 6 hours
@@ -132,11 +132,11 @@ export class BlockReconcileWorker {
         const server = serverMap.get(row.serverId);
         if (!server) continue; // server disabled — leave alone, reconcile handles it
 
-        const storedMethod = (row.method as 'fail2ban' | 'ufw' | null) ?? null;
+        const storedMethod = (row.method as BlockMethod | null) ?? null;
         const target = ServerService.toSSHTarget(server);
 
         let isVerified = false;
-        let resolvedMethod: 'fail2ban' | 'ufw' | null = storedMethod;
+        let resolvedMethod: BlockMethod | null = storedMethod;
         try {
           const result = await verifyBlock(target, row.ip, storedMethod);
           isVerified = result.verified;

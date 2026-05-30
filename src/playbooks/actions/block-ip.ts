@@ -7,6 +7,9 @@ import type { PlaybookContext } from '../engine.js';
 import { logger } from '../../utils/logger.js';
 import { AuditLogger } from '../../utils/audit-logger.js';
 import { isValidIp } from '../../utils/sanitize.js';
+import { ensureGuardianChain, GUARDIAN_CHAIN } from './iptables-chain.js';
+
+export type BlockMethod = 'fail2ban' | 'ufw' | 'iptables';
 
 function isPermanent(duration: string): boolean {
   return duration === 'permanent' || duration === 'perm' || duration === '-1';
@@ -49,11 +52,37 @@ async function tryUfw(target: ReturnType<typeof ServerService.toSSHTarget>, ip: 
   return result.success;
 }
 
+/**
+ * Last-resort fallback: append a DROP rule to GUARDIAN-INPUT chain.
+ *
+ * Only reached when fail2ban is absent AND UFW failed. Uses Guardian's
+ * dedicated chain so that `iptables -F INPUT` (operator troubleshooting)
+ * cannot wipe blocks — only `iptables -F GUARDIAN-INPUT` can.
+ *
+ * No native TTL — caller persists `expiresAt` and `BlockCleanupWorker`
+ * removes via `unblockIP` when the row expires.
+ */
+async function tryIptables(
+  target: ReturnType<typeof ServerService.toSSHTarget>,
+  ip: string,
+  serverId: number,
+): Promise<boolean> {
+  if (!isValidIp(ip)) return false;
+  const chainOk = await ensureGuardianChain(target, serverId);
+  if (!chainOk) return false;
+  const result = await SSHCollector.run(
+    target,
+    `sudo iptables -A ${GUARDIAN_CHAIN} -s ${ip} -j DROP`,
+    10_000,
+  );
+  return result.success;
+}
+
 export async function verifyBlock(
   target: ReturnType<typeof ServerService.toSSHTarget>,
   ip: string,
-  method: 'fail2ban' | 'ufw' | null
-): Promise<{ verified: boolean; method: 'fail2ban' | 'ufw' | null }> {
+  method: BlockMethod | null
+): Promise<{ verified: boolean; method: BlockMethod | null }> {
   if (!isValidIp(ip)) return { verified: false, method };
 
   // When method is known, check only that backend.
@@ -65,17 +94,33 @@ export async function verifyBlock(
     const result = await SSHCollector.run(target, `sudo ufw status | grep -q "${ip}"`, 10_000);
     return { verified: result.success, method: 'ufw' };
   }
+  if (method === 'iptables') {
+    const result = await SSHCollector.run(
+      target,
+      `sudo iptables -S ${GUARDIAN_CHAIN} 2>/dev/null | grep -q -- "-s ${ip}/32"`,
+      10_000,
+    );
+    return { verified: result.success, method: 'iptables' };
+  }
 
   // Unknown method (legacy rows where the column was never populated). Probe
   // UFW first because that's what enforceBlocks() uses by default; fall back
-  // to fail2ban for hosts that have a guardian-jail configured. Whichever
-  // backend confirms the rule wins and the caller persists `method` so the
-  // next reverify is cheap.
+  // to fail2ban for hosts that have a guardian-jail configured, then iptables
+  // for hosts where Guardian had to use the chain fallback. Whichever backend
+  // confirms the rule wins and the caller persists `method` so the next
+  // reverify is cheap.
   const ufwResult = await SSHCollector.run(target, `sudo ufw status | grep -q "${ip}"`, 10_000);
   if (ufwResult.success) return { verified: true, method: 'ufw' };
 
   const f2bResult = await SSHCollector.run(target, `sudo fail2ban-client status guardian-jail 2>/dev/null | grep -q "${ip}"`, 10_000);
   if (f2bResult.success) return { verified: true, method: 'fail2ban' };
+
+  const iptResult = await SSHCollector.run(
+    target,
+    `sudo iptables -S ${GUARDIAN_CHAIN} 2>/dev/null | grep -q -- "-s ${ip}/32"`,
+    10_000,
+  );
+  if (iptResult.success) return { verified: true, method: 'iptables' };
 
   return { verified: false, method: null };
 }
@@ -110,18 +155,25 @@ export async function blockIP(ctx: PlaybookContext, params?: Record<string, unkn
 
   const target = ServerService.toSSHTarget(server);
 
-  // Try fail2ban first (has native TTL), fall back to UFW
-  let method: 'fail2ban' | 'ufw';
+  // Try fail2ban first (has native TTL), then UFW, then raw iptables in our
+  // dedicated chain. Iptables fallback exists so the block survives even on
+  // hosts where ufw is misconfigured/uninstalled and fail2ban isn't running.
+  let method: BlockMethod;
   const f2bSuccess = await tryFail2ban(target, ctx.sourceIp, duration);
 
   if (f2bSuccess) {
     method = 'fail2ban';
   } else {
     const ufwSuccess = await tryUfw(target, ctx.sourceIp);
-    if (!ufwSuccess) {
-      return { success: false, message: 'Both fail2ban and UFW block failed' };
+    if (ufwSuccess) {
+      method = 'ufw';
+    } else {
+      const iptSuccess = await tryIptables(target, ctx.sourceIp, ctx.serverId);
+      if (!iptSuccess) {
+        return { success: false, message: 'fail2ban, UFW and iptables block all failed' };
+      }
+      method = 'iptables';
     }
-    method = 'ufw';
   }
 
   // Verify the block actually exists in the firewall
@@ -235,18 +287,23 @@ export async function syncBlocksToServer(serverId: number): Promise<number> {
     if (existing) continue;
 
     const target = ServerService.toSSHTarget(server);
-    let method: 'fail2ban' | 'ufw';
+    let method: BlockMethod;
     const f2bSuccess = await tryFail2ban(target, ip, 'permanent');
 
     if (f2bSuccess) {
       method = 'fail2ban';
     } else {
       const ufwSuccess = await tryUfw(target, ip);
-      if (!ufwSuccess) {
-        logger.debug({ ip, server: server.name }, 'Sync block skipped (both methods failed)');
-        continue;
+      if (ufwSuccess) {
+        method = 'ufw';
+      } else {
+        const iptSuccess = await tryIptables(target, ip, serverId);
+        if (!iptSuccess) {
+          logger.debug({ ip, server: server.name }, 'Sync block skipped (all methods failed)');
+          continue;
+        }
+        method = 'iptables';
       }
-      method = 'ufw';
     }
 
     const { verified } = await verifyBlock(target, ip, method);
@@ -285,12 +342,24 @@ export async function unblockIP(ctx: PlaybookContext, params?: Record<string, un
 
   const target = ServerService.toSSHTarget(server);
 
-  // Try fail2ban unban first, then UFW as fallback
+  // Try every backend. We don't trust the stored `method` because the operator
+  // may have reapplied via a different tool out of band. First success wins;
+  // if none verified the IP existed in any backend, return failure.
   const f2bResult = await SSHCollector.run(target, `sudo fail2ban-client set guardian-jail unbanip ${ip}`, 10_000);
-  if (!f2bResult.success) {
+  let unblocked = f2bResult.success;
+  if (!unblocked) {
     const ufwResult = await SSHCollector.run(target, `sudo ufw delete deny from ${ip}`, 10_000);
-    if (!ufwResult.success) return { success: false, message: 'Unblock failed (both fail2ban and UFW)' };
+    unblocked = ufwResult.success;
   }
+  if (!unblocked) {
+    const iptResult = await SSHCollector.run(
+      target,
+      `sudo iptables -D ${GUARDIAN_CHAIN} -s ${ip} -j DROP`,
+      10_000,
+    );
+    unblocked = iptResult.success;
+  }
+  if (!unblocked) return { success: false, message: 'Unblock failed (fail2ban, UFW and iptables all returned error)' };
 
   await db.update(blockedIps)
     .set({ active: dbFalse, unblockedAt: dbNow() })

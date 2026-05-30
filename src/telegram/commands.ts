@@ -15,7 +15,7 @@ import { RuntimeVersionScanner } from '../vuln-scanner/runtime-versions.js';
 import { SOCAnalystService } from '../services/soc-analyst.service.js';
 import { AIProvider } from '../services/ai-provider.js';
 import { IncidentMemoryService } from '../services/incident-memory.service.js';
-import { blockIP, unblockIP, verifyBlock, syncBlocksToServer } from '../playbooks/actions/block-ip.js';
+import { blockIP, unblockIP, verifyBlock, syncBlocksToServer, type BlockMethod } from '../playbooks/actions/block-ip.js';
 import { isValidHostname, isValidIp, isValidSshUser, isValidKeyPath, isValidServerName } from '../utils/sanitize.js';
 import { discoverRemoteServer, formatDiscoveryApprovalKeyboard } from '../discovery/remote.js';
 import { ServerReadinessService } from '../services/server-readiness.service.js';
@@ -844,7 +844,7 @@ async function verifyBlocksCommand(): Promise<string> {
     if (!server) continue;
 
     const target = ServerService.toSSHTarget(server);
-    const isBlocked = await verifyBlock(target, block.ip, (block.method as 'fail2ban' | 'ufw') || 'ufw');
+    const isBlocked = await verifyBlock(target, block.ip, (block.method as BlockMethod) || 'ufw');
 
     if (isBlocked) {
       verified++;

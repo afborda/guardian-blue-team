@@ -7,6 +7,7 @@ import type { PlaybookContext } from '../engine.js';
 import { logger } from '../../utils/logger.js';
 import { isValidIp } from '../../utils/sanitize.js';
 import { CONSTANTS } from '../../config/constants.js';
+import { ensureGuardianChain, GUARDIAN_CHAIN } from './iptables-chain.js';
 
 export async function rateLimit(ctx: PlaybookContext, params?: Record<string, unknown>): Promise<{ success: boolean; message: string }> {
   if (!ctx.sourceIp) return { success: false, message: 'No source IP to rate-limit' };
@@ -36,9 +37,17 @@ export async function rateLimit(ctx: PlaybookContext, params?: Record<string, un
   const target = ServerService.toSSHTarget(server);
   const ip = ctx.sourceIp;
 
-  // Apply iptables rate limiting: allow limited traffic, drop excess
-  const acceptCmd = `sudo iptables -I INPUT -s ${ip} -m limit --limit ${limitPerSec}/sec --limit-burst ${burst} -j ACCEPT`;
-  const dropCmd = `sudo iptables -A INPUT -s ${ip} -j DROP`;
+  // Stage Guardian's dedicated chain before inserting rules. If this fails the
+  // chain helper logs and returns false; we abort rather than risk inserting
+  // into INPUT (which is what we're trying to stop doing).
+  const chainOk = await ensureGuardianChain(target, ctx.serverId);
+  if (!chainOk) {
+    return { success: false, message: `Failed to ensure ${GUARDIAN_CHAIN} chain — refusing to fall back to INPUT` };
+  }
+
+  // Apply iptables rate limiting in GUARDIAN-INPUT: allow limited traffic, drop excess.
+  const acceptCmd = `sudo iptables -I ${GUARDIAN_CHAIN} -s ${ip} -m limit --limit ${limitPerSec}/sec --limit-burst ${burst} -j ACCEPT`;
+  const dropCmd = `sudo iptables -A ${GUARDIAN_CHAIN} -s ${ip} -j DROP`;
 
   const acceptResult = await SSHCollector.run(target, acceptCmd, 10_000);
   if (!acceptResult.success) {
@@ -48,7 +57,7 @@ export async function rateLimit(ctx: PlaybookContext, params?: Record<string, un
   const dropResult = await SSHCollector.run(target, dropCmd, 10_000);
   if (!dropResult.success) {
     // Rollback accept rule
-    await SSHCollector.run(target, `sudo iptables -D INPUT -s ${ip} -m limit --limit ${limitPerSec}/sec --limit-burst ${burst} -j ACCEPT`, 10_000);
+    await SSHCollector.run(target, `sudo iptables -D ${GUARDIAN_CHAIN} -s ${ip} -m limit --limit ${limitPerSec}/sec --limit-burst ${burst} -j ACCEPT`, 10_000);
     return { success: false, message: `Failed to apply rate-limit DROP rule` };
   }
 
@@ -76,9 +85,9 @@ export async function removeRateLimit(ctx: PlaybookContext, params?: Record<stri
 
   const target = ServerService.toSSHTarget(server);
 
-  // Remove both rules (order matters: drop first, then accept)
-  await SSHCollector.run(target, `sudo iptables -D INPUT -s ${ip} -j DROP`, 10_000);
-  await SSHCollector.run(target, `sudo iptables -D INPUT -s ${ip} -m limit --limit-burst 0 -j ACCEPT 2>/dev/null; sudo iptables -D INPUT -s ${ip} -m limit -j ACCEPT 2>/dev/null`, 10_000);
+  // Remove both rules from GUARDIAN-INPUT (order matters: drop first, then accept)
+  await SSHCollector.run(target, `sudo iptables -D ${GUARDIAN_CHAIN} -s ${ip} -j DROP`, 10_000);
+  await SSHCollector.run(target, `sudo iptables -D ${GUARDIAN_CHAIN} -s ${ip} -m limit --limit-burst 0 -j ACCEPT 2>/dev/null; sudo iptables -D ${GUARDIAN_CHAIN} -s ${ip} -m limit -j ACCEPT 2>/dev/null`, 10_000);
 
   await db.update(rateLimitedIps)
     .set({ active: dbFalse, removedAt: dbNow() })

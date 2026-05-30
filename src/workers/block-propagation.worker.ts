@@ -6,7 +6,7 @@ import { ServerService } from '../services/server.service.js';
 import { SSHCollector } from '../collectors/ssh-collector.js';
 import { isValidIp } from '../utils/sanitize.js';
 import { NotifierManager } from '../plugins/notifier-manager.js';
-import { verifyBlock } from '../playbooks/actions/block-ip.js';
+import { verifyBlock, type BlockMethod } from '../playbooks/actions/block-ip.js';
 
 const DRAIN_INTERVAL_MS = 60_000; // every 1 min — rapid for first attempts; ladder spaces them out
 const BATCH_SIZE = 25;
@@ -117,7 +117,7 @@ export class BlockPropagationWorker {
 
     // Try fail2ban first, fall back to UFW. Permanent block (-1).
     const target = ServerService.toSSHTarget(server);
-    let method: 'fail2ban' | 'ufw' | null = null;
+    let method: BlockMethod | null = null;
     let errMessage: string | null = null;
 
     try {

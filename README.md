@@ -1,17 +1,23 @@
 <p align="center">
-  <img src="docs/guardian-overview.png" alt="Guardian Blue Team" width="100%">
+  <img src="docs/assets/guardian-logo.png" alt="Guardian Blue Team" width="180">
 </p>
+
+<h1 align="center">Guardian Blue Team</h1>
 
 <p align="center">
   <a href="https://github.com/afborda/guardian-blue-team/actions/workflows/ci.yml"><img src="https://github.com/afborda/guardian-blue-team/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License: AGPL-3.0"></a>
   <a href="https://ghcr.io/afborda/guardian-blue-team"><img src="https://img.shields.io/badge/Docker-ghcr.io-blue" alt="Docker"></a>
-  <img src="https://img.shields.io/badge/version-2.1.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.1.0-9745F5" alt="Version">
 </p>
 
 <p align="center">
   <b>Agentless SIEM/SOAR with Local AI</b> — Detect, Analyze, Block, Learn<br>
   <a href="README.pt-BR.md"><strong>Portugues</strong></a> · <a href="docs/getting-started.md">Getting Started</a> · <a href="docs/architecture.md">Architecture</a> · <a href="docs/configuration.md">Configuration</a>
+</p>
+
+<p align="center">
+  <img src="docs/assets/guardian-flow.png" alt="Guardian Blue Team — Architecture Flow" width="100%">
 </p>
 
 ---

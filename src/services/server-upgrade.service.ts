@@ -34,6 +34,7 @@ interface RollbackContext {
   guardianUserCreated: boolean;
   guardianShellInstalled: boolean;
   sudoersInstalled: boolean;
+  allowUserPatched: boolean;
 }
 
 const SUDOERS_CONTENT = `# Guardian Tier 0 — sudoers allowlist
@@ -58,6 +59,7 @@ export class ServerUpgradeService {
       guardianUserCreated: false,
       guardianShellInstalled: false,
       sudoersInstalled: false,
+      allowUserPatched: false,
     };
 
     const legacyTarget: SSHTarget = {
@@ -164,6 +166,26 @@ export class ServerUpgradeService {
     });
     if (!ok7) return abort('install-sudoers failed');
 
+    // ── Etapa 7b: AllowUsers — adiciona guardian se sshd_config restringir ──
+    // Alguns servidores têm AllowUsers explícito (hardening). Sem esta etapa
+    // o SSH bloqueia o login do guardian mesmo com a chave correta.
+    await step('patch-allowusers', async () => {
+      const check = await SSHCollector.run(legacyTarget,
+        `sudo grep -rh '^AllowUsers' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/ 2>/dev/null || echo ''`,
+        10_000);
+      const line = check.stdout.trim();
+      if (!line) return 'AllowUsers not set — skip';
+      if (line.includes('guardian')) return 'guardian already in AllowUsers';
+
+      // Append guardian to the existing AllowUsers line (in-place sed across all files)
+      const patch = await SSHCollector.run(legacyTarget,
+        `sudo sed -i 's/^AllowUsers .*/& guardian/' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true && sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null || true`,
+        15_000);
+      if (!patch.success) throw new Error(patch.error ?? 'AllowUsers patch failed');
+      rollbackCtx.allowUserPatched = true;
+      return `patched: ${line} → ${line} guardian`;
+    });
+
     // ── Etapa 8: smoke test como guardian ───────────────────────────────────
 
     const guardianTarget: SSHTarget = {
@@ -233,8 +255,13 @@ export class ServerUpgradeService {
 
     const cmds: string[] = [];
     if (ctx.sudoersInstalled) cmds.push('sudo rm -f /etc/sudoers.d/guardian');
+    if (ctx.allowUserPatched) cmds.push(
+      `sudo sed -i 's/^\\(AllowUsers .*\\) guardian/\\1/' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true && sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null || true`,
+    );
     if (ctx.guardianShellInstalled) cmds.push('sudo rm -f /usr/local/bin/guardian-shell');
-    if (ctx.guardianUserCreated) cmds.push('sudo userdel -r guardian 2>/dev/null || true');
+    if (ctx.guardianUserCreated) cmds.push(
+      'sudo loginctl terminate-user guardian 2>/dev/null || true && sleep 1 && sudo userdel -r guardian 2>/dev/null || true',
+    );
 
     for (const cmd of cmds) {
       const r = await SSHCollector.run(target, cmd, 15_000);

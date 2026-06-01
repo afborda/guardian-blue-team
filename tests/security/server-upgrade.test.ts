@@ -67,13 +67,15 @@ describe('ServerUpgradeService.upgrade — happy path', () => {
 
   it('completes all 10 steps and persists upgrade in DB', async () => {
     // pre-flight, create-user, install-pubkey, install-shell, install-sudoers,
-    // smoke echo ok, smoke allowed cmd, smoke blocked cmd, cleanup
+    // patch-allowusers (check + sed), smoke echo ok, smoke allowed cmd, smoke blocked cmd, cleanup
     mockRunSequence([
       { stdout: 'NAME=Ubuntu', success: true, durationMs: 20 }, // pre-flight
       sshOk,   // create-guardian-user
       sshOk,   // install-pubkey
       sshOk,   // install-guardian-shell
       sshOk,   // install-sudoers
+      { stdout: 'AllowUsers ubuntu', success: true, durationMs: 5 }, // patch-allowusers: check
+      sshOk,   // patch-allowusers: sed + reload
       { stdout: 'ok\n', success: true, durationMs: 5 },  // smoke: echo ok
       sshOk,   // smoke: allowed cmd
       guardianNoTemplate, // smoke: blocked cmd
@@ -114,8 +116,9 @@ describe('ServerUpgradeService.upgrade — smoke test failure', () => {
       sshOk,   // install-pubkey
       sshOk,   // install-guardian-shell (marks guardianShellInstalled)
       sshOk,   // install-sudoers (marks sudoersInstalled)
+      { stdout: '', success: true, durationMs: 5 }, // patch-allowusers: check (no AllowUsers line)
       sshFail, // smoke: echo ok fails → triggers rollback
-      // rollback calls: rm sudoers, rm shell, userdel
+      // rollback calls: rm sudoers, rm shell, userdel (allowUserPatched=false so no sed)
       sshOk, sshOk, sshOk,
     ]);
 
@@ -140,6 +143,7 @@ describe('ServerUpgradeService.rollback', () => {
       guardianUserCreated: true,
       guardianShellInstalled: true,
       sudoersInstalled: true,
+      allowUserPatched: false,
     });
     expect(SSHCollector.run).toHaveBeenCalledTimes(3);
   });
@@ -151,7 +155,20 @@ describe('ServerUpgradeService.rollback', () => {
       guardianUserCreated: false,
       guardianShellInstalled: true,
       sudoersInstalled: false,
+      allowUserPatched: false,
     });
     expect(SSHCollector.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('also reverts AllowUsers when allowUserPatched is true', async () => {
+    vi.mocked(SSHCollector.run).mockResolvedValue(sshOk);
+    const target = { id: 1, name: 'test', host: '10.0.0.1', sshPort: 22, sshUser: 'ubuntu', sshKeyPath: null };
+    await ServerUpgradeService.rollback(target, {
+      guardianUserCreated: true,
+      guardianShellInstalled: true,
+      sudoersInstalled: true,
+      allowUserPatched: true,
+    });
+    expect(SSHCollector.run).toHaveBeenCalledTimes(4);
   });
 });

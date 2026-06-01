@@ -1,5 +1,6 @@
 import { SSHCollector, type SSHTarget } from './ssh-collector.js';
 import { logger } from '../utils/logger.js';
+import type { RawLogEntry } from './log-collector.js';
 
 export interface RawHealthMetrics {
   serverId: number;
@@ -115,5 +116,34 @@ export class HealthCollector {
     if (str.endsWith('M')) return num * 1024 * 1024;
     if (str.endsWith('K')) return num * 1024;
     return num;
+  }
+
+  // Returns a RawLogEntry for each disk partition over the critical threshold (90%).
+  static async collectCriticalDiskEntries(target: SSHTarget, thresholdPercent = 90): Promise<RawLogEntry[]> {
+    const metrics = await this.collect(target);
+    if (!metrics) return [];
+    return metrics.disks
+      .filter(d => d.usedPercent >= thresholdPercent)
+      .map(d => ({
+        serverId: target.id,
+        serverName: target.name,
+        source: 'disk_critical',
+        timestamp: metrics.collectedAt,
+        line: `disk_full mount=${d.mountpoint} used=${d.usedPercent}% avail=${d.availableBytes}`,
+      }));
+  }
+
+  // Returns a RawLogEntry if the server rebooted within the last recentMinutes window.
+  static async collectRebootEntry(target: SSHTarget, recentMinutes = 30): Promise<RawLogEntry[]> {
+    const metrics = await this.collect(target);
+    if (!metrics) return [];
+    if (metrics.uptimeSeconds > recentMinutes * 60) return [];
+    return [{
+      serverId: target.id,
+      serverName: target.name,
+      source: 'reboot',
+      timestamp: new Date(Date.now() - metrics.uptimeSeconds * 1000),
+      line: `system_reboot uptime=${metrics.uptimeSeconds}s`,
+    }];
   }
 }

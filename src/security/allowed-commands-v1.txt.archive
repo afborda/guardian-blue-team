@@ -1,0 +1,84 @@
+# Guardian SIEM — Allowed Commands Allowlist
+#
+# Format:
+#   - One command per line (literal)
+#   - Lines starting with # are comments
+#   - %TIMESTAMP% is replaced by ISO8601 regex (e.g., 2026-05-31T14:32:00 or 2026-05-31T14:32:00Z)
+#   - Match is anchored: ^entry$ (entire command must match)
+#
+# Adding a new command:
+#   1. Add the literal command here
+#   2. Test with: SSH_ORIGINAL_COMMAND='your cmd' guardian-shell
+#   3. Document why this command is needed in src/collectors/<collector>.ts
+#
+# DO NOT add commands with shell metacharacters (; & | $ ` \ > <)
+# DO NOT use regex — only literal strings + %TIMESTAMP%
+#
+# === Authentication & SSH logs ===
+journalctl -u ssh --since %TIMESTAMP% --no-pager
+journalctl -u ssh --since %TIMESTAMP% --no-pager -o json
+journalctl -u sshd --since %TIMESTAMP% --no-pager
+journalctl -u sshd --since %TIMESTAMP% --no-pager -o json
+cat /var/log/auth.log
+tail -n 500 /var/log/auth.log
+tail -n 1000 /var/log/auth.log
+
+# === Sudo logs ===
+journalctl -u sudo --since %TIMESTAMP% --no-pager
+journalctl _COMM=sudo --since %TIMESTAMP% --no-pager
+
+# === System logs (syslog, journal) ===
+journalctl --since %TIMESTAMP% --no-pager -p warning
+journalctl --since %TIMESTAMP% --no-pager -p err
+cat /var/log/syslog
+tail -n 500 /var/log/syslog
+
+# === Firewall (UFW) logs ===
+cat /var/log/ufw.log
+tail -n 1000 /var/log/ufw.log
+
+# === Network state ===
+ss -tunap
+ss -tan
+ss -uan
+netstat -tunap
+netstat -tan
+
+# === Process state ===
+ps auxf
+ps auxww
+ps -eo pid,ppid,user,comm,args
+
+# === File integrity (FIM baseline) ===
+sha256sum /etc/passwd /etc/shadow /etc/sudoers /etc/ssh/sshd_config /etc/hosts /etc/crontab /etc/ld.so.preload
+
+# === Cron / persistence ===
+crontab -l
+ls -la /etc/cron.d/
+ls -la /etc/cron.daily/
+ls -la /etc/cron.hourly/
+systemctl list-timers --all --no-pager
+
+# === Package management ===
+cat /var/log/dpkg.log
+tail -n 500 /var/log/dpkg.log
+
+# === Docker (only on container hosts) ===
+docker events --since %TIMESTAMP% --until %TIMESTAMP% --format json
+docker ps --format json
+docker ps -a --format json
+docker inspect --format json
+
+# === SSH keys ===
+cat /root/.ssh/authorized_keys
+cat /home/ubuntu/.ssh/authorized_keys
+
+# === System metrics (already used by ScoreCalculatorWorker) ===
+cat /proc/loadavg
+cat /proc/meminfo
+cat /proc/uptime
+
+# === OS detection (used by Discovery worker) ===
+cat /etc/os-release
+uname -a
+hostname

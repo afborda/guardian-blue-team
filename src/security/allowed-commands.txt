@@ -1,0 +1,128 @@
+# Guardian Tier 0 — Allowlist v2 (Opção 3: hash + per-placeholder regex)
+#
+# Cada linha não-comentada é um TEMPLATE NORMALIZADO (não comando literal).
+# scripts/generate-allowlist.ts (a ser implementado em PR2 follow-up):
+#   1. Lê este arquivo
+#   2. Calcula SHA256 de cada template normalizado
+#   3. Substitui o bloco BEGIN_ALLOWLIST/END_ALLOWLIST em src/security/guardian-shell.sh
+#      com `HASHES['<hash>']='<template>'` para cada linha.
+#
+# A normalização aqui aplicada deve ser BIT-IDÊNTICA à do guardian-shell.sh em runtime —
+# qualquer divergência faz hash não bater. Testes de paridade em
+# tests/security/normalize.test.ts comparam saída TS vs bash.
+#
+# Placeholders suportados (PR2 set inicial):
+#   %ISO_DATETIME%   — '2025-01-15 10:00:00' (date.toISOString().replace('T',' ').slice(0,19))
+#   %UNIX_TS%        — 1717174800 (10 dígitos, --since/--until segundos desde epoch)
+#   %MINUTES%        — 5 (find -mmin / "X min ago" / "X minutes ago"), cap 1440
+#   %LINES%          — 100 (tail/head/--tail), cap 10000
+#   %CONTAINER_ID%   — abc123def456 (hex 12-64 chars)
+#
+# === COLLECTOR ANCHORS PARA PoC v2 (PR3) ===
+# Estes 3 templates são os que serão validados em server-1 antes de PR4 prosseguir.
+# Cobrem os 3 padrões mais críticos: sudo+OR-fallback, MINUTES, e &&-chain estática.
+
+# --- log-collector.ts:16 (collectAuthLogs) ---
+# Padrão: sudo + ISO_DATETIME + LINES + OR-fallback (||) + 2>/dev/null
+sudo journalctl -u ssh -u sshd --since '%ISO_DATETIME%' --no-pager -o short-iso 2>/dev/null || sudo tail -n %LINES% /var/log/auth.log 2>/dev/null || echo ''
+
+# --- log-collector.ts:36 (collectUfwLogs) ---
+# Padrão: sudo + LINES + OR-fallback simples
+sudo tail -n %LINES% /var/log/ufw.log 2>/dev/null || echo ''
+
+# --- sudo-collector.ts:9 (collect) ---
+# Padrão: sem sudo + MINUTES (formato "X min ago") + LINES + OR-fallback com pipe
+journalctl _COMM=sudo --since '%MINUTES% min ago' --no-pager -o short-iso 2>/dev/null || grep -i sudo /var/log/auth.log | tail -n %LINES%
+
+# --- system-collector.ts:15 (collect) ---
+# Padrão: && chain de probes estáticos com tail %LINES% e MINUTES literal "5 min ago"
+# Nota: o "5 min ago" hoje é HARDCODED no código (não interpolado), então no template
+# fica literal. Se algum dia virar variável, precisa migrar pra %MINUTES%.
+# Aspas SIMPLES (consistente com os outros 9 collectors); o normalize() emite simples.
+dmesg --time-format iso 2>/dev/null | tail -n %LINES% && echo "---SSEP---" && journalctl -p err --since '%MINUTES% min ago' --no-pager -o short-iso 2>/dev/null | tail -n %LINES% && echo "---SSEP---" && systemctl list-units --failed --no-legend --no-pager 2>/dev/null
+
+# --- ssh-collector.ts:isReachable ---
+# Probe trivial que confirma que o wrapper aceita o usuário guardian.
+# Sem este template, isReachable() falha em guardian mode e o servidor é
+# marcado como down mesmo estando saudável.
+echo ok
+
+# === COLLECTORS INCORPORADOS EM PR4a ===
+
+# --- network-collector.ts:collectListeningPorts ---
+sudo ss -tlnp 2>/dev/null | tail -n +2 | awk '{print $4, $6}'
+
+# --- network-collector.ts:collectEstablishedConnections ---
+sudo ss -tnp state established 2>/dev/null | tail -n +2 | head -50 | awk '{print $4, $5, $6}'
+
+# --- network-collector.ts:collectSynRecvStates ---
+ss -tn state syn-recv 2>/dev/null | tail -n +2 | awk '{print $5}' | grep -oP '[\d.]+(?=:)' | sort | uniq -c | sort -rn | head -10
+
+# --- audit-collector.ts ---
+ausearch --start recent -m EXECVE,USER_AUTH,USER_ACCT --format text 2>/dev/null | tail -n %LINES% || journalctl _TRANSPORT=audit --since '%MINUTES% min ago' --no-pager -o short-iso 2>/dev/null | tail -n %LINES%
+
+# --- dns-collector.ts ---
+journalctl -u systemd-resolved --since '%MINUTES% min ago' --no-pager 2>/dev/null | grep -i 'query[' || grep -i 'query' /var/log/syslog 2>/dev/null | tail -n %LINES%
+
+# --- syslog-collector.ts ---
+journalctl --since '%MINUTES% min ago' -p err..emerg --no-pager -o short-iso 2>/dev/null | head -n %LINES%
+
+# --- health-collector.ts (cadeia && totalmente estática) ---
+cat /proc/loadavg && echo "---HSEP---" && nproc && echo "---HSEP---" && free -b && echo "---HSEP---" && df --output=target,pcent,avail -x tmpfs -x devtmpfs 2>/dev/null || df -h && echo "---HSEP---" && cat /proc/uptime && echo "---HSEP---" && grep -E 'SwapTotal|SwapFree' /proc/meminfo
+
+# --- performance-collector.ts (cadeia && totalmente estática) ---
+cat /proc/diskstats && echo "---PSEP---" && cat /proc/net/dev && echo "---PSEP---" && sleep 1 && echo "---PSEP---" && cat /proc/diskstats && echo "---PSEP---" && cat /proc/net/dev
+
+# --- process-collector.ts:topN ---
+ps aux --sort=-%cpu 2>/dev/null | head -n %LINES% | tail -n +2 | awk '{print $2, $1, $3, $4, $11}'
+
+# --- container-image-collector.ts:collectImages ---
+docker ps --format '{{.Image}}\t{{.Names}}' 2>/dev/null && echo '---IMAGES---' && docker images --format '{{.Repository}}\t{{.Tag}}\t{{.Digest}}\t{{.Size}}' 2>/dev/null | head -50
+
+# --- container-image-collector.ts:which trivy probe ---
+which trivy 2>/dev/null
+
+# --- login-history-collector.ts:collectSessions ---
+last -F -n %LINES% 2>/dev/null || last -n %LINES% 2>/dev/null || echo ''
+
+# --- login-history-collector.ts:collectFailedLogins ---
+sudo lastb -F -n %LINES% 2>/dev/null || sudo lastb -n %LINES% 2>/dev/null || echo ''
+
+# --- login-history-collector.ts:collectCurrentSessions ---
+w -h 2>/dev/null || who 2>/dev/null || echo ''
+
+# --- app-log-collector.ts (nginx, mysql, postgres, redis via journalctl + tail fallback) ---
+sudo tail -n 100 /var/log/nginx/access.log 2>/dev/null || echo ''
+sudo tail -n 100 /var/log/nginx/error.log 2>/dev/null || echo ''
+sudo journalctl -u mysql -u mysqld -n 50 --no-pager 2>/dev/null || sudo tail -n 50 /var/log/mysql/error.log 2>/dev/null || echo ''
+sudo journalctl -u postgresql -n 50 --no-pager 2>/dev/null || echo ''
+sudo journalctl -u redis -u redis-server -n 50 --no-pager 2>/dev/null || sudo tail -n 50 /var/log/redis/redis-server.log 2>/dev/null || echo ''
+
+# === BLOQUEADOS — precisam refactor antes de incluir ===
+#
+# # log-collector.ts:60 (collectDockerEvents) — usa $(date +%s) command substitution
+# # SOLUÇÃO PROPOSTA: TS calcula --until em runtime e passa como UNIX_TS literal.
+#
+# # fim-collector.ts — template contém shell loop (for f in ...)
+# # SOLUÇÃO: loop em TS, cada path vira hash separado.
+#
+# # network-collector.ts:detectSuspiciousConnections — usa grep -oP (PCRE, não-POSIX)
+# # Estruturalmente templatável mas grep -oP não disponível em todos os targets Ubuntu.
+#
+# # network-collector.ts:collectConnectionRate — usa $() assignment (C1=$(...))
+# # SOLUÇÃO: calcular diferença em TS com duas chamadas separadas.
+
+# === COLLECTORS INCOMPATÍVEIS COM Opção 3 (precisam refactor antes de incluir) ===
+#
+# 1. docker-collector.ts (events) — usa $(date +%s)
+# 2. network-collector.ts:collectConnectionRate — múltiplas atribuições com $()
+# 3. container-runtime-collector.ts (3 funções) — for/xargs sobre docker ps -q dinâmico
+# 4. process-collector.ts:detectSuspiciousProcesses — awk -v com $$ e $PPID dinâmicos
+# 5. process-collector.ts:detectHighCPU — awk com threshold interpolado
+# 6. ssh-keys-collector.ts — for + getent passwd dinâmico
+# 7. package-collector.ts — awk -v d="$(date ...)"
+#
+# Estratégia de refactor (proposta para PR4+):
+#   - Mover shell loops/subshells para wrapper TS que gere comandos individuais por iteração
+#   - Cada iteração vira hash separado (ex: docker inspect %CONTAINER_ID% por container)
+#   - Loops sobre lista dinâmica → primeiro template lista IDs, depois N hashes individuais

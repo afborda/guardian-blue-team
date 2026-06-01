@@ -22,6 +22,7 @@ import { ThreatHunterWorker } from './workers/threat-hunter.worker.js';
 import { DDoSEscalationWorker } from './workers/ddos-escalation.worker.js';
 import { ContainerSecurityWorker } from './workers/container-security.worker.js';
 import { IpThreatScorerWorker } from './workers/ip-threat-scorer.worker.js';
+import { LegacyMigrationWorker } from './workers/legacy-migration.worker.js';
 import { ThreatIntelManager } from './threat-intel/manager.js';
 import { PlaybookRegistry } from './playbooks/registry.js';
 import { loadTrustedEntities } from './pipeline/detector.js';
@@ -56,7 +57,16 @@ app.use('/api/dashboard', rateLimiter(60), dashboardAuth, dashboardApi);
 
 // ─── Health ─────────────────────────────────────────────────────────────────
 
-app.get('/health', async (_req, res) => {
+app.get('/health', async (req, res) => {
+  // Public probe: minimal response suitable for uptime monitors (no sensitive data)
+  const token = (req.query.token as string) ?? req.headers['x-dashboard-token'];
+  const authed = token && config.dashboard.token && safeCompare(token as string, config.dashboard.token);
+
+  if (!authed) {
+    res.status(200).json({ status: 'ok' });
+    return;
+  }
+
   const dbOk = await testConnection().catch(() => false);
   const status = dbOk ? 'ok' : 'degraded';
   const code = dbOk ? 200 : 503;
@@ -300,6 +310,7 @@ async function start(): Promise<void> {
   DDoSEscalationWorker.start();
   ContainerSecurityWorker.start();
   IpThreatScorerWorker.start();
+  LegacyMigrationWorker.start();
   startHeartbeat();
 
   if (config.cveMonitor.enabled) {
@@ -339,6 +350,7 @@ async function shutdown(signal: string): Promise<void> {
     ThreatHunterWorker.stop(),
     DDoSEscalationWorker.stop(),
     IpThreatScorerWorker.stop(),
+    LegacyMigrationWorker.stop(),
   ]);
   ThreatIntelManager.stop();
 

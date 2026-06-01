@@ -10,7 +10,12 @@ import { SyslogCollector } from '../collectors/syslog-collector.js';
 import { ProxyCollector } from '../collectors/proxy-collector.js';
 import { PackageCollector } from '../collectors/package-collector.js';
 import { SystemdCollector } from '../collectors/systemd-collector.js';
+import { SystemCollector } from '../collectors/system-collector.js';
+import { HealthCollector } from '../collectors/health-collector.js';
+import { HostSecurityService } from '../services/host-security.service.js';
 import { AuditCollector } from '../collectors/audit-collector.js';
+import { LoginHistoryCollector } from '../collectors/login-history-collector.js';
+import { AppLogCollector } from '../collectors/app-log-collector.js';
 import { EventNormalizer } from '../pipeline/normalizer.js';
 import { EventEnricher } from '../pipeline/enricher.js';
 import { EventDetector } from '../pipeline/detector.js';
@@ -31,6 +36,7 @@ import { eq, and } from 'drizzle-orm';
 import { config } from '../config/environment.js';
 import { CONSTANTS } from '../config/constants.js';
 import { logger } from '../utils/logger.js';
+import { CVEMonitorWorker } from './cve-monitor.worker.js';
 
 export class EventCollectorWorker {
   private static intervalId: NodeJS.Timeout | null = null;
@@ -70,10 +76,15 @@ export class EventCollectorWorker {
       let totalEvents = 0;
       const newIncidentResults: CorrelationResult[] = [];
 
-      for (const server of servers) {
-        const target = ServerService.toSSHTarget(server);
+      // Also monitor Guardian's own host (id=0, name='local') — not registered in DB
+      const guardianHost = HostSecurityService.getDefaultTarget();
+      const allTargets: Array<{ id: number; name: string; target: typeof guardianHost }> = [
+        ...servers.map(s => ({ id: s.id, name: s.name, target: ServerService.toSSHTarget(s) })),
+        { id: guardianHost.id, name: guardianHost.name, target: guardianHost },
+      ];
 
-        const [authLogs, ufwLogs, dockerEvents, suspiciousProcs, networkAnomaly, sudoLogs, dnsLogs, syslogLogs, proxyLogs, packageLogs, systemdLogs, auditLogs, containerProcs] = await Promise.all([
+      for (const { id: serverId, name: serverName, target } of allTargets) {
+        const [authLogs, ufwLogs, dockerEvents, suspiciousProcs, networkAnomaly, sudoLogs, dnsLogs, syslogLogs, proxyLogs, packageLogs, systemdLogs, auditLogs, containerProcs, loginSessions, failedLogins, currentSessions, kernelEntries, appLogs, diskEntries, rebootEntries] = await Promise.all([
           LogCollector.collectAuthLogs(target, 3),
           LogCollector.collectUfwLogs(target, 3),
           LogCollector.collectDockerEvents(target, 3),
@@ -87,21 +98,31 @@ export class EventCollectorWorker {
           SystemdCollector.collect(target, 3),
           AuditCollector.collect(target, 3),
           ContainerRuntimeCollector.collectContainerProcesses(target),
+          LoginHistoryCollector.collectSessions(target, 50),
+          LoginHistoryCollector.collectFailedLogins(target, 50),
+          LoginHistoryCollector.collectCurrentSessions(target),
+          SystemCollector.collectAsRawEntries(target),
+          AppLogCollector.collect(target),
+          HealthCollector.collectCriticalDiskEntries(target),
+          HealthCollector.collectRebootEntry(target),
         ]);
 
-        const rawLogs = [...authLogs, ...ufwLogs, ...dockerEvents, ...suspiciousProcs, ...networkAnomaly, ...sudoLogs, ...dnsLogs, ...syslogLogs, ...proxyLogs, ...packageLogs, ...systemdLogs, ...auditLogs, ...containerProcs];
+        const rawLogs = [...authLogs, ...ufwLogs, ...dockerEvents, ...suspiciousProcs, ...networkAnomaly, ...sudoLogs, ...dnsLogs, ...syslogLogs, ...proxyLogs, ...packageLogs, ...systemdLogs, ...auditLogs, ...containerProcs, ...loginSessions, ...failedLogins, ...currentSessions, ...kernelEntries, ...appLogs, ...diskEntries, ...rebootEntries];
         if (rawLogs.length === 0) {
-          await AuditLogger.operational(server.id, 'collection_cycle', 'skipped', { server: server.name, reason: 'no_logs' });
+          await AuditLogger.operational(serverId, 'collection_cycle', 'skipped', { server: serverName, reason: 'no_logs' });
           continue;
         }
 
         logger.debug({
-          server: server.name,
+          server: serverName,
           auth: authLogs.length, ufw: ufwLogs.length, docker: dockerEvents.length,
           process: suspiciousProcs.length, network: networkAnomaly.length, sudo: sudoLogs.length,
           dns: dnsLogs.length, syslog: syslogLogs.length, proxy: proxyLogs.length,
           package: packageLogs.length, systemd: systemdLogs.length, audit: auditLogs.length,
-          containerProcs: containerProcs.length,
+          containerProcs: containerProcs.length, loginSessions: loginSessions.length,
+          failedLogins: failedLogins.length, currentSessions: currentSessions.length,
+          kernel: kernelEntries.length, appLogs: appLogs.length,
+          diskCritical: diskEntries.length, reboot: rebootEntries.length,
         }, 'Collector results');
 
         let normalized = EventNormalizer.normalizeBatch(rawLogs);
@@ -120,14 +141,24 @@ export class EventCollectorWorker {
           normalized = [...normalized, ...detected];
         }
 
+        // Trigger a CVE re-scan if new packages were installed or upgraded
+        const hasPackageChange = normalized.some(e =>
+          e.eventType === 'package_installed' || e.eventType === 'package_removed',
+        );
+        if (hasPackageChange) {
+          CVEMonitorWorker.run().catch(err =>
+            logger.warn({ err, server: serverName }, 'CVE re-scan after package change failed'),
+          );
+        }
+
         normalized = await EventEnricher.enrich(normalized);
 
         const correlated = await EventCorrelator.correlate(normalized);
         await EventIngestor.persist(correlated);
 
         totalEvents += correlated.length;
-        await AuditLogger.operational(server.id, 'collection_cycle', 'success', {
-          server: server.name,
+        await AuditLogger.operational(serverId, 'collection_cycle', 'success', {
+          server: serverName,
           events: correlated.length,
           auth: authLogs.length, ufw: ufwLogs.length, docker: dockerEvents.length,
           process: suspiciousProcs.length, network: networkAnomaly.length,
@@ -135,7 +166,9 @@ export class EventCollectorWorker {
         // Trigger playbooks for new incidents AND for events correlated to existing incidents with a source IP (ensures auto-block)
         newIncidentResults.push(...correlated.filter(r => r.isNewIncident || (r.incidentId && r.incidentCategory && r.event.sourceIp)));
 
-        await ServerService.updateLastSeen(server.id);
+        if (serverId > 0) {
+          await ServerService.updateLastSeen(serverId);
+        }
       }
 
       if (totalEvents > 0) {

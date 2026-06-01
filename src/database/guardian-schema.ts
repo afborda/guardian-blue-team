@@ -13,6 +13,7 @@ import {
   uniqueIndex,
   numeric,
   date,
+  primaryKey,
 } from 'drizzle-orm/pg-core';
 
 // ─── Guardian SOC Tables (owned and managed by Guardian) ────────────────────
@@ -28,6 +29,13 @@ export const socServers = pgTable('soc_servers', {
   enabled: boolean('enabled').default(true).notNull(),
   lastSeenAt: timestamp('last_seen_at'),
   falcoInstalledAt: timestamp('falco_installed_at'),
+  // Tier 0 hardening (PR1). See connection.ts DDL for semantics.
+  installMode: varchar('install_mode', { length: 20 }),
+  sshFingerprint: varchar('ssh_fingerprint', { length: 128 }),
+  guardianShellVersion: varchar('guardian_shell_version', { length: 20 }),
+  upgradedAt: timestamp('upgraded_at'),
+  lastHeartbeatAt: timestamp('last_heartbeat_at'),
+  osFamily: varchar('os_family', { length: 30 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -419,3 +427,20 @@ export const discoveryBaselines = pgTable('discovery_baselines', {
   knownContainers: jsonb('known_containers').$type<string[]>().default([]).notNull(),
   capturedAt: timestamp('captured_at').defaultNow().notNull(),
 });
+
+// Tier 0 hardening (PR1). Per-collector cursor state — fixes the "cursor not
+// persisted" bug where every collector restarted from `now() - interval` on
+// every loop, causing event loss during downtime and double-collection on
+// restart. last_cursor is opaque text (collector-defined format documented
+// in cursor_meta).
+export const collectorState = pgTable('collector_state', {
+  serverId: integer('server_id').notNull(),
+  collectorName: varchar('collector_name', { length: 50 }).notNull(),
+  lastCursor: text('last_cursor'),
+  cursorMeta: jsonb('cursor_meta').$type<Record<string, unknown>>().default({}),
+  lastRunAt: timestamp('last_run_at'),
+  lastError: text('last_error'),
+  consecutiveFailures: integer('consecutive_failures').default(0).notNull(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.serverId, table.collectorName] }),
+}));

@@ -437,6 +437,91 @@ const DETECTION_RULES: DetectionRule[] = [
     severity: 'critical',
     eventType: 'container_critical_cve',
   },
+  {
+    name: 'interactive_login_brute_force',
+    description: 'Multiple interactive login failures (btmp) from the same IP — possible brute force via console/VNC',
+    condition: (events, current) => {
+      if (current.eventType !== 'interactive_login_failed') return false;
+      if (!current.sourceIp) return false;
+      const count = events.filter(e =>
+        e.eventType === 'interactive_login_failed' && e.sourceIp === current.sourceIp,
+      ).length;
+      return count >= CONSTANTS.detection.bruteForceThreshold;
+    },
+    severity: 'high',
+    eventType: 'interactive_brute_force',
+  },
+  {
+    name: 'unusual_hour_interactive_login',
+    description: 'Interactive wtmp session started between 00:00–06:00 BRT from non-trusted IP',
+    condition: (_events, current) => {
+      if (current.eventType !== 'interactive_session_active' && current.eventType !== 'interactive_session_history') return false;
+      if (!current.sourceIp || isTrustedIp(current.sourceIp)) return false;
+      if (current.userName && KNOWN_USERS.has(current.userName)) return false;
+      const brt = new Date(current.timestamp.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+      const hour = brt.getHours();
+      return hour >= CONSTANTS.detection.unusualHourStart && hour < CONSTANTS.detection.unusualHourEnd;
+    },
+    severity: 'medium',
+    eventType: 'unusual_hour_interactive_login',
+  },
+  {
+    name: 'oom_kill_detected',
+    description: 'Linux OOM killer fired — a process was killed due to memory pressure',
+    condition: (_events, current) => current.eventType === 'oom_kill',
+    severity: 'high',
+    eventType: 'oom_kill',
+  },
+  {
+    name: 'kernel_panic_detected',
+    description: 'Kernel panic or BUG detected in dmesg — requires immediate attention',
+    condition: (_events, current) => current.eventType === 'kernel_panic',
+    severity: 'critical',
+    eventType: 'kernel_panic',
+  },
+  {
+    name: 'hardware_error_detected',
+    description: 'Hardware error (MCE, disk, CPU) detected in dmesg',
+    condition: (_events, current) => current.eventType === 'hardware_error',
+    severity: 'critical',
+    eventType: 'hardware_error',
+  },
+  {
+    name: 'sudo_privilege_escalation_denied',
+    description: 'User attempted sudo but is not in sudoers — possible privilege escalation attempt',
+    condition: (_events, current) => current.eventType === 'sudo_not_allowed',
+    severity: 'high',
+    eventType: 'sudo_not_allowed',
+  },
+  {
+    name: 'su_brute_force',
+    description: 'Multiple su authentication failures from the same user — possible credential stuffing',
+    condition: (events, current) => {
+      if (current.eventType !== 'su_auth_failure' && current.eventType !== 'pam_auth_failure') return false;
+      if (!current.userName) return false;
+      const count = events.filter(e =>
+        (e.eventType === 'su_auth_failure' || e.eventType === 'pam_auth_failure') &&
+        e.userName === current.userName,
+      ).length;
+      return count >= 3;
+    },
+    severity: 'high',
+    eventType: 'su_brute_force',
+  },
+  {
+    name: 'disk_space_critical',
+    description: 'Disk partition usage above 90% — risk of service disruption',
+    condition: (_events, current) => current.eventType === 'disk_space_critical',
+    severity: 'high',
+    eventType: 'disk_space_critical',
+  },
+  {
+    name: 'unexpected_reboot',
+    description: 'Server rebooted recently — may indicate crash, OOM, or unauthorized shutdown',
+    condition: (_events, current) => current.eventType === 'system_reboot',
+    severity: 'medium',
+    eventType: 'system_reboot',
+  },
 ];
 
 export class EventDetector {

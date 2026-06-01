@@ -8,12 +8,12 @@
   <a href="https://github.com/afborda/guardian-blue-team/actions/workflows/ci.yml"><img src="https://github.com/afborda/guardian-blue-team/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License: AGPL-3.0"></a>
   <a href="https://ghcr.io/afborda/guardian-blue-team"><img src="https://img.shields.io/badge/Docker-ghcr.io-blue" alt="Docker"></a>
-  <img src="https://img.shields.io/badge/version-2.1.0-9745F5" alt="Version">
+  <img src="https://img.shields.io/badge/version-3.1.1-9745F5" alt="Version">
 </p>
 
 <p align="center">
   <b>Agentless SIEM/SOAR with Local AI</b> — Detect, Analyze, Block, Learn<br>
-  <a href="README.pt-BR.md"><strong>Portugues</strong></a> · <a href="docs/getting-started.md">Getting Started</a> · <a href="docs/architecture.md">Architecture</a> · <a href="docs/configuration.md">Configuration</a>
+  <a href="README.pt-BR.md"><strong>Portugues</strong></a> · <a href="docs/getting-started.md">Getting Started</a> · <a href="docs/architecture.md">Architecture</a> · <a href="docs/configuration.md">Configuration</a> · <a href="docs/GUARDIAN-LOG-COVERAGE.md">Log Coverage</a>
 </p>
 
 <p align="center">
@@ -32,18 +32,21 @@ It uses local AI (Ollama) for threat analysis, builds semantic memory from every
 
 ```mermaid
 flowchart LR
-    subgraph Collection["🛰️ Collection (every 2min)"]
-        SSH[SSH Logs]
-        UFW[Firewall/UFW]
-        NET[Network Stats]
-        PROC[Processes]
-        DOCKER[Docker Events]
-        AUDIT[Audit/Syslog]
+    subgraph Collection["🛰️ Collection (every 2min — 20 collectors)"]
+        direction TB
+        SSH["SSH Auth\nUFW / Docker events"]
+        NET["Network\nConnections / DNS"]
+        PROC["Processes\nSudo / Packages"]
+        SYS["System\nKernel / Syslog\nDisk / Reboot"]
+        APP["App Logs\nNginx / MySQL\nPostgres / Redis"]
+        LOGIN["Login History\nlast / lastb / w"]
+        AUDIT["Audit / FIM\nSystemd / Containers"]
     end
 
     subgraph Pipeline["⚙️ Processing Pipeline"]
-        NORM[Normalize]
-        DETECT[Detect Rules]
+        NORM[Normalize\n25+ parsers]
+        ML[ML Pre-score\nDGA + Markov]
+        DETECT[Detect\n24+ rules]
         ENRICH[Enrich\nGeo + Threat Intel]
         CORRELATE[Correlate\nIncidents]
     end
@@ -61,7 +64,7 @@ flowchart LR
         NOTIFY[Telegram Alert]
     end
 
-    Collection --> NORM --> DETECT --> ENRICH --> CORRELATE
+    Collection --> NORM --> ML --> DETECT --> ENRICH --> CORRELATE
     CORRELATE --> ADVISOR
     ADVISOR -->|"block"| BLOCK
     ADVISOR -->|"rate_limit"| RATE
@@ -101,7 +104,7 @@ graph TB
     end
 
     subgraph Guardian["Guardian (Docker)"]
-        COLLECT[Collectors\n12 types]
+        COLLECT[Collectors\n20 types]
         PIPE[Pipeline\nNormalize → Detect → Enrich → Correlate]
         ENGINE[Playbook Engine\n15+ automated playbooks]
         AI_LAYER[AI Layer\nOllama qwen3 + bge-m3]
@@ -128,7 +131,18 @@ graph TB
 
 ---
 
-## What's New in v2.1
+## What's New in v3.1.1
+
+| Feature | What it does |
+|---------|--------------|
+| **20 collectors** | Added login history (`last`/`lastb`/`w`), kernel/dmesg errors, app logs (nginx/mysql/postgres/redis), disk critical, unexpected reboot detector |
+| **Guardian self-monitoring** | Guardian's own host (id=0) is monitored by the same pipeline as every other server |
+| **Trivy CVE scan** | Container images on monitored servers are scanned for CVEs every 6 hours (when Trivy is installed) |
+| **CVE re-scan trigger** | Package install/remove events fire an immediate CVE re-scan without waiting for the 6-hour cycle |
+| **24+ detection rules** | Added: interactive brute-force, unusual-hour login, OOM kill, kernel panic, hardware error, sudo not allowed, su brute-force, disk critical, system reboot |
+| **Hardened /health** | Public probe returns only `{status: ok}` — full DB status requires a valid token |
+
+## What's New in v3.0 / v2.1
 
 | Feature | What it does |
 |---------|--------------|
@@ -222,16 +236,19 @@ flowchart LR
 
 | Category | Threats | Response |
 |----------|---------|----------|
-| **SSH** | Brute force, invalid users, unauthorized logins, unusual hours, lateral movement | Permanent block |
+| **SSH / Login** | Brute force, invalid users, unusual hours, login history (`last`/`lastb`), lateral movement, su brute-force | Permanent block |
 | **DDoS** | SYN flood, connection rate spike, bandwidth anomaly | Rate-limit → Escalate → Block |
 | **Network** | Port scanning, DGA C2 (ML classifier), suspicious TLDs, connection flood | Permanent block |
 | **Statistical Anomalies** | CPU/memory/network spikes via STL decomposition (handles diurnal cycles) | Alert + AI triage |
-| **Containers** | Escape attempts, crypto mining, crashloops, resource abuse | Kill + block + isolate |
+| **Containers** | Escape attempts, crypto mining, crashloops, CVE in images (Trivy) | Kill + block + isolate |
 | **File Integrity** | /etc/passwd, sudoers, sshd_config, authorized_keys tampering | Critical alert |
 | **Supply Chain** | CVE on installed packages (OSV.dev + EPSS + CISA KEV) | Alert + remediation steps |
 | **Persistence** | Malicious cron jobs, reverse shells, unauthorized SSH keys | Alert + block |
+| **System Health** | OOM kills, kernel panic, hardware errors, disk > 90%, unexpected reboot | Alert + escalate |
+| **App Logs** | Nginx / MySQL / PostgreSQL / Redis errors, HTTP scanning | Alert |
+| **Privilege Escalation** | Sudo denied (not in sudoers), sudo auth failure, PAM failures | Alert + block |
 
-15+ detection rules, 15+ automated playbooks.
+24+ detection rules, 15+ automated playbooks.
 
 ---
 

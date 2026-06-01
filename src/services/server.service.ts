@@ -14,69 +14,56 @@ export interface ServerInfo {
   tags: string[];
   enabled: boolean;
   lastSeenAt: Date | null;
+  // Tier 0 hardening (PR1). All optional/nullable to preserve compat with
+  // legacy servers that pre-date the upgrade flow. Persisted by
+  // ServerUpgradeService (PR4) and DiscoveryWorker (osFamily, PR1).
+  installMode: 'legacy' | 'guardian' | null;
+  sshFingerprint: string | null;
+  guardianShellVersion: string | null;
+  upgradedAt: Date | null;
+  lastHeartbeatAt: Date | null;
+  osFamily: string | null;
+}
+
+function rowToServerInfo(r: typeof socServers.$inferSelect): ServerInfo {
+  return {
+    id: r.id,
+    name: r.name,
+    host: r.host,
+    sshPort: r.sshPort,
+    sshUser: r.sshUser,
+    sshKeyPath: r.sshKeyPath,
+    tags: (r.tags ?? []) as string[],
+    enabled: r.enabled,
+    lastSeenAt: r.lastSeenAt,
+    installMode: (r.installMode as ServerInfo['installMode']) ?? null,
+    sshFingerprint: r.sshFingerprint ?? null,
+    guardianShellVersion: r.guardianShellVersion ?? null,
+    upgradedAt: r.upgradedAt,
+    lastHeartbeatAt: r.lastHeartbeatAt,
+    osFamily: r.osFamily ?? null,
+  };
 }
 
 export class ServerService {
   static async getAll(): Promise<ServerInfo[]> {
     const rows = await db.select().from(socServers);
-    return rows.map(r => ({
-      id: r.id,
-      name: r.name,
-      host: r.host,
-      sshPort: r.sshPort,
-      sshUser: r.sshUser,
-      sshKeyPath: r.sshKeyPath,
-      tags: (r.tags ?? []) as string[],
-      enabled: r.enabled,
-      lastSeenAt: r.lastSeenAt,
-    }));
+    return rows.map(rowToServerInfo);
   }
 
   static async getEnabled(): Promise<ServerInfo[]> {
     const rows = await db.select().from(socServers).where(eq(socServers.enabled, dbTrue));
-    return rows.map(r => ({
-      id: r.id,
-      name: r.name,
-      host: r.host,
-      sshPort: r.sshPort,
-      sshUser: r.sshUser,
-      sshKeyPath: r.sshKeyPath,
-      tags: (r.tags ?? []) as string[],
-      enabled: r.enabled,
-      lastSeenAt: r.lastSeenAt,
-    }));
+    return rows.map(rowToServerInfo);
   }
 
   static async getByName(name: string): Promise<ServerInfo | null> {
     const [row] = await db.select().from(socServers).where(eq(socServers.name, name));
-    if (!row) return null;
-    return {
-      id: row.id,
-      name: row.name,
-      host: row.host,
-      sshPort: row.sshPort,
-      sshUser: row.sshUser,
-      sshKeyPath: row.sshKeyPath,
-      tags: (row.tags ?? []) as string[],
-      enabled: row.enabled,
-      lastSeenAt: row.lastSeenAt,
-    };
+    return row ? rowToServerInfo(row) : null;
   }
 
   static async getById(id: number): Promise<ServerInfo | null> {
     const [row] = await db.select().from(socServers).where(eq(socServers.id, id));
-    if (!row) return null;
-    return {
-      id: row.id,
-      name: row.name,
-      host: row.host,
-      sshPort: row.sshPort,
-      sshUser: row.sshUser,
-      sshKeyPath: row.sshKeyPath,
-      tags: (row.tags ?? []) as string[],
-      enabled: row.enabled,
-      lastSeenAt: row.lastSeenAt,
-    };
+    return row ? rowToServerInfo(row) : null;
   }
 
   static async add(data: {
@@ -99,17 +86,7 @@ export class ServerService {
       tags: data.tags ?? [],
     }).returning();
 
-    return {
-      id: row.id,
-      name: row.name,
-      host: row.host,
-      sshPort: row.sshPort,
-      sshUser: row.sshUser,
-      sshKeyPath: row.sshKeyPath,
-      tags: (row.tags ?? []) as string[],
-      enabled: row.enabled,
-      lastSeenAt: row.lastSeenAt,
-    };
+    return rowToServerInfo(row);
   }
 
   static async remove(name: string): Promise<boolean> {
@@ -134,6 +111,15 @@ export class ServerService {
     await db.update(socServers).set({ falcoInstalledAt: dbNow() }).where(eq(socServers.id, id));
   }
 
+  // Tier 0 (PR1). Called by DiscoveryWorker after a successful probe so that
+  // ServerUpgradeService (PR4) and HeartbeatWorker can pick the right
+  // package manager (apt vs dnf vs apk) without re-running Discovery.
+  // os.id from /etc/os-release is already lowercase-normalized
+  // (ubuntu, debian, rhel, fedora, almalinux, rocky, arch, alpine).
+  static async setOsFamily(id: number, osFamily: string): Promise<void> {
+    await db.update(socServers).set({ osFamily }).where(eq(socServers.id, id));
+  }
+
   static toSSHTarget(server: ServerInfo): SSHTarget {
     return {
       id: server.id,
@@ -142,6 +128,8 @@ export class ServerService {
       sshPort: server.sshPort,
       sshUser: server.sshUser,
       sshKeyPath: server.sshKeyPath,
+      installMode: server.installMode,
+      sshFingerprint: server.sshFingerprint,
     };
   }
 

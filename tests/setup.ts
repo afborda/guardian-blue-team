@@ -17,6 +17,7 @@ vi.mock('../src/config/environment.js', () => ({
     cveIntelFeeds: { enabled: true, epssHistoryDays: 30 },
     trivy: { serverUrl: null, token: null },
     falco: { webhookToken: 'test-token' },
+    legacyMigration: { enabled: false },
   },
 }));
 
@@ -24,7 +25,7 @@ vi.mock('../src/database/connection.js', () => ({
   db: {
     select: () => ({ from: () => ({ where: () => ({ then: (fn: Function) => fn([]) }) }) }),
     insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: 1 }]) }) }),
-    update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
+    update: vi.fn(() => ({ set: () => ({ where: () => Promise.resolve() }) })),
   },
   dbTrue: true,
   dbFalse: false,

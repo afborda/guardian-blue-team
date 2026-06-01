@@ -21,6 +21,7 @@ import { discoverRemoteServer, formatDiscoveryApprovalKeyboard } from '../discov
 import { ServerReadinessService } from '../services/server-readiness.service.js';
 import { rotateToken } from '../dashboard/auth.js';
 import { config } from '../config/environment.js';
+import { LegacyMigrationWorker } from '../workers/legacy-migration.worker.js';
 
 const pendingDiscoveries = new Map<number, { analysis: import('../discovery/types.js').DiscoveryResult; serverName: string }>();
 const pendingReadiness = new Map<number, { target: ReturnType<typeof ServerService.toSSHTarget>; missing: import('../services/server-readiness.service.js').ReadinessCheck[]; serverName: string }>();
@@ -76,6 +77,8 @@ export async function handleTelegramCommand(text: string): Promise<string> {
       return '📊 Relatório sendo gerado...';
     case '/add-server':
       return await addServer(parts.slice(1));
+    case '/upgrade-server':
+      return await upgradeServer(parts[1]);
     case '/rm-server':
       return await removeServer(parts[1]);
     case '/apis':
@@ -730,7 +733,33 @@ async function removeServer(name: string | undefined): Promise<string> {
   return `✅ Servidor "${name}" removido.`;
 }
 
-// ─── /block ────────────────────────────────────────────────────────────────
+// ─── /upgrade-server ────────────────────────────────────────────────────────
+
+async function upgradeServer(idStr: string | undefined): Promise<string> {
+  if (!idStr) return '❌ Uso: /upgrade-server &lt;id&gt;\nEx: /upgrade-server 5';
+  const id = parseInt(idStr);
+  if (isNaN(id) || id < 1) return '❌ ID inválido.';
+
+  const servers = await ServerService.getEnabled();
+  const server = servers.find(s => s.id === id);
+  if (!server) return `❌ Servidor id=${id} não encontrado ou desabilitado.`;
+
+  if (server.installMode === 'guardian') {
+    return `ℹ️ <b>${server.name}</b> já está em modo Tier 0 (guardian).`;
+  }
+
+  LegacyMigrationWorker.upgradeOne(server).catch(err =>
+    logger.error({ err, server: server.name }, '/upgrade-server background upgrade error'),
+  );
+
+  return (
+    `🔄 Upgrade Tier 0 iniciado para <b>${server.name}</b> (${server.host})\n` +
+    `Você receberá notificação ao final.\n` +
+    `<i>Para acompanhar: /status</i>`
+  );
+}
+
+
 
 async function blockIPCommand(args: string[]): Promise<string> {
   if (args.length < 1) {
@@ -1037,6 +1066,7 @@ function formatHelp(): string {
     '⚙️ <b>Gestão:</b>',
     '  /add-server <code>nome host porta user</code>',
     '  /rm-server <code>nome</code>',
+    '  /upgrade-server <code>id</code> — Migrar servidor para Tier 0 (guardian-shell)',
     '  /firewall — Status UFW',
     '  /ai — Status dos providers AI',
     '  /apis — Status das APIs externas',

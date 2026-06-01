@@ -1,5 +1,6 @@
 import { SSHCollector, type SSHTarget } from './ssh-collector.js';
 import { logger } from '../utils/logger.js';
+import type { RawLogEntry } from './log-collector.js';
 
 export interface RawSystemMetrics {
   serverId: number;
@@ -13,9 +14,9 @@ export interface RawSystemMetrics {
 export class SystemCollector {
   static async collect(target: SSHTarget): Promise<RawSystemMetrics | null> {
     const result = await SSHCollector.run(target, [
-      'dmesg --time-format iso 2>/dev/null | tail -30',
+      'dmesg --time-format iso 2>/dev/null | tail -n 30',
       'echo "---SSEP---"',
-      'journalctl -p err --since "5 min ago" --no-pager -o short-iso 2>/dev/null | tail -20',
+      "journalctl -p err --since '5 min ago' --no-pager -o short-iso 2>/dev/null | tail -n 20",
       'echo "---SSEP---"',
       'systemctl list-units --failed --no-legend --no-pager 2>/dev/null',
     ].join(' && '), 15_000);
@@ -60,6 +61,41 @@ export class SystemCollector {
       journalErrors,
       failedUnits,
     };
+  }
+
+  // Returns kernel and journal errors as RawLogEntry[] for the normalizer pipeline.
+  static async collectAsRawEntries(target: SSHTarget): Promise<RawLogEntry[]> {
+    const metrics = await this.collect(target);
+    if (!metrics) return [];
+    const entries: RawLogEntry[] = [];
+    for (const e of metrics.kernelErrors) {
+      entries.push({
+        serverId: target.id,
+        serverName: target.name,
+        source: 'kernel',
+        timestamp: new Date(e.timestamp),
+        line: e.message,
+      });
+    }
+    for (const e of metrics.journalErrors) {
+      entries.push({
+        serverId: target.id,
+        serverName: target.name,
+        source: 'journal_error',
+        timestamp: new Date(e.timestamp),
+        line: e.message,
+      });
+    }
+    for (const unit of metrics.failedUnits) {
+      entries.push({
+        serverId: target.id,
+        serverName: target.name,
+        source: 'systemd_failed',
+        timestamp: metrics.collectedAt,
+        line: unit,
+      });
+    }
+    return entries;
   }
 
   private static parseTimestampedLines(section: string): Array<{ timestamp: string; message: string }> {

@@ -22,4 +22,5 @@ export {
   ipThreatScores,
   blockPropagationQueue,
   discoveryBaselines,
+  collectorState,
 } from './guardian-schema.js';

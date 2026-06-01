@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+#
+# guardian-shell — restricted SSH ForceCommand wrapper for Guardian SIEM
+#
+# Purpose: when Guardian connects via SSH to a monitored server, sshd invokes
+# this script (configured as the user's shell or via ForceCommand). The script
+# checks $SSH_ORIGINAL_COMMAND against an allowlist. Commands not in the
+# allowlist are denied with exit code 126 and logged.
+#
+# Security model:
+#   - Compares the requested command against literal entries in the allowlist
+#   - Allows %TIMESTAMP% placeholder (replaced by ISO8601 regex)
+#   - Rejects ANY shell metacharacters (; & | $ ` \ > < newline) outside quoted args
+#   - Logs every attempt (allowed or denied) to /var/log/guardian-shell.log
+#   - Uses `exec` (not eval) to avoid double-expansion attacks
+#
+# Exit codes:
+#   0   — command executed successfully
+#   126 — command denied (not in allowlist or contained dangerous metacharacters)
+#   127 — interactive shell attempted (no command given)
+#
+set -euo pipefail
+
+ALLOWLIST="${GUARDIAN_ALLOWLIST:-/etc/guardian/allowed-commands.txt}"
+LOGFILE="${GUARDIAN_LOGFILE:-/var/log/guardian-shell.log}"
+
+# Two invocation modes are supported:
+#   (a) user shell: sshd calls `guardian-shell -c "cmd"` — command in $2
+#   (b) ForceCommand: sshd sets SSH_ORIGINAL_COMMAND and calls `guardian-shell`
+# We detect mode (a) by the `-c` flag and fall back to (b) otherwise.
+if [[ "${1:-}" == "-c" && -n "${2:-}" ]]; then
+    CMD="$2"
+else
+    CMD="${SSH_ORIGINAL_COMMAND:-}"
+fi
+
+# ISO 8601 timestamp pattern: 2026-05-31T14:32:00 (with optional +HH:MM or Z)
+TS_REGEX='[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})?'
+
+log_event() {
+    local verdict="$1" reason="$2"
+    printf '%s user=%s from=%s verdict=%s reason="%s" cmd=%q\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "${USER:-unknown}" \
+        "${SSH_CONNECTION:-local}" \
+        "$verdict" \
+        "$reason" \
+        "$CMD" \
+        >> "$LOGFILE" 2>/dev/null || true
+}
+
+deny() {
+    log_event DENIED "$1"
+    printf 'guardian-shell: denied (%s)\n' "$1" >&2
+    exit 126
+}
+
+# Reject interactive shell (no command)
+if [[ -z "$CMD" ]]; then
+    log_event DENIED "interactive shell attempt"
+    printf 'guardian-shell: interactive shell not permitted\n' >&2
+    exit 127
+fi
+
+# Reject any shell metacharacters that enable command chaining or substitution
+# These are the building blocks of injection attacks
+if [[ "$CMD" =~ [\;\&\|\$\`\\\>\<] ]] || [[ "$CMD" == *$'\n'* ]]; then
+    deny "shell metacharacter detected"
+fi
+
+# Read allowlist (skip blank lines and comments)
+if [[ ! -r "$ALLOWLIST" ]]; then
+    deny "allowlist not readable: $ALLOWLIST"
+fi
+
+# Try to match against each allowlist entry
+# Each entry is a literal command pattern; %TIMESTAMP% is replaced by TS_REGEX
+matched=0
+while IFS= read -r entry || [[ -n "$entry" ]]; do
+    # Skip blank lines and comments
+    [[ -z "$entry" || "$entry" =~ ^[[:space:]]*# ]] && continue
+
+    # Build regex: escape regex specials, then swap %TIMESTAMP% for TS_REGEX
+    # We escape with sed (not bash) to handle all regex specials safely
+    pattern=$(printf '%s' "$entry" | sed -E 's/[][\\.^$*+?(){}|]/\\&/g')
+    pattern="${pattern//%TIMESTAMP%/$TS_REGEX}"
+    pattern="^${pattern}$"
+
+    if [[ "$CMD" =~ $pattern ]]; then
+        matched=1
+        break
+    fi
+done < "$ALLOWLIST"
+
+if [[ "$matched" -eq 0 ]]; then
+    deny "command not in allowlist"
+fi
+
+# Command is allowed — log and execute via /bin/sh -c
+# We use sh -c (not exec directly) to handle quoted arguments correctly.
+# Since we already rejected shell metacharacters, sh -c only sees a flat command.
+log_event ALLOWED "matched allowlist entry"
+exec /bin/sh -c "$CMD"

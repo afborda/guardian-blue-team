@@ -53,6 +53,20 @@ export class DiscoveryWorker {
             continue;
           }
 
+          // Persist os_family (Tier 0 PR1) if Discovery captured it.
+          // os.id from /etc/os-release is already normalized (ubuntu, debian, rhel, ...).
+          // Skip the UPDATE when value is unchanged to keep the soc_servers
+          // row hot path quiet across the 24h cycle.
+          const probedOsId = result.snapshot.probes.system.data.os.id?.trim();
+          if (probedOsId && probedOsId !== server.osFamily) {
+            try {
+              await ServerService.setOsFamily(server.id, probedOsId);
+              logger.info({ server: server.name, osFamily: probedOsId }, 'Discovery: os_family updated');
+            } catch (err) {
+              logger.warn({ err, server: server.name }, 'Discovery: failed to persist os_family');
+            }
+          }
+
           const previous = await loadBaseline(server.name);
           const current: Baseline = {
             services: result.analysis.monitoringProfile.services,

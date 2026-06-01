@@ -236,6 +236,43 @@ async function createPostgresTables(pool: Pool): Promise<void> {
       -- that bootstrapped before PR #8 pick up the column on next start.
       ALTER TABLE soc_servers ADD COLUMN IF NOT EXISTS falco_installed_at TIMESTAMP NULL;
 
+      -- Tier 0 hardening (PR1). install_mode tracks whether the server is
+      -- still being accessed via legacy sudo flow ('legacy') or has been
+      -- migrated to the restricted guardian-shell wrapper ('guardian').
+      -- NULL = not yet touched by ServerUpgradeService; treated as legacy.
+      -- ssh_fingerprint pins the host key captured at upgrade time
+      -- (format: SHA256:<base64>), enforced by SSHCollector once set.
+      -- guardian_shell_version is the SemVer of the wrapper deployed on the
+      -- target (e.g. 1.0.0); used by HeartbeatWorker to detect drift.
+      ALTER TABLE soc_servers ADD COLUMN IF NOT EXISTS install_mode VARCHAR(20);
+      ALTER TABLE soc_servers ADD COLUMN IF NOT EXISTS ssh_fingerprint VARCHAR(128);
+      ALTER TABLE soc_servers ADD COLUMN IF NOT EXISTS guardian_shell_version VARCHAR(20);
+      ALTER TABLE soc_servers ADD COLUMN IF NOT EXISTS upgraded_at TIMESTAMP;
+      ALTER TABLE soc_servers ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMP;
+      -- os_family: ubuntu, debian, rhel, fedora, almalinux, rocky, arch, alpine, unknown.
+      -- Persisted by Discovery (system probe). Guides apt vs dnf vs apk in
+      -- ServerUpgradeService. Validated in app layer, not via CHECK constraint.
+      ALTER TABLE soc_servers ADD COLUMN IF NOT EXISTS os_family VARCHAR(30);
+
+      -- Per-collector cursor state. Fixes the "cursor not persisted" bug
+      -- found during the Tier 0 audit: every collector previously restarted
+      -- from a sliding window on every loop, missing events during downtime
+      -- and double-collecting on restart. last_cursor is opaque text; its
+      -- format is documented in cursor_meta (e.g. {"format":"iso8601"} for
+      -- log-collector, {"format":"ausearch_id"} for audit-collector).
+      CREATE TABLE IF NOT EXISTS collector_state (
+        server_id INTEGER NOT NULL,
+        collector_name VARCHAR(50) NOT NULL,
+        last_cursor TEXT,
+        cursor_meta JSONB DEFAULT '{}',
+        last_run_at TIMESTAMP,
+        last_error TEXT,
+        consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (server_id, collector_name)
+      );
+      CREATE INDEX IF NOT EXISTS collector_state_failures_idx
+        ON collector_state(consecutive_failures) WHERE consecutive_failures > 0;
+
       CREATE TABLE IF NOT EXISTS rate_limited_ips (
         id SERIAL PRIMARY KEY,
         ip VARCHAR(45) NOT NULL,
@@ -482,6 +519,13 @@ function createSqliteTables(sqlite: { exec: (sql: string) => void }): void {
       tags TEXT DEFAULT '[]',
       enabled INTEGER NOT NULL DEFAULT 1,
       last_seen_at TEXT,
+      falco_installed_at TEXT,
+      install_mode VARCHAR(20),
+      ssh_fingerprint VARCHAR(128),
+      guardian_shell_version VARCHAR(20),
+      upgraded_at TEXT,
+      last_heartbeat_at TEXT,
+      os_family VARCHAR(30),
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -791,6 +835,21 @@ function createSqliteTables(sqlite: { exec: (sql: string) => void }): void {
       known_containers TEXT NOT NULL DEFAULT '[]',
       captured_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    -- Tier 0 hardening (PR1). Per-collector cursor state. See PostgreSQL
+    -- DDL above for full rationale. cursor_meta is JSON-as-TEXT in SQLite.
+    CREATE TABLE IF NOT EXISTS collector_state (
+      server_id INTEGER NOT NULL,
+      collector_name VARCHAR(50) NOT NULL,
+      last_cursor TEXT,
+      cursor_meta TEXT DEFAULT '{}',
+      last_run_at TEXT,
+      last_error TEXT,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (server_id, collector_name)
+    );
+    CREATE INDEX IF NOT EXISTS collector_state_failures_idx
+      ON collector_state(consecutive_failures) WHERE consecutive_failures > 0;
   `);
 }
 
@@ -812,6 +871,16 @@ function sqliteSafeAddColumns(sqlite: {
   ensureColumn('blocked_ips', 'method', 'VARCHAR(20)');
   ensureColumn('blocked_ips', 'last_verified_at', 'TEXT');
   ensureColumn('blocked_ips', 'consecutive_verify_failures', 'INTEGER NOT NULL DEFAULT 0');
+  // Tier 0 hardening (PR1) — patch existing SQLite installs that bootstrapped
+  // before these columns existed. Fresh installs already have them via
+  // CREATE TABLE above.
+  ensureColumn('soc_servers', 'falco_installed_at', 'TEXT');
+  ensureColumn('soc_servers', 'install_mode', 'VARCHAR(20)');
+  ensureColumn('soc_servers', 'ssh_fingerprint', 'VARCHAR(128)');
+  ensureColumn('soc_servers', 'guardian_shell_version', 'VARCHAR(20)');
+  ensureColumn('soc_servers', 'upgraded_at', 'TEXT');
+  ensureColumn('soc_servers', 'last_heartbeat_at', 'TEXT');
+  ensureColumn('soc_servers', 'os_family', 'VARCHAR(30)');
 }
 
 export async function initDatabase(): Promise<void> {

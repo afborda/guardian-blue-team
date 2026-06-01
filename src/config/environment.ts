@@ -86,6 +86,10 @@ const envSchema = z.object({
   // Falco — runtime syscall visibility. Token is shared by all Falco agents
   // and validated on POST /webhook/falco. Unset = endpoint returns 503.
   FALCO_WEBHOOK_TOKEN: z.string().optional(),
+
+  // Tier 0 migration — gate for LegacyMigrationWorker automatic upgrades.
+  // Defaults to false; set to "true" only after manual validation in ovh-spark.
+  LEGACY_MIGRATION_ENABLED: z.string().transform(v => v === 'true').default('false'),
 });
 
 export interface DashboardUser {
@@ -202,6 +206,10 @@ export const config = {
 
   falco: {
     webhookToken: env.FALCO_WEBHOOK_TOKEN || null,
+  },
+
+  legacyMigration: {
+    enabled: env.LEGACY_MIGRATION_ENABLED,
   },
 } as const;
 

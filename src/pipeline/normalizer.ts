@@ -51,6 +51,18 @@ const AUTH_PATTERNS = [
     severity: 'high' as const,
     extract: () => ({ userName: null, sourceIp: null, destinationPort: 22 }),
   },
+  {
+    regex: /pam_unix\(su[:\w]*\):.*authentication failure.*user=(\S+)/,
+    type: 'su_auth_failure',
+    severity: 'medium' as const,
+    extract: (m: RegExpMatchArray) => ({ userName: m[1], sourceIp: null, destinationPort: null }),
+  },
+  {
+    regex: /pam_unix\((passwd|login)[:\w]*\):.*authentication failure.*user=(\S+)/,
+    type: 'pam_auth_failure',
+    severity: 'medium' as const,
+    extract: (m: RegExpMatchArray) => ({ userName: m[2], sourceIp: null, destinationPort: null }),
+  },
 ];
 
 const UFW_PATTERN = /\[UFW (\w+)\].*SRC=([\da-fA-F.:]+)\s.*DPT=(\d+)/;
@@ -113,6 +125,30 @@ export class EventNormalizer {
         return this.normalizeContainerConfig(entry);
       case 'container_image_cve':
         return this.normalizeContainerImageCve(entry);
+      case 'login_history':
+        return this.normalizeLoginHistory(entry);
+      case 'login_failed':
+        return this.normalizeLoginFailed(entry);
+      case 'who':
+        return this.normalizeWho(entry);
+      case 'kernel':
+        return this.normalizeKernel(entry);
+      case 'journal_error':
+        return this.normalizeJournalError(entry);
+      case 'systemd_failed':
+        return this.normalizeSystemdFailed(entry);
+      case 'nginx_access':
+        return this.normalizeNginxAccess(entry);
+      case 'nginx_error':
+        return this.normalizeNginxError(entry);
+      case 'mysql_error':
+      case 'postgres_log':
+      case 'redis_log':
+        return this.normalizeAppError(entry);
+      case 'disk_critical':
+        return this.normalizeDiskCritical(entry);
+      case 'reboot':
+        return this.normalizeReboot(entry);
       default:
         return null;
     }
@@ -316,7 +352,7 @@ export class EventNormalizer {
 
     // Match journalctl format: 2024-01-15T10:30:45+0000 server sudo[1234]: user : TTY=... ; USER=... ; COMMAND=...
     // Match auth.log format: Jan 15 10:30:45 server sudo:  user : TTY=... ; USER=... ; COMMAND=...
-    const sudoMatch = line.match(/sudo[\[:\d\]]*\s*:?\s*(\S+)\s*:\s*TTY=(\S+)\s*;\s*PWD=(\S+)\s*;\s*USER=(\S+)\s*;\s*COMMAND=(.*)/);
+    const sudoMatch = line.match(/sudo[[\d:\]]*\s*:?\s*(\S+)\s*:\s*TTY=(\S+)\s*;\s*PWD=(\S+)\s*;\s*USER=(\S+)\s*;\s*COMMAND=(.*)/);
     if (sudoMatch) {
       return {
         serverId: entry.serverId,
@@ -336,6 +372,45 @@ export class EventNormalizer {
           targetUser: sudoMatch[4],
           command: sudoMatch[5].trim(),
         },
+      };
+    }
+
+    // sudo: user NOT in sudoers / is not allowed to run sudo
+    const notAllowedMatch = line.match(/sudo[[\d:\]]*\s*:?\s*(\S+)\s*:.*(?:NOT in sudoers|not allowed to run sudo|not allowed to execute)/i);
+    if (notAllowedMatch) {
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'sudo',
+        category: 'authentication',
+        severity: 'high',
+        eventType: 'sudo_not_allowed',
+        sourceIp: null,
+        destinationPort: null,
+        userName: notAllowedMatch[1],
+        processName: 'sudo',
+        rawLog: line,
+        metadata: {},
+      };
+    }
+
+    // sudo authentication failure (wrong password)
+    const authFailMatch = line.match(/sudo[[\d:\]]*.*(?:authentication failure|3 incorrect password)/i);
+    if (authFailMatch) {
+      const userMatch = line.match(/user=(\S+)/);
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'sudo',
+        category: 'authentication',
+        severity: 'medium',
+        eventType: 'sudo_auth_failure',
+        sourceIp: null,
+        destinationPort: null,
+        userName: userMatch ? userMatch[1] : null,
+        processName: 'sudo',
+        rawLog: line,
+        metadata: {},
       };
     }
 
@@ -852,6 +927,252 @@ export class EventNormalizer {
       processName: imageName ?? null,
       rawLog: entry.line,
       metadata: { imageName, cveId, cvss: cvssScore, pkgName, installedVersion, fixedVersion, title: titleParts.join('|') },
+    };
+  }
+
+  private static normalizeLoginHistory(entry: RawLogEntry): NormalizedEvent | null {
+    const user = entry.line.trim().split(/\s+/)[0];
+    if (!user || user === 'reboot' || user === 'shutdown' || user === 'wtmp' || user === 'btmp') return null;
+
+    const fromIpMatch = entry.line.match(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/);
+    const stillLoggedIn = entry.line.includes('still logged in');
+    const duration = entry.line.match(/\((\d+[+:]?\d*:\d{2})\)/)?.[1] ?? null;
+
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: 'login_history',
+      category: 'authentication',
+      severity: 'info',
+      eventType: stillLoggedIn ? 'interactive_session_active' : 'interactive_session_history',
+      sourceIp: fromIpMatch ? fromIpMatch[1] : null,
+      destinationPort: null,
+      userName: user,
+      processName: null,
+      rawLog: entry.line,
+      metadata: { duration, stillLoggedIn },
+    };
+  }
+
+  private static normalizeLoginFailed(entry: RawLogEntry): NormalizedEvent | null {
+    const user = entry.line.trim().split(/\s+/)[0];
+    if (!user || user.startsWith('-') || user === 'btmp') return null;
+
+    const fromIpMatch = entry.line.match(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/);
+
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: 'login_failed',
+      category: 'authentication',
+      severity: 'medium',
+      eventType: 'interactive_login_failed',
+      sourceIp: fromIpMatch ? fromIpMatch[1] : null,
+      destinationPort: null,
+      userName: user,
+      processName: null,
+      rawLog: entry.line,
+      metadata: {},
+    };
+  }
+
+  private static normalizeWho(entry: RawLogEntry): NormalizedEvent | null {
+    const parts = entry.line.trim().split(/\s+/);
+    if (parts.length < 2) return null;
+    const user = parts[0];
+    if (!user) return null;
+
+    const fromIpMatch = entry.line.match(/\(([^)]+)\)/);
+    const fromIp = fromIpMatch?.[1]?.match(/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/)
+      ? fromIpMatch[1]
+      : null;
+
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: 'who',
+      category: 'authentication',
+      severity: 'info',
+      eventType: 'interactive_session_active',
+      sourceIp: fromIp,
+      destinationPort: null,
+      userName: user,
+      processName: null,
+      rawLog: entry.line,
+      metadata: { tty: parts[1] ?? null },
+    };
+  }
+
+  private static readonly OOM_PATTERN = /oom.kill|out of memory|oom_kill_process/i;
+  private static readonly KERNEL_PANIC_PATTERN = /kernel panic|BUG:|general protection fault|unable to handle kernel/i;
+  private static readonly HW_ERROR_PATTERN = /hardware error|mce.*bank|cpu.*uncorrectable|disk error/i;
+
+  private static normalizeKernel(entry: RawLogEntry): NormalizedEvent | null {
+    const line = entry.line;
+    let eventType = 'kernel_error';
+    let severity: NormalizedEvent['severity'] = 'medium';
+
+    if (this.OOM_PATTERN.test(line)) {
+      eventType = 'oom_kill';
+      severity = 'high';
+    } else if (this.KERNEL_PANIC_PATTERN.test(line)) {
+      eventType = 'kernel_panic';
+      severity = 'critical';
+    } else if (this.HW_ERROR_PATTERN.test(line)) {
+      eventType = 'hardware_error';
+      severity = 'critical';
+    }
+
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: 'kernel',
+      category: 'system',
+      severity,
+      eventType,
+      sourceIp: null,
+      destinationPort: null,
+      userName: null,
+      processName: null,
+      rawLog: entry.line,
+      metadata: {},
+    };
+  }
+
+  private static normalizeJournalError(entry: RawLogEntry): NormalizedEvent | null {
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: 'journal_error',
+      category: 'system',
+      severity: 'medium',
+      eventType: 'journal_error',
+      sourceIp: null,
+      destinationPort: null,
+      userName: null,
+      processName: null,
+      rawLog: entry.line,
+      metadata: {},
+    };
+  }
+
+  private static normalizeSystemdFailed(entry: RawLogEntry): NormalizedEvent | null {
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: 'systemd_failed',
+      category: 'system',
+      severity: 'high',
+      eventType: 'service_failed',
+      sourceIp: null,
+      destinationPort: null,
+      userName: null,
+      processName: entry.line,
+      rawLog: entry.line,
+      metadata: { unit: entry.line },
+    };
+  }
+
+  // nginx: 1.2.3.4 - user [15/Jan/2024:10:30:45 +0000] "GET /path HTTP/1.1" 404 1234
+  private static normalizeNginxAccess(entry: RawLogEntry): NormalizedEvent | null {
+    const match = entry.line.match(/^([\d.]+)\s+-\s+(\S+)\s+\[([^\]]+)\]\s+"(\w+)\s+(\S+)\s+HTTP\/[\d.]+"\s+(\d+)/);
+    if (!match) return null;
+
+    const statusCode = parseInt(match[6]);
+    if (statusCode < 400) return null; // only surface errors and above
+
+    const severity: NormalizedEvent['severity'] = statusCode >= 500 ? 'high' : 'medium';
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: 'nginx_access',
+      category: 'web',
+      severity,
+      eventType: statusCode >= 500 ? 'web_server_error' : 'web_client_error',
+      sourceIp: match[1],
+      destinationPort: 80,
+      userName: match[2] !== '-' ? match[2] : null,
+      processName: 'nginx',
+      rawLog: entry.line,
+      metadata: { method: match[4], path: match[5], statusCode },
+    };
+  }
+
+  private static normalizeNginxError(entry: RawLogEntry): NormalizedEvent | null {
+    if (!entry.line.trim()) return null;
+    const isCrit = /\[crit\]|\[alert\]|\[emerg\]/i.test(entry.line);
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: 'nginx_error',
+      category: 'web',
+      severity: isCrit ? 'critical' : 'medium',
+      eventType: 'web_server_error',
+      sourceIp: null,
+      destinationPort: null,
+      userName: null,
+      processName: 'nginx',
+      rawLog: entry.line,
+      metadata: {},
+    };
+  }
+
+  private static normalizeAppError(entry: RawLogEntry): NormalizedEvent | null {
+    if (!entry.line.trim()) return null;
+    const isError = /error|fatal|critical|panic/i.test(entry.line);
+    if (!isError) return null;
+    const appName = entry.source.replace('_log', '').replace('_error', '');
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: entry.source,
+      category: 'application',
+      severity: /fatal|critical|panic/i.test(entry.line) ? 'high' : 'medium',
+      eventType: 'app_error',
+      sourceIp: null,
+      destinationPort: null,
+      userName: null,
+      processName: appName,
+      rawLog: entry.line,
+      metadata: { app: appName },
+    };
+  }
+
+  private static normalizeDiskCritical(entry: RawLogEntry): NormalizedEvent | null {
+    const usedMatch = entry.line.match(/used=(\d+)%/);
+    const mountMatch = entry.line.match(/mount=(\S+)/);
+    const usedPercent = usedMatch ? parseInt(usedMatch[1]) : 0;
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: 'disk_critical',
+      category: 'system',
+      severity: usedPercent >= 95 ? 'critical' : 'high',
+      eventType: 'disk_space_critical',
+      sourceIp: null,
+      destinationPort: null,
+      userName: null,
+      processName: null,
+      rawLog: entry.line,
+      metadata: { mountpoint: mountMatch ? mountMatch[1] : null, usedPercent },
+    };
+  }
+
+  private static normalizeReboot(entry: RawLogEntry): NormalizedEvent | null {
+    const uptimeMatch = entry.line.match(/uptime=(\d+)s/);
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: 'reboot',
+      category: 'system',
+      severity: 'medium',
+      eventType: 'system_reboot',
+      sourceIp: null,
+      destinationPort: null,
+      userName: null,
+      processName: null,
+      rawLog: entry.line,
+      metadata: { uptimeSeconds: uptimeMatch ? parseInt(uptimeMatch[1]) : null },
     };
   }
 }

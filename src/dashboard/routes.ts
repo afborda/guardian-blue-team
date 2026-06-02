@@ -22,6 +22,8 @@ import { ServerService } from '../services/server.service.js';
 import { killContainerProcess, restartContainer, disconnectContainer, pullContainerImage, recreateContainer } from '../playbooks/actions/container-actions.js';
 import { AIProvider } from '../services/ai-provider.js';
 
+import { MLRetrainService } from '../services/ml-retrain.service.js';
+
 const TRUSTED_IPS_SET = new Set(CONSTANTS.trustedIps);
 
 function ipTag(ip: string): string {
@@ -256,6 +258,54 @@ dashboardPages.get('/intelligence', (_req, res) => {
         &#9654; Recalcular Agora
       </button>
     </div>
+
+    <div style="margin-bottom:2rem;">
+      <h3 style="margin-bottom:1rem;display:flex;align-items:center;gap:0.5rem;">
+        <span>&#129504;</span> ML Model Retraining
+      </h3>
+      <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:1rem;">
+        Retrain classifiers using live data from the database. DGA uses domain corpora; IP Classifier uses Guardian's own incident and block history.
+      </p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem;">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem;">
+          <div style="font-weight:600;margin-bottom:0.25rem;">DGA Classifier</div>
+          <div style="color:var(--text-muted);font-size:0.78rem;margin-bottom:0.75rem;">
+            Detects domain generation algorithm C2 traffic. Trained on Tranco top-1M vs synthetic Conficker/Necurs/Cryptolocker domains.
+          </div>
+          <div id="ml-dga-status"
+               hx-get="/api/dashboard/ml/status?target=dga&token=${token}"
+               hx-trigger="load, every 3s"
+               hx-swap="innerHTML">
+            <span style="color:var(--text-muted);font-size:0.82rem;">Loading...</span>
+          </div>
+          <button style="margin-top:0.75rem;width:100%;"
+                  hx-post="/api/dashboard/ml/retrain?target=dga&token=${token}"
+                  hx-swap="none"
+                  hx-on::after-request="htmx.trigger('#ml-dga-status', 'load')">
+            &#128260; Retrain DGA
+          </button>
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem;">
+          <div style="font-weight:600;margin-bottom:0.25rem;">IP Classifier</div>
+          <div style="color:var(--text-muted);font-size:0.78rem;margin-bottom:0.75rem;">
+            Scores IPs by threat probability. Trained on Guardian's own incident history — the longer it runs, the better the model gets.
+          </div>
+          <div id="ml-ip-status"
+               hx-get="/api/dashboard/ml/status?target=ip&token=${token}"
+               hx-trigger="load, every 3s"
+               hx-swap="innerHTML">
+            <span style="color:var(--text-muted);font-size:0.82rem;">Loading...</span>
+          </div>
+          <button style="margin-top:0.75rem;width:100%;"
+                  hx-post="/api/dashboard/ml/retrain?target=ip&token=${token}"
+                  hx-swap="none"
+                  hx-on::after-request="htmx.trigger('#ml-ip-status', 'load')">
+            &#128260; Retrain IP Classifier
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div id="intel-content" hx-get="/api/dashboard/intelligence?token=${token}" hx-trigger="load" hx-swap="innerHTML">
       <p aria-busy="true">Loading intelligence status...</p>
     </div>
@@ -2280,6 +2330,39 @@ dashboardApi.post('/run-workers', async (_req, res) => {
       &#10007; Erro ao recalcular
     </button>`);
   }
+});
+
+dashboardApi.post('/ml/retrain', requireRole('admin'), (req, res) => {
+  const target = req.query.target as string;
+  if (target !== 'dga' && target !== 'ip') {
+    res.status(400).json({ error: 'invalid_target' });
+    return;
+  }
+  const result = MLRetrainService.start(target);
+  res.json(result);
+});
+
+dashboardApi.get('/ml/status', (req, res) => {
+  const target = req.query.target as string;
+  if (target !== 'dga' && target !== 'ip') {
+    res.status(400).send('<span style="color:var(--critical)">invalid target</span>');
+    return;
+  }
+  const job = MLRetrainService.getJob(target);
+  const statusColor = { idle: 'var(--text-muted)', running: 'var(--cyan)', success: 'var(--success)', error: 'var(--critical)' }[job.status];
+  const statusIcon = { idle: '⚪', running: '⟳', success: '✓', error: '✗' }[job.status];
+  const lastRun = job.finishedAt
+    ? `Última execução: ${job.finishedAt.toLocaleString('pt-BR')} (${job.durationMs}ms)`
+    : 'Nunca executado';
+  const logLines = job.log.slice(-10).map(l =>
+    `<div style="font-size:0.72rem;color:var(--text-muted);font-family:monospace;white-space:pre-wrap;">${escapeHtml(l)}</div>`
+  ).join('');
+  res.send(`
+    <div style="font-size:0.82rem;color:${statusColor};">${statusIcon} ${job.status.toUpperCase()}</div>
+    <div style="font-size:0.72rem;color:var(--text-muted);margin-top:0.25rem;">${lastRun}</div>
+    ${job.log.length > 0 ? `<div style="margin-top:0.5rem;max-height:80px;overflow-y:auto;">${logLines}</div>` : ''}
+    ${job.error ? `<div style="font-size:0.72rem;color:var(--critical);margin-top:0.25rem;">Erro: ${escapeHtml(job.error)}</div>` : ''}
+  `);
 });
 
 dashboardApi.post('/admin/trigger/cve-intel-feeds', requireRole('admin'), (_req, res) => {

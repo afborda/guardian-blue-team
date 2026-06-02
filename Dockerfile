@@ -22,7 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Instala dependências Python de ML num venv isolado (não polui o sistema)
 RUN python3 -m venv /app/ml-venv && \
     /app/ml-venv/bin/pip install --no-cache-dir \
-      scikit-learn skl2onnx onnxruntime numpy requests psycopg2-binary
+      scikit-learn skl2onnx onnxruntime numpy requests psycopg2-binary \
+      pandas pyarrow
 
 WORKDIR /app
 COPY package.json package-lock.json* ./

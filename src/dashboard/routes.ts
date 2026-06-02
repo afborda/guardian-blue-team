@@ -23,6 +23,7 @@ import { killContainerProcess, restartContainer, disconnectContainer, pullContai
 import { AIProvider } from '../services/ai-provider.js';
 
 import { MLRetrainService } from '../services/ml-retrain.service.js';
+import { ExportService, type ExportTable, type ExportFormat } from '../services/export.service.js';
 
 const TRUSTED_IPS_SET = new Set(CONSTANTS.trustedIps);
 
@@ -351,6 +352,77 @@ dashboardPages.get('/hunting', (_req, res) => {
     </div>
   `;
   res.send(layout('Threat Hunting', content));
+});
+
+dashboardPages.get('/export', (_req, res) => {
+  const token = config.dashboard.token || '';
+
+  const tables = [
+    { id: 'events',         label: 'Security Events',    desc: 'All collected log events — type, IP, server, timestamp, raw log.' },
+    { id: 'incidents',      label: 'Incidents',           desc: 'Correlated incident groups with severity, status, and IP context.' },
+    { id: 'blocked_ips',    label: 'Blocked IPs',         desc: 'Full block history — reason, date, server, verification status.' },
+    { id: 'server_metrics', label: 'Server Metrics',      desc: 'Time-series of CPU, RAM, disk, network, connections per server.' },
+  ] as const;
+
+  const cards = tables.map(t => `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.25rem;">
+      <div style="font-weight:600;margin-bottom:0.25rem;">${t.label}</div>
+      <div style="color:var(--text-muted);font-size:0.78rem;margin-bottom:1rem;">${t.desc}</div>
+      <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+        <a href="/api/dashboard/export/${t.id}?format=csv&token=${token}"
+           style="display:inline-block;padding:0.4rem 0.9rem;border:1px solid var(--border);border-radius:4px;font-size:0.82rem;text-decoration:none;color:var(--text);">
+          &#11015; CSV
+        </a>
+        <a href="/api/dashboard/export/${t.id}?format=parquet&token=${token}"
+           style="display:inline-block;padding:0.4rem 0.9rem;border:1px solid var(--cyan);border-radius:4px;font-size:0.82rem;text-decoration:none;color:var(--cyan);">
+          &#11015; Parquet
+        </a>
+        <a href="/api/dashboard/export/${t.id}?format=csv&days=7&token=${token}"
+           style="display:inline-block;padding:0.4rem 0.9rem;border:1px solid var(--border);border-radius:4px;font-size:0.82rem;text-decoration:none;color:var(--text-muted);">
+          &#11015; CSV (last 7d)
+        </a>
+        <a href="/api/dashboard/export/${t.id}?format=parquet&days=7&token=${token}"
+           style="display:inline-block;padding:0.4rem 0.9rem;border:1px solid var(--border);border-radius:4px;font-size:0.82rem;text-decoration:none;color:var(--text-muted);">
+          &#11015; Parquet (last 7d)
+        </a>
+      </div>
+    </div>
+  `).join('');
+
+  const content = `
+    <div style="margin-bottom:1.5rem;">
+      <h2 style="margin-bottom:0.25rem;">Export Data</h2>
+      <p style="color:var(--text-muted);font-size:0.82rem;">
+        Download Guardian tables as CSV or Parquet. Parquet is columnar and Snappy-compressed — ideal for Databricks, Spark, or any analytics tool.
+        For Databricks, schedule a job that calls the Parquet URL with your token and loads into a Delta table.
+      </p>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:2rem;">
+      ${cards}
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1.25rem;">
+      <div style="font-weight:600;margin-bottom:0.5rem;">&#128274; Databricks Integration</div>
+      <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:0.75rem;">
+        Use the Parquet endpoints from a Databricks notebook or scheduled job to load data into Delta tables daily.
+      </p>
+      <pre style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1rem;font-size:0.75rem;overflow-x:auto;color:var(--text-muted);">import requests, tempfile, os
+from pyspark.sql import SparkSession
+
+spark = SparkSession.builder.getOrCreate()
+BASE_URL = "https://guardian.yourdomain.com"
+TOKEN    = dbutils.secrets.get(scope="guardian", key="token")
+
+for table in ["events", "incidents", "blocked_ips", "server_metrics"]:
+    url = f"{BASE_URL}/api/dashboard/export/{table}?format=parquet&days=1&token={TOKEN}"
+    r = requests.get(url, stream=True); r.raise_for_status()
+    with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as f:
+        for chunk in r.iter_content(65536): f.write(chunk)
+        path = f.name
+    spark.read.parquet(path).write.format("delta").mode("append").saveAsTable(f"guardian.{table}")
+    os.unlink(path)</pre>
+    </div>
+  `;
+  res.send(layout('Export', content));
 });
 
 dashboardPages.get('/containers', (_req, res) => {
@@ -2329,6 +2401,46 @@ dashboardApi.post('/run-workers', async (_req, res) => {
     res.send(`<button disabled style="border-color:var(--critical);color:var(--critical);cursor:default;">
       &#10007; Erro ao recalcular
     </button>`);
+  }
+});
+
+dashboardApi.get('/export/:table', async (req, res) => {
+  const VALID_TABLES: ExportTable[] = ['events', 'incidents', 'blocked_ips', 'server_metrics'];
+  const table = req.params.table as ExportTable;
+  const format = (req.query.format as ExportFormat) ?? 'csv';
+  const days = req.query.days ? parseInt(req.query.days as string) : undefined;
+  const date = req.query.date as string | undefined;
+
+  if (!VALID_TABLES.includes(table)) {
+    res.status(400).json({ error: 'invalid_table' });
+    return;
+  }
+  if (format !== 'csv' && format !== 'parquet') {
+    res.status(400).json({ error: 'invalid_format' });
+    return;
+  }
+
+  try {
+    const result = await ExportService.generate({ table, format, days, date });
+    const filename = `guardian-${table}-${new Date().toISOString().slice(0, 10)}.${format}`;
+    const mime = format === 'parquet' ? 'application/octet-stream' : 'text/csv';
+
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('X-Export-Rows', String(result.rows));
+    res.setHeader('X-Export-Size-KB', result.sizeKb.toFixed(1));
+
+    res.download(result.path, filename, (err) => {
+      ExportService.cleanup(result.path);
+      if (err && !res.headersSent) {
+        logger.error({ err, table, format }, 'Export download error');
+      }
+    });
+  } catch (err) {
+    logger.error({ err, table, format }, 'Export generation error');
+    if (!res.headersSent) {
+      res.status(500).json({ error: String(err) });
+    }
   }
 });
 

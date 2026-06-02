@@ -716,6 +716,7 @@ export function layout(title: string, content: string): string {
     <a href="/dashboard/apis?token=${token}" class="${title === 'API Status' ? 'active' : ''}">APIs</a>
     <a href="/dashboard/intelligence?token=${token}" class="${title === 'Intelligence' ? 'active' : ''}">Intelligence</a>
     <a href="/dashboard/hunting?token=${token}" class="${title === 'Threat Hunting' ? 'active' : ''}">Hunting</a>
+    <a href="/dashboard/export?token=${token}" class="${title === 'Export' ? 'active' : ''}">Export</a>
   </nav>
 
   <main class="main">

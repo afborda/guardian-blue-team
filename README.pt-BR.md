@@ -1,17 +1,29 @@
 <p align="center">
-  <img src="docs/guardian-overview.png" alt="Guardian Blue Team" width="100%">
+  <img src="docs/assets/guardian-logo.png" alt="Guardian Blue Team" width="180">
 </p>
+
+<h1 align="center">Guardian Blue Team</h1>
 
 <p align="center">
   <a href="https://github.com/afborda/guardian-blue-team/actions/workflows/ci.yml"><img src="https://github.com/afborda/guardian-blue-team/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License: AGPL-3.0"></a>
   <a href="https://ghcr.io/afborda/guardian-blue-team"><img src="https://img.shields.io/badge/Docker-ghcr.io-blue" alt="Docker"></a>
-  <img src="https://img.shields.io/badge/version-2.1.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-3.1.1-9745F5" alt="Version">
 </p>
 
 <p align="center">
   <b>SIEM/SOAR Agentless com AI Local</b> — Detecta, Analisa, Bloqueia, Aprende<br>
-  <a href="README.md"><strong>English</strong></a> · <a href="docs/getting-started.md">Instalacao</a> · <a href="docs/architecture.md">Arquitetura</a> · <a href="docs/configuration.md">Configuracao</a>
+  <a href="README.md"><strong>English</strong></a> · <a href="docs/getting-started.md">Instalacao</a> · <a href="docs/architecture.md">Arquitetura</a> · <a href="docs/configuration.md">Configuracao</a> · <a href="docs/GUARDIAN-LOG-COVERAGE.md">Cobertura de Logs</a>
+</p>
+
+<p align="center">
+  <img src="docs/assets/guardian-flow.png" alt="Guardian Blue Team — Fluxo de Arquitetura" width="100%">
+</p>
+
+---
+
+<p align="center">
+  <img src="docs/assets/guardian-architecture-flow.png" alt="Guardian — Arquitetura Completa e Fluxo de Dados" width="100%">
 </p>
 
 ---
@@ -26,18 +38,21 @@ Usa AI local (Ollama) para analise de ameacas, constroi memoria semantica de cad
 
 ```mermaid
 flowchart LR
-    subgraph Coleta["Coleta (a cada 2min)"]
-        SSH[SSH Logs]
-        UFW[Firewall/UFW]
-        NET[Rede]
-        PROC[Processos]
-        DOCKER[Docker Events]
-        AUDIT[Audit/Syslog]
+    subgraph Coleta["Coleta (a cada 2min — 20 coletores)"]
+        direction TB
+        SSH["SSH Auth\nUFW / Docker events"]
+        NET["Rede\nConexoes / DNS"]
+        PROC["Processos\nSudo / Pacotes"]
+        SYS["Sistema\nKernel / Syslog\nDisco / Reboot"]
+        APP["App Logs\nNginx / MySQL\nPostgres / Redis"]
+        LOGIN["Historico de Login\nlast / lastb / w"]
+        AUDIT["Audit / FIM\nSystemd / Containers"]
     end
 
     subgraph Pipeline["Pipeline de Processamento"]
-        NORM[Normalizar]
-        DETECT[Regras de Deteccao]
+        NORM[Normalizar\n25+ parsers]
+        ML[ML Pre-score\nDGA + Markov]
+        DETECT[Detectar\n24+ regras]
         ENRICH[Enriquecer\nGeo + Threat Intel]
         CORRELATE[Correlacionar\nIncidentes]
     end
@@ -55,7 +70,7 @@ flowchart LR
         NOTIFY[Alerta Telegram]
     end
 
-    Coleta --> NORM --> DETECT --> ENRICH --> CORRELATE
+    Coleta --> NORM --> ML --> DETECT --> ENRICH --> CORRELATE
     CORRELATE --> ADVISOR
     ADVISOR -->|"block"| BLOCK
     ADVISOR -->|"rate_limit"| RATE
@@ -95,12 +110,12 @@ graph TB
     end
 
     subgraph Guardian["Guardian (Docker)"]
-        COLLECT[Coletores\n12 tipos]
+        COLLECT[Coletores\n20 tipos]
         PIPE[Pipeline\nNormalizar → Detectar → Enriquecer → Correlacionar]
         ENGINE[Engine de Playbooks\n15+ playbooks automatizados]
         AI_LAYER[Camada AI\nOllama qwen3 + bge-m3]
         DB[(PostgreSQL\nEventos, Incidentes, Bloqueios, Memoria)]
-        WORKERS[Workers\n12 processos em background]
+        WORKERS[Workers\n13 processos em background]
     end
 
     subgraph External["Integracoes"]
@@ -122,7 +137,19 @@ graph TB
 
 ---
 
-## Novidades na v2.1
+## Novidades na v3.1.1
+
+| Feature | O que faz |
+|---------|-----------|
+| **Guardian Shell Auto-Sync** | Quando o `allowed-commands.txt` muda (novo template, correcao), o guardian-shell nos servidores monitorados e atualizado automaticamente via SSH — sem reinstalacao manual. Versao rastreada por hash de conteudo, estavel entre builds. |
+| **20 coletores** | Adicionados: historico de login (`last`/`lastb`/`w`), erros de kernel/dmesg, logs de app (nginx/mysql/postgres/redis), disco critico, detector de reboot inesperado |
+| **Auto-monitoramento** | O proprio host do Guardian (id=0) e monitorado pelo mesmo pipeline que todos os outros servidores |
+| **CVE scan com Trivy** | Imagens de containers nos servidores monitorados sao escaneadas para CVEs a cada 6 horas (quando Trivy esta instalado) |
+| **Re-scan CVE por trigger** | Eventos de instalacao/remocao de pacotes disparam re-scan imediato de CVE sem aguardar o ciclo de 6 horas |
+| **24+ regras de deteccao** | Adicionadas: brute-force interativo, login em horario incomum, OOM kill, kernel panic, erro de hardware, sudo nao permitido, su brute-force, disco critico, reboot do sistema |
+| **Hardening do /health** | Probe publica retorna apenas `{status: ok}` — status completo do DB exige token valido |
+
+## Novidades na v3.0 / v2.1
 
 | Feature | O que faz |
 |---------|-----------|
@@ -216,16 +243,19 @@ flowchart LR
 
 | Categoria | Ameacas | Resposta |
 |----------|---------|----------|
-| **SSH** | Brute force, usuarios invalidos, logins nao autorizados, horarios incomuns, movimento lateral | Bloqueio permanente |
+| **SSH / Login** | Brute force, usuarios invalidos, horarios incomuns, historico de login (`last`/`lastb`), movimento lateral, su brute-force | Bloqueio permanente |
 | **DDoS** | SYN flood, pico de conexoes, anomalia de bandwidth | Rate-limit → Escalar → Bloquear |
 | **Rede** | Port scanning, DGA C2 (classificador ML), TLDs suspeitos, flood de conexoes | Bloqueio permanente |
 | **Anomalias Estatisticas** | Picos de CPU/memoria/rede via decomposicao STL (lida com ciclos diurnos) | Alerta + triagem AI |
-| **Containers** | Tentativas de escape, crypto mining, crashloops, abuso de recursos | Kill + block + isolar |
+| **Containers** | Tentativas de escape, crypto mining, crashloops, CVE em imagens (Trivy) | Kill + block + isolar |
 | **Integridade** | /etc/passwd, sudoers, sshd_config, authorized_keys alterados | Alerta critico |
 | **Supply Chain** | CVEs em pacotes instalados (OSV.dev + EPSS + CISA KEV) | Alerta + passos de remediacao |
 | **Persistencia** | Cron jobs maliciosos, reverse shells, chaves SSH nao autorizadas | Alerta + bloquear |
+| **Saude do Sistema** | OOM kills, kernel panic, erros de hardware, disco > 90%, reboot inesperado | Alerta + escalar |
+| **App Logs** | Erros de Nginx / MySQL / PostgreSQL / Redis, HTTP scanning | Alerta |
+| **Escalonamento de Privilegio** | Sudo negado (nao no sudoers), falha de autenticacao sudo, falhas PAM | Alerta + bloquear |
 
-15+ regras de deteccao, 15+ playbooks automatizados.
+24+ regras de deteccao, 15+ playbooks automatizados.
 
 ---
 
@@ -240,6 +270,7 @@ flowchart LR
 | Intelligence | 1 hora | Profiling comportamental ML |
 | FIM | 4 horas | Monitoramento de integridade de arquivos |
 | CVE Monitor | 6 horas | Scan de vulnerabilidades |
+| Guardian Shell Sync | 6 horas | Atualiza automaticamente o guardian-shell nos servidores quando o allowlist muda |
 | Block Cleanup | 5 min | Garante que todos bloqueios sao permanentes |
 | Daily Report | 08:00 BRT | Resumo diario no Telegram |
 | Metrics Retention | 24 horas | Remove dados com mais de 30 dias |

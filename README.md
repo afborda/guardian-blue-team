@@ -22,6 +22,12 @@
 
 ---
 
+<p align="center">
+  <img src="docs/assets/guardian-architecture-flow.png" alt="Guardian — Complete Architecture & Data Flow" width="100%">
+</p>
+
+---
+
 **Guardian** is an agentless SIEM/SOAR that monitors your servers via SSH, detects threats in real-time, and responds automatically with permanent blocks. No agents to install, no complex setup — just point it at your servers and it starts protecting them.
 
 It uses local AI (Ollama) for threat analysis, builds semantic memory from every incident (RAG with embeddings), hunts threats proactively every 4 hours, and provides graduated DDoS response with automatic escalation.
@@ -135,6 +141,7 @@ graph TB
 
 | Feature | What it does |
 |---------|--------------|
+| **Guardian Shell Auto-Sync** | When `allowed-commands.txt` changes (new template, fix), the guardian-shell on monitored servers is automatically updated via SSH — no manual reinstall needed. Version tracked via content hash, stable across builds. |
 | **20 collectors** | Added login history (`last`/`lastb`/`w`), kernel/dmesg errors, app logs (nginx/mysql/postgres/redis), disk critical, unexpected reboot detector |
 | **Guardian self-monitoring** | Guardian's own host (id=0) is monitored by the same pipeline as every other server |
 | **Trivy CVE scan** | Container images on monitored servers are scanned for CVEs every 6 hours (when Trivy is installed) |
@@ -263,6 +270,7 @@ flowchart LR
 | Intelligence | 1 hour | ML behavioral profiling |
 | FIM | 4 hours | File integrity monitoring |
 | CVE Monitor | 6 hours | Vulnerability scanning |
+| Guardian Shell Sync | 6 hours | Auto-updates guardian-shell on monitored servers when allowlist changes |
 | Block Cleanup | 5 min | Ensures all blocks are permanent |
 | Daily Report | 08:00 BRT | Summary to Telegram |
 | Metrics Retention | 24 hours | Deletes data older than 30 days |

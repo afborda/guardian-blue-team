@@ -34,13 +34,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // (caminho do build); fallback `<repo>/dist/security/allowlist.json` rodando
 // de src/. ESM + tsx tornam isso meio chato — caminho absoluto é mais robusto.
 function resolveAllowlistPath(): string {
-  // src/security/template-matcher.ts → ../../dist/security/allowlist.json
+  // tsup bundle: chunk lives at dist/chunk-*.js → dist/security/allowlist.json
+  const fromBundle = resolve(__dirname, 'security/allowlist.json');
+  if (existsSync(fromBundle)) return fromBundle;
+  // src/security/template-matcher.ts (tsx dev) → dist/security/allowlist.json
   const fromSrc = resolve(__dirname, '../../dist/security/allowlist.json');
   if (existsSync(fromSrc)) return fromSrc;
-  // dist/security/template-matcher.js → ../../dist/security/allowlist.json (sibling)
+  // dist/security/template-matcher.js sibling path (unused in tsup but kept for safety)
   const fromDist = resolve(__dirname, '../security/allowlist.json');
   if (existsSync(fromDist)) return fromDist;
-  return fromSrc; // retorna o caminho preferido pra debug; existência checada depois
+  return fromBundle;
 }
 
 interface AllowlistJson {

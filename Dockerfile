@@ -5,6 +5,7 @@ COPY package.json package-lock.json* ./
 RUN npm ci && npm cache clean --force
 COPY tsconfig.json tsup.config.ts ./
 COPY src/ ./src/
+COPY scripts/ ./scripts/
 RUN npm run build
 
 FROM node:20-slim

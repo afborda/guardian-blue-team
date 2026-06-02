@@ -24,7 +24,7 @@ export interface SSHResult {
 }
 
 export class SSHCollector {
-  private static buildArgs(target: SSHTarget): string[] {
+  static buildArgs(target: SSHTarget): string[] {
     const args = [
       '-o', target.sshFingerprint
         ? 'StrictHostKeyChecking=yes'

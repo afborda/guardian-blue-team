@@ -22,7 +22,7 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsx scripts/generate-allowlist.ts && tsup",
+    "build": "tsup && tsx scripts/generate-allowlist.ts",
     "build:allowlist": "tsx scripts/generate-allowlist.ts",
     "start": "node dist/index.js",
     "test": "vitest run",

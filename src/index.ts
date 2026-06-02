@@ -23,6 +23,7 @@ import { DDoSEscalationWorker } from './workers/ddos-escalation.worker.js';
 import { ContainerSecurityWorker } from './workers/container-security.worker.js';
 import { IpThreatScorerWorker } from './workers/ip-threat-scorer.worker.js';
 import { LegacyMigrationWorker } from './workers/legacy-migration.worker.js';
+import { GuardianShellSyncWorker } from './workers/guardian-shell-sync.worker.js';
 import { ThreatIntelManager } from './threat-intel/manager.js';
 import { PlaybookRegistry } from './playbooks/registry.js';
 import { loadTrustedEntities } from './pipeline/detector.js';
@@ -311,6 +312,7 @@ async function start(): Promise<void> {
   ContainerSecurityWorker.start();
   IpThreatScorerWorker.start();
   LegacyMigrationWorker.start();
+  GuardianShellSyncWorker.start();
   startHeartbeat();
 
   if (config.cveMonitor.enabled) {

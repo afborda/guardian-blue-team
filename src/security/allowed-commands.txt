@@ -91,12 +91,15 @@ sudo lastb -F -n %LINES% 2>/dev/null || sudo lastb -n %LINES% 2>/dev/null || ech
 # --- login-history-collector.ts:collectCurrentSessions ---
 w -h 2>/dev/null || who 2>/dev/null || echo ''
 
+# --- guardian-shell-sync.service.ts (verifica versão instalada no servidor) ---
+grep '^VERSION=' /usr/local/bin/guardian-shell 2>/dev/null || echo 'VERSION=unknown'
+
 # --- app-log-collector.ts (nginx, mysql, postgres, redis via journalctl + tail fallback) ---
-sudo tail -n 100 /var/log/nginx/access.log 2>/dev/null || echo ''
-sudo tail -n 100 /var/log/nginx/error.log 2>/dev/null || echo ''
-sudo journalctl -u mysql -u mysqld -n 50 --no-pager 2>/dev/null || sudo tail -n 50 /var/log/mysql/error.log 2>/dev/null || echo ''
-sudo journalctl -u postgresql -n 50 --no-pager 2>/dev/null || echo ''
-sudo journalctl -u redis -u redis-server -n 50 --no-pager 2>/dev/null || sudo tail -n 50 /var/log/redis/redis-server.log 2>/dev/null || echo ''
+sudo tail -n %LINES% /var/log/nginx/access.log 2>/dev/null || echo ''
+sudo tail -n %LINES% /var/log/nginx/error.log 2>/dev/null || echo ''
+sudo journalctl -u mysql -u mysqld -n %LINES% --no-pager 2>/dev/null || sudo tail -n %LINES% /var/log/mysql/error.log 2>/dev/null || echo ''
+sudo journalctl -u postgresql -n %LINES% --no-pager 2>/dev/null || echo ''
+sudo journalctl -u redis -u redis-server -n %LINES% --no-pager 2>/dev/null || sudo tail -n %LINES% /var/log/redis/redis-server.log 2>/dev/null || echo ''
 
 # === BLOQUEADOS — precisam refactor antes de incluir ===
 #

@@ -13,6 +13,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${SSH_KEY_DIR:-~/.ssh}:/home/node/.ssh:ro
       - ./models:/app/models:ro
+      - /data:/data
+      - /data/ssh-known-hosts:/home/node/.ssh/known_hosts
     networks:
       - guardian-internal
       - traefik-public

@@ -67,6 +67,15 @@ HASHES["66f621aa9f94767c3d594278a6dd6c52762170e6c7b878f26a57cebb51f2d4dc"]='cat 
 HASHES["8a20c696aed220dce9da9f429323171393f4b77c05f414e41151b2e8dc60bb0c"]='ps aux --sort=-%cpu 2>/dev/null | head -n %LINES% | tail -n +2 | awk '\''{print $2, $1, $3, $4, $11}'\'''
 HASHES["a4fd34596b62eff78043ace84fc303baf1c7c920d5d23a662cecb15c849677d8"]='docker ps --format '\''{{.Image}}\t{{.Names}}'\'' 2>/dev/null && echo '\''---IMAGES---'\'' && docker images --format '\''{{.Repository}}\t{{.Tag}}\t{{.Digest}}\t{{.Size}}'\'' 2>/dev/null | head -50'
 HASHES["c59e720167118c04d0f60b5d1729a4751e53dfe6adb3e7efc511de94208d12ef"]='which trivy 2>/dev/null'
+HASHES["62641aeef36eb805dbaf9c3653977935c1f71a33e9a69e7da34f21eb9e343681"]='last -F -n %LINES% 2>/dev/null || last -n %LINES% 2>/dev/null || echo '\'''\'''
+HASHES["d87c726dbeb373b699d9477fd9c638b5f06532a113a862f5e4ed92f9c2b09ed9"]='sudo lastb -F -n %LINES% 2>/dev/null || sudo lastb -n %LINES% 2>/dev/null || echo '\'''\'''
+HASHES["fd379f9d2ea0539b56de943e732783700fa307f98468a7b80ea0376642a6cdf9"]='w -h 2>/dev/null || who 2>/dev/null || echo '\'''\'''
+HASHES["d7c2495f259632850bbeb80f27a3cffbd4140f8bb0b2a98657ec71b8142d3029"]='grep '\''^VERSION='\'' /usr/local/bin/guardian-shell 2>/dev/null || echo '\''VERSION=unknown'\'''
+HASHES["f77db98a8df1ec2b1e77a6efffda18db467fc039d0ec89f244029d4893f9372c"]='sudo tail -n %LINES% /var/log/nginx/access.log 2>/dev/null || echo '\'''\'''
+HASHES["721d6694632ed70c30ec0780000a3139fc307996b434e7a4cad2c3536c712b9c"]='sudo tail -n %LINES% /var/log/nginx/error.log 2>/dev/null || echo '\'''\'''
+HASHES["82a1f6dc95b675930447b1b7f17e3960acd5952ee6ac7a7d32770315b4195140"]='sudo journalctl -u mysql -u mysqld -n %LINES% --no-pager 2>/dev/null || sudo tail -n %LINES% /var/log/mysql/error.log 2>/dev/null || echo '\'''\'''
+HASHES["410a814ecedf107c621676218bd5e5fb26068b5bccd69b9b1bb28d76233b2ef5"]='sudo journalctl -u postgresql -n %LINES% --no-pager 2>/dev/null || echo '\'''\'''
+HASHES["1aba280c7103d22feeb80a63bf8adcde87548b06402c6d8a5eea35610e313718"]='sudo journalctl -u redis -u redis-server -n %LINES% --no-pager 2>/dev/null || sudo tail -n %LINES% /var/log/redis/redis-server.log 2>/dev/null || echo '\'''\'''
 # END_ALLOWLIST
 
 # ── Recusa precoce ────────────────────────────────────────────────────────────

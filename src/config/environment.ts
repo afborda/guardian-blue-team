@@ -42,6 +42,7 @@ const envSchema = z.object({
   OLLAMA_MODEL: z.string().default('qwen3:4b'),
   OLLAMA_CHAT_MODEL: z.string().default('qwen3:0.6b'),
   OLLAMA_EMBED_MODEL: z.string().default('bge-m3'),
+  OPENAI_EMBED_MODEL: z.string().default('text-embedding-3-small'),
 
   // AI — Provider preference
   AI_PROVIDER: z.enum(['gemini', 'openai', 'claude', 'ollama', 'auto']).default('auto'),
@@ -156,6 +157,7 @@ export const config = {
     ollamaModel: env.OLLAMA_MODEL,
     ollamaChatModel: env.OLLAMA_CHAT_MODEL,
     ollamaEmbedModel: env.OLLAMA_EMBED_MODEL,
+    openaiEmbedModel: env.OPENAI_EMBED_MODEL,
   },
 
   resend: {

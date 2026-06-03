@@ -7,8 +7,6 @@ services:
     depends_on:
       guardian-db:
         condition: service_healthy
-      ollama:
-        condition: service_started
       trivy:
         condition: service_healthy
     volumes:
@@ -71,46 +69,6 @@ services:
       retries: 5
       start_period: 10s
 
-  ollama:
-    image: ollama/ollama:latest
-    container_name: guardian-ollama
-    restart: unless-stopped
-    volumes:
-      - ollama_models:/root/.ollama
-    networks:
-      - guardian-internal
-    deploy:
-      resources:
-        limits:
-          cpus: "4"
-          memory: 12G
-        reservations:
-          memory: 4G
-    logging:
-      driver: json-file
-      options:
-        max-size: "5m"
-        max-file: "2"
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-
-  ollama-pull:
-    image: ollama/ollama:latest
-    container_name: guardian-ollama-pull
-    depends_on:
-      ollama:
-        condition: service_healthy
-    networks:
-      - guardian-internal
-    entrypoint: ["sh", "-c", "ollama pull ${OLLAMA_MODEL:-qwen3:4b} && ollama pull nomic-embed-text"]
-    environment:
-      OLLAMA_HOST: http://ollama:11434
-    restart: "no"
-
   # Centralized Trivy server. Targets run `trivy image --server <url>` over SSH;
   # only this container holds the ~600MB vuln DB and refreshes it every 6h.
   # Auth via TRIVY_TOKEN (optional but recommended on shared networks).
@@ -144,7 +102,6 @@ services:
 
 volumes:
   guardian_pgdata:
-  ollama_models:
   trivy_cache:
 
 networks:

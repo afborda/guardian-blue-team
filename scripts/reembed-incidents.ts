@@ -1,11 +1,6 @@
 /**
  * Re-embed incident_memory rows after switching the embedding model.
  *
- * When OLLAMA_EMBED_MODEL changes (e.g. nomic-embed-text 768d → bge-m3 1024d),
- * existing embeddings become useless: cosineSimilarity bails on dimension
- * mismatch, so RAG silently degrades to keyword fallback. This script
- * regenerates every embedding with the currently-configured model.
- *
  * Usage:
  *   npm run reembed-incidents              # re-embed all rows with stale dimension
  *   npm run reembed-incidents -- --all     # force re-embed everything
@@ -32,8 +27,13 @@ async function main(): Promise<void> {
   const force = args.includes('--all');
   const dryRun = args.includes('--dry-run');
 
+  const activeModel = config.ai.openaiApiKey && config.ai.strategy !== 'local-only'
+    ? config.ai.openaiEmbedModel
+    : config.ai.ollamaEmbedModel;
+
   logger.info({
-    model: config.ai.ollamaEmbedModel,
+    model: activeModel,
+    backend: config.ai.openaiApiKey ? 'openai' : 'ollama',
     expectedDim: EmbeddingService.expectedDimension(),
     force,
     dryRun,
@@ -45,17 +45,16 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const ollamaOk = await EmbeddingService.isAvailable();
-  if (!ollamaOk) {
-    logger.error({ model: config.ai.ollamaEmbedModel },
-      'Ollama embed model not available — pull it first: ollama pull <model>');
+  const embedOk = await EmbeddingService.isAvailable();
+  if (!embedOk) {
+    logger.error({ model: activeModel }, 'Embedding backend not available');
     process.exit(1);
   }
 
   const expectedDim = EmbeddingService.expectedDimension();
   if (!expectedDim) {
-    logger.warn({ model: config.ai.ollamaEmbedModel },
-      'Unknown model — cannot pre-filter by dimension. Use --all to re-embed everything.');
+    logger.warn({ model: activeModel },
+      'Unknown model dimensions — use --all to re-embed everything.');
     if (!force) process.exit(1);
   }
 
@@ -77,17 +76,10 @@ async function main(): Promise<void> {
     skippedNoText: 0,
   };
 
-  const currentModel = config.ai.ollamaEmbedModel;
-
   for (const row of all) {
     const currentDim = Array.isArray(row.embedding) ? row.embedding.length : 0;
-    // Reembed when: forced; OR dimension wrong; OR row's stored model name
-    // doesn't match the configured model. The model-name check catches the
-    // case where two distinct models happen to share dimensionality (e.g.
-    // bge-m3 ↔ mxbai-embed-large, both 1024d) — comparing dim alone would
-    // silently mix vector spaces and quietly degrade RAG retrieval.
     const dimWrong = expectedDim ? currentDim !== expectedDim : true;
-    const modelWrong = row.embeddingModel !== currentModel;
+    const modelWrong = row.embeddingModel !== activeModel;
     const needsReembed = force || dimWrong || modelWrong;
     if (!needsReembed) {
       stats.alreadyCorrect++;
@@ -103,7 +95,7 @@ async function main(): Promise<void> {
     if (dryRun) {
       logger.info({
         id: row.id, currentDim, target: expectedDim,
-        currentModel: row.embeddingModel ?? '<null>', targetModel: currentModel,
+        currentModel: row.embeddingModel ?? '<null>', targetModel: activeModel,
         reason: dimWrong ? 'dim-mismatch' : modelWrong ? 'model-mismatch' : 'forced',
       }, 'would re-embed');
       stats.reembedded++;
@@ -118,7 +110,7 @@ async function main(): Promise<void> {
     }
 
     await db.update(incidentMemory)
-      .set({ embedding: newEmbedding, embeddingModel: currentModel })
+      .set({ embedding: newEmbedding, embeddingModel: activeModel })
       .where(eq(incidentMemory.id, row.id));
 
     stats.reembedded++;

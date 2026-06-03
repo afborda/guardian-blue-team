@@ -43,5 +43,8 @@ export function normalize(cmd: string): string {
   // %CONTAINER_ID% — hex 12-64 chars
   s = s.replace(/\b[0-9a-f]{12,64}\b/g, '%CONTAINER_ID%');
 
+  // %IP% — IPv4 address (must come after CONTAINER_ID to avoid partial hex matches)
+  s = s.replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?\b/g, '%IP%');
+
   return s;
 }

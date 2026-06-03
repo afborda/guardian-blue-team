@@ -76,6 +76,23 @@ HASHES["721d6694632ed70c30ec0780000a3139fc307996b434e7a4cad2c3536c712b9c"]='sudo
 HASHES["82a1f6dc95b675930447b1b7f17e3960acd5952ee6ac7a7d32770315b4195140"]='sudo journalctl -u mysql -u mysqld -n %LINES% --no-pager 2>/dev/null || sudo tail -n %LINES% /var/log/mysql/error.log 2>/dev/null || echo '\'''\'''
 HASHES["410a814ecedf107c621676218bd5e5fb26068b5bccd69b9b1bb28d76233b2ef5"]='sudo journalctl -u postgresql -n %LINES% --no-pager 2>/dev/null || echo '\'''\'''
 HASHES["1aba280c7103d22feeb80a63bf8adcde87548b06402c6d8a5eea35610e313718"]='sudo journalctl -u redis -u redis-server -n %LINES% --no-pager 2>/dev/null || sudo tail -n %LINES% /var/log/redis/redis-server.log 2>/dev/null || echo '\'''\'''
+HASHES["61a33f3e9e9dbc7f962ed15de602e1d4553e9c8dfe81ebf0bc7164a6329ed5a2"]='which fail2ban-client'
+HASHES["f4283e3adaba620d0dbf22a8382e5137e9326f110b1083a881cc5a48aea3afef"]='sudo fail2ban-client set guardian-jail banip --bantime -1 %IP%'
+HASHES["867a4ff5ac11609419bbf9a56855ca4b4e2abb7f25533b5ed7f8d3ca65c02161"]='sudo ufw deny from %IP% comment '\''guardian-block-%CONTAINER_ID%'\'''
+HASHES["8dfc8de8f11db185ebc5cf2affbbccd74e50e395a3596913d37d6b483f456dae"]='sudo ufw deny from %IP% comment '\''guardian-prop-%CONTAINER_ID%'\'''
+HASHES["d5ce19cdf11cef11f0509d057fc9adc5094cac6390d748ef416b2c2754bb5f64"]='sudo ufw status | grep -q '\''%IP%'\'''
+HASHES["70c93d2e0a80fabf5f836be3b42378b9dbf6e3be53e01e5f9600d1989abc7fa2"]='sudo fail2ban-client status guardian-jail 2>/dev/null | grep -q '\''%IP%'\'''
+HASHES["04d90afa2e620320340b73cf7aac1706e0a31510dcff71ca27d41d1dad97e202"]='sudo ufw delete deny from %IP%'
+HASHES["f78c1329acba2677341716a88bce17e1483d007dfd6016fb090fb6afe727f686"]='sudo fail2ban-client set guardian-jail unbanip %IP%'
+HASHES["408aa5dee6c040d2d7395f663b3af7c897ae2a4fbd097a6a06ed9c42b939876b"]='sudo iptables -N GUARDIAN-INPUT 2>&1'
+HASHES["9d0851da29c3b3f6fb6d1b414ab6222ef01683684071fdbf084680af269636c6"]='sudo iptables -C INPUT -j GUARDIAN-INPUT 2>/dev/null'
+HASHES["8ace238828936adbaf08999120f3b61fb1773ed20028ff683f4e255ecb18f795"]='sudo iptables -I INPUT 1 -j GUARDIAN-INPUT'
+HASHES["82ab5d49358493adf04db0cca5468b5c370f51d92d9af98b2b0b47e628ff1d0e"]='sudo iptables -A GUARDIAN-INPUT -s %IP% -j DROP'
+HASHES["a7553556aadabeb586006f8fc53efba01d8d79e4215faa850d51a05aebf84017"]='sudo iptables -S GUARDIAN-INPUT 2>/dev/null | grep -q -- '\''-s %IP%/32'\'''
+HASHES["0b9c0898fbc24ca15b72f9cf6f79a9a746b3a90d938a638c259760966c3c0cb6"]='sudo iptables -D GUARDIAN-INPUT -s %IP% -j DROP'
+HASHES["e3fff8bcf665acbbb226799cbb80d8bf1a165cfbd626486a1b9ebbe2a141a64a"]='sudo iptables -I GUARDIAN-INPUT -s %IP% -m limit --limit %LINES%/sec --limit-burst %LINES% -j ACCEPT'
+HASHES["82ab5d49358493adf04db0cca5468b5c370f51d92d9af98b2b0b47e628ff1d0e"]='sudo iptables -A GUARDIAN-INPUT -s %IP% -j DROP'
+HASHES["0b9c0898fbc24ca15b72f9cf6f79a9a746b3a90d938a638c259760966c3c0cb6"]='sudo iptables -D GUARDIAN-INPUT -s %IP% -j DROP'
 # END_ALLOWLIST
 
 # ── Recusa precoce ────────────────────────────────────────────────────────────
@@ -113,6 +130,8 @@ normalize() {
   s=$(printf '%s' "$s" | sed -E "s/last -F -n [0-9]+/last -F -n %LINES%/g")
   # %CONTAINER_ID% — hex de 12-64 chars (docker IDs full ou short)
   s=$(printf '%s' "$s" | sed -E "s/\b[0-9a-f]{12,64}\b/%CONTAINER_ID%/g")
+  # %IP% — endereço IPv4 com ou sem CIDR (ex: 1.2.3.4 ou 1.2.3.4/32)
+  s=$(printf '%s' "$s" | sed -E "s/\b([0-9]{1,3}\.){3}[0-9]{1,3}(\/[0-9]{1,2})?\b/%IP%/g")
   printf '%s' "$s"
 }
 
@@ -167,6 +186,13 @@ validate_placeholders() {
     [[ -z "$v" ]] && continue
     [[ "$v" =~ ^[0-9a-f]{12,64}$ ]] || return 1
   done < <(printf '%s' "$cmd" | grep -oE "\b[0-9a-f]{12,64}\b" || true)
+
+  # %IP% — octetos válidos (0-255) com CIDR opcional (0-32)
+  local ip_re='^([0-9]{1,3}\.){3}[0-9]{1,3}(\/[0-9]{1,2})?$'
+  while IFS= read -r v; do
+    [[ -z "$v" ]] && continue
+    [[ "$v" =~ $ip_re ]] || return 1
+  done < <(printf '%s' "$cmd" | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}(\/[0-9]{1,2})?\b" || true)
 
   return 0
 }

@@ -5,8 +5,20 @@ import { fileURLToPath } from 'node:url';
 import { logger } from '../utils/logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SCRIPTS_DIR = resolve(__dirname, '../../scripts');
+// Compiled bundle lands at dist/index.js → __dirname = /app/dist
+// Scripts are at /app/scripts → ../scripts from /app/dist
+// Fallback to process.cwd()/scripts for local dev (cwd is /app or project root)
+const SCRIPTS_DIR = (() => {
+  const candidates = [
+    resolve(__dirname, '../scripts'),   // dist/index.js → dist/../scripts = /app/scripts
+    resolve(__dirname, '../../scripts'), // dist/services/foo.js → ../../scripts (dev)
+    resolve(process.cwd(), 'scripts'),   // cwd-relative fallback
+  ];
+  return candidates.find(p => existsSync(p)) ?? candidates[0];
+})();
 const PYTHON = process.env.ML_PYTHON ?? 'python3';
+
+logger.debug({ SCRIPTS_DIR, PYTHON }, 'MLRetrainService initialized');
 
 export type RetrainTarget = 'dga' | 'ip';
 

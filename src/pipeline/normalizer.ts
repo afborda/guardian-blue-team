@@ -1,5 +1,10 @@
 import type { RawLogEntry } from '../collectors/log-collector.js';
 
+// Dedup cache for container_insecure_config: suppress repeated reports for the
+// same container within 24h. Key = serverId:containerName, value = first-seen ms.
+const containerInsecureSeenAt = new Map<string, number>();
+const CONTAINER_INSECURE_TTL_MS = 24 * 60 * 60 * 1000;
+
 export interface NormalizedEvent {
   serverId: number;
   timestamp: Date;
@@ -226,14 +231,47 @@ export class EventNormalizer {
   }
 
   private static normalizeDocker(entry: RawLogEntry): NormalizedEvent | null {
-    const parts = entry.line.split(' ');
-    if (parts.length < 4) return null;
+    // Events from docker-collector arrive as JSON: {"status":"start","id":"...","from":"image","Type":"container","Action":"start","Actor":{...},"time":...}
+    // ANOMALY lines (restarting/unhealthy) arrive as plain text: "ANOMALY: name status"
+    if (entry.line.startsWith('ANOMALY:')) {
+      const name = entry.line.replace('ANOMALY:', '').trim().split(' ')[0] ?? '';
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'docker',
+        category: 'container',
+        severity: 'medium',
+        eventType: 'docker_anomaly',
+        sourceIp: null,
+        destinationPort: null,
+        userName: null,
+        processName: name,
+        rawLog: entry.line,
+        metadata: { containerAction: 'anomaly', containerType: 'container' },
+      };
+    }
 
-    const [, type, action, name] = parts;
+    if (!entry.line.startsWith('{')) return null;
 
-    if (action?.startsWith('exec_') || action?.startsWith('exec ')) return null;
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(entry.line) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
 
-    const severity = action === 'die' || action === 'kill' ? 'medium' : 'info';
+    const action = (parsed['Action'] as string | undefined) ?? (parsed['status'] as string | undefined);
+    const type = (parsed['Type'] as string | undefined) ?? 'container';
+    const actor = parsed['Actor'] as Record<string, unknown> | undefined;
+    const name = (actor?.['Attributes'] as Record<string, string> | undefined)?.['name']
+      ?? (parsed['from'] as string | undefined)
+      ?? null;
+
+    if (!action) return null;
+    // exec_start/exec_create are very high-volume and low-signal — skip
+    if (action.startsWith('exec_') || action === 'exec') return null;
+
+    const severity = (action === 'die' || action === 'kill') ? 'medium' : 'info';
 
     return {
       serverId: entry.serverId,
@@ -245,7 +283,7 @@ export class EventNormalizer {
       sourceIp: null,
       destinationPort: null,
       userName: null,
-      processName: name || null,
+      processName: name,
       rawLog: entry.line,
       metadata: { containerAction: action, containerType: type },
     };
@@ -888,7 +926,18 @@ export class EventNormalizer {
     const readOnly = fields['RO'] === 'true';
     const hasCapDrop = (fields['CAPDROP'] ?? '').length > 2;
     const noNewPrivs = (fields['SECOPT'] ?? '').includes('no-new-privileges');
-    const isInsecure = !readOnly && !hasCapDrop;
+    const isPrivileged = (fields['SECOPT'] ?? '').includes('privileged') || fields['PRIVILEGED'] === 'true';
+    // Only flag containers that are privileged OR lack all three basic hardening controls
+    const isInsecure = isPrivileged || (!readOnly && !hasCapDrop && !noNewPrivs);
+
+    // Suppress repeated insecure-config reports for the same container within 24h
+    if (isInsecure) {
+      const dedupKey = `${entry.serverId}:${containerName}`;
+      const seenAt = containerInsecureSeenAt.get(dedupKey) ?? 0;
+      const now = Date.now();
+      if (now - seenAt < CONTAINER_INSECURE_TTL_MS) return null;
+      containerInsecureSeenAt.set(dedupKey, now);
+    }
 
     return {
       serverId: entry.serverId,
@@ -1007,8 +1056,20 @@ export class EventNormalizer {
   private static readonly KERNEL_PANIC_PATTERN = /kernel panic|BUG:|general protection fault|unable to handle kernel/i;
   private static readonly HW_ERROR_PATTERN = /hardware error|mce.*bank|cpu.*uncorrectable|disk error/i;
 
+  private static readonly DOCKER_NETWORK_NOISE = /\b(veth[0-9a-f]+|br-[0-9a-f]+|docker[0-9]+)\b.*(promiscuous|allmulticast|blocking state|forwarding state|disabled state|entered|left|port [0-9]+)/i;
+  // veth renamed to eth* inside container namespace — benign Docker network event
+  private static readonly DOCKER_VETH_RENAME = /\beth[0-9]+: renamed from veth/i;
+  // UFW BLOCK messages from dmesg duplicate what the UFW log collector already handles
+  private static readonly UFW_BLOCK_LINE = /\[UFW (?:BLOCK|LIMIT|ALLOW)\]/;
+
   private static normalizeKernel(entry: RawLogEntry): NormalizedEvent | null {
     const line = entry.line;
+
+    // Docker bridge/veth lifecycle messages and UFW duplicates — skip them
+    if (this.DOCKER_NETWORK_NOISE.test(line)) return null;
+    if (this.DOCKER_VETH_RENAME.test(line)) return null;
+    if (this.UFW_BLOCK_LINE.test(line)) return null;
+
     let eventType = 'kernel_error';
     let severity: NormalizedEvent['severity'] = 'medium';
 

@@ -59,7 +59,9 @@ export function generateFallbackConfig(snapshot: ServerSnapshot): DiscoveryResul
     monitoringProfile: {
       services: docker.containers.map(c => c.name).slice(0, 10),
       logPaths: ['/var/log/auth.log', '/var/log/syslog'],
-      criticalPorts: network.listeningPorts.filter(p => p.port < 10000).map(p => p.port),
+      criticalPorts: network.listeningPorts
+        .filter(p => p.port < 10000 && (p.address === '0.0.0.0' || p.address === '::' || p.address === '*'))
+        .map(p => p.port),
       customChecks: [],
     },
   };

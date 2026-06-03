@@ -120,11 +120,13 @@ dashboardPages.get('/cve', (_req, res) => {
       <p aria-busy="true">Loading…</p>
     </div>
 
-    <div style="display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap;">
+    <div style="display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap;align-items:center;">
       <button hx-get="/api/dashboard/cve-alerts?token=${token}&status=pending" hx-target="#cve-list" hx-swap="innerHTML">Pending</button>
       <button hx-get="/api/dashboard/cve-alerts?token=${token}&status=all" hx-target="#cve-list" hx-swap="innerHTML">All</button>
       <button hx-get="/api/dashboard/cve-alerts?token=${token}&category=runtime" hx-target="#cve-list" hx-swap="innerHTML">Runtime EOL</button>
       <button hx-get="/api/dashboard/cve-alerts?token=${token}&kev=1" hx-target="#cve-list" hx-swap="innerHTML" style="border-color:var(--critical);color:var(--critical)">KEV Only</button>
+      <button hx-get="/api/dashboard/cve-alerts?token=${token}&ecosystem=docker" hx-target="#cve-list" hx-swap="innerHTML" style="border-color:#60a5fa;color:#60a5fa">&#127798; Docker/npm</button>
+      <button hx-post="/api/dashboard/admin/trigger/vuln-scan?token=${token}" hx-swap="none" style="margin-left:auto;border-color:var(--primary);color:var(--primary)" title="Rodar scan agora (pode levar 5-10min)">&#9654; Scan agora</button>
     </div>
 
     <div id="cve-list" hx-get="/api/dashboard/cve-alerts?token=${token}&status=pending" hx-trigger="load" hx-swap="innerHTML">
@@ -281,8 +283,8 @@ dashboardPages.get('/intelligence', (_req, res) => {
           </div>
           <button style="margin-top:0.75rem;width:100%;"
                   hx-post="/api/dashboard/ml/retrain?target=dga&token=${token}"
-                  hx-swap="none"
-                  hx-on::after-request="htmx.trigger('#ml-dga-status', 'load')">
+                  hx-target="#ml-dga-status"
+                  hx-swap="innerHTML">
             &#128260; Retrain DGA
           </button>
         </div>
@@ -299,8 +301,8 @@ dashboardPages.get('/intelligence', (_req, res) => {
           </div>
           <button style="margin-top:0.75rem;width:100%;"
                   hx-post="/api/dashboard/ml/retrain?target=ip&token=${token}"
-                  hx-swap="none"
-                  hx-on::after-request="htmx.trigger('#ml-ip-status', 'load')">
+                  hx-target="#ml-ip-status"
+                  hx-swap="innerHTML">
             &#128260; Retrain IP Classifier
           </button>
         </div>
@@ -343,7 +345,7 @@ dashboardPages.get('/hunting', (_req, res) => {
       <div>
         <h2 style="margin-bottom:0.25rem;">Threat Hunting</h2>
         <p style="color:var(--text-muted);font-size:0.82rem;">
-          Resultados da análise proativa de padrões executada pela IA a cada 4 horas.
+          Resultados da análise proativa de padrões executada pela IA a cada 4 dias.
         </p>
       </div>
     </div>
@@ -699,8 +701,9 @@ dashboardApi.get('/incidents', async (req, res) => {
   }
 });
 
-dashboardApi.get('/servers', async (_req, res) => {
+dashboardApi.get('/servers', async (req, res) => {
   try {
+    const token = String(req.query.token ?? '');
     const servers = await db.select().from(socServers).orderBy(socServers.name);
 
     if (servers.length === 0) {
@@ -778,7 +781,12 @@ dashboardApi.get('/servers', async (_req, res) => {
         ? `${Math.floor((Date.now()-new Date(s.lastSeenAt).getTime())/60000)}m atrás`
         : 'never';
 
-      return `<tr>
+      const toggleLabel = s.enabled ? 'Desativar' : 'Ativar';
+      const toggleStyle = s.enabled
+        ? 'background:var(--critical);color:#fff;border:none;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:0.75rem'
+        : 'background:var(--success);color:#fff;border:none;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:0.75rem';
+
+      return `<tr id="server-row-${s.id}">
         <td><strong>${escapeHtml(s.name)}</strong><br><span style="color:var(--text-dim);font-size:0.72rem;font-family:var(--font-mono)">${escapeHtml(s.host)}</span></td>
         <td>${statusDot}<br><span style="color:var(--text-dim);font-size:0.72rem">${ago}</span></td>
         <td style="font-family:var(--font-mono)">${load}</td>
@@ -787,12 +795,16 @@ dashboardApi.get('/servers', async (_req, res) => {
         <td style="font-family:var(--font-mono);font-size:0.75rem">&#8595;${rxDisplay}<br>&#8593;${txDisplay}</td>
         <td style="text-align:center">${scoreStr}</td>
         <td><span style="color:${evtColor}">${events24h} eventos 24h</span></td>
+        <td><button style="${toggleStyle}"
+          hx-patch="/api/dashboard/servers/${s.id}/toggle?token=${token}"
+          hx-target="#server-row-${s.id}"
+          hx-swap="outerHTML">${toggleLabel}</button></td>
       </tr>`;
     });
 
     res.send(`<table>
       <thead><tr>
-        <th>Servidor</th><th>Status</th><th>Load</th><th>RAM</th><th>Disco</th><th>Rede</th><th>Score</th><th>Atividade 24h</th>
+        <th>Servidor</th><th>Status</th><th>Load</th><th>RAM</th><th>Disco</th><th>Rede</th><th>Score</th><th>Atividade 24h</th><th></th>
       </tr></thead>
       <tbody>${rows.join('')}</tbody>
     </table>`);
@@ -802,18 +814,67 @@ dashboardApi.get('/servers', async (_req, res) => {
   }
 });
 
+dashboardApi.patch('/servers/:id/toggle', requireRole('admin'), async (req, res) => {
+  try {
+    const token = String(req.query.token ?? '');
+    const id = Number(req.params.id);
+    const [srv] = await db.select().from(socServers).where(eq(socServers.id, id)).limit(1);
+    if (!srv) { res.status(404).send('Not found'); return; }
+
+    const newEnabled = !srv.enabled;
+    await db.update(socServers).set({ enabled: newEnabled }).where(eq(socServers.id, id));
+    const updated = { ...srv, enabled: newEnabled };
+
+    const isOnline = updated.lastSeenAt && (Date.now() - new Date(updated.lastSeenAt).getTime() < 10 * 60 * 1000);
+    const statusDot = isOnline
+      ? '<span style="color:var(--success)">&#9679; Online</span>'
+      : updated.enabled
+        ? '<span style="color:var(--warning)">&#9679; Offline</span>'
+        : '<span style="color:var(--text-dim)">&#9679; Disabled</span>';
+    const ago = updated.lastSeenAt
+      ? `${Math.floor((Date.now() - new Date(updated.lastSeenAt).getTime()) / 60000)}m atrás`
+      : 'never';
+    const toggleLabel = updated.enabled ? 'Desativar' : 'Ativar';
+    const toggleStyle = updated.enabled
+      ? 'background:var(--critical);color:#fff;border:none;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:0.75rem'
+      : 'background:var(--success);color:#fff;border:none;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:0.75rem';
+
+    res.send(`<tr id="server-row-${updated.id}">
+      <td><strong>${escapeHtml(updated.name)}</strong><br><span style="color:var(--text-dim);font-size:0.72rem;font-family:var(--font-mono)">${escapeHtml(updated.host)}</span></td>
+      <td>${statusDot}<br><span style="color:var(--text-dim);font-size:0.72rem">${ago}</span></td>
+      <td style="font-family:var(--font-mono)">—</td>
+      <td style="font-family:var(--font-mono)">—</td>
+      <td style="font-family:var(--font-mono)">—</td>
+      <td style="font-family:var(--font-mono);font-size:0.75rem">—</td>
+      <td style="text-align:center">—</td>
+      <td>—</td>
+      <td><button style="${toggleStyle}"
+        hx-patch="/api/dashboard/servers/${updated.id}/toggle?token=${token}"
+        hx-target="#server-row-${updated.id}"
+        hx-swap="outerHTML">${toggleLabel}</button></td>
+    </tr>`);
+  } catch (err) {
+    logger.error({ err }, 'Server toggle error');
+    res.status(500).send('<p class="severity-critical">Erro</p>');
+  }
+});
+
 dashboardApi.get('/cve-kpis', async (_req, res) => {
   try {
     const [pending] = await db.select({ cnt: count() }).from(cveAlerts).where(eq(cveAlerts.status, 'pending'));
     const [kevCount] = await db.select({ cnt: count() }).from(cveKev);
     const [epssHigh] = await db.select({ cnt: count() }).from(cveEpss).where(gte(cveEpss.epssScore, 0.5));
     const [runtimeEol] = await db.select({ cnt: count() }).from(vulnerabilities).where(and(eq(vulnerabilities.category, 'runtime'), eq(vulnerabilities.status, 'open')));
+    const [dockerCves] = await db.select({ cnt: count() }).from(cveAlerts).where(
+      and(inArray(cveAlerts.ecosystem, ['docker', 'npm']), eq(cveAlerts.status, 'pending'))
+    );
 
     res.send(`
       <div class="kpi kpi-red"><div class="kpi-label">Pending CVEs</div><div class="kpi-value kpi-value-red">${pending.cnt}</div></div>
       <div class="kpi kpi-yellow"><div class="kpi-label">EPSS ≥50%</div><div class="kpi-value kpi-value-yellow">${epssHigh.cnt}</div></div>
       <div class="kpi kpi-red"><div class="kpi-label">KEV (CISA)</div><div class="kpi-value kpi-value-red">${kevCount.cnt}</div></div>
       <div class="kpi kpi-yellow"><div class="kpi-label">Runtime EOL</div><div class="kpi-value kpi-value-yellow">${runtimeEol.cnt}</div></div>
+      <div class="kpi ${Number(dockerCves.cnt) > 0 ? 'kpi-red' : 'kpi-green'}"><div class="kpi-label">Docker/npm CVEs</div><div class="kpi-value ${Number(dockerCves.cnt) > 0 ? 'kpi-value-red' : ''}">${dockerCves.cnt}</div></div>
     `);
   } catch (err) {
     logger.error({ err }, 'CVE KPIs error');
@@ -827,6 +888,7 @@ dashboardApi.get('/cve-alerts', async (req, res) => {
     const statusFilter = String(req.query.status ?? 'pending');
     const kevOnly = req.query.kev === '1';
     const categoryFilter = req.query.category ? String(req.query.category) : null;
+    const ecosystemFilter = req.query.ecosystem ? String(req.query.ecosystem) : null;
 
     // Fetch KEV IDs for enrichment (cheap set lookup)
     const kevRows = await db.select({ cveId: cveKev.cveId }).from(cveKev);
@@ -889,20 +951,25 @@ dashboardApi.get('/cve-alerts', async (req, res) => {
     }
 
     // Standard CVE alerts from cve_alerts table
-    const whereClause = statusFilter === 'all'
-      ? undefined
-      : eq(cveAlerts.status, 'pending');
+    const conditions = [];
+    if (statusFilter !== 'all') conditions.push(eq(cveAlerts.status, 'pending'));
+    if (ecosystemFilter === 'docker') conditions.push(inArray(cveAlerts.ecosystem, ['docker', 'npm']));
 
-    const alerts = whereClause
-      ? await db.select().from(cveAlerts).where(whereClause).orderBy(desc(cveAlerts.createdAt)).limit(100)
+    const alerts = conditions.length > 0
+      ? await db.select().from(cveAlerts).where(and(...conditions)).orderBy(desc(cveAlerts.createdAt)).limit(100)
       : await db.select().from(cveAlerts).orderBy(desc(cveAlerts.createdAt)).limit(100);
 
     if (alerts.length === 0) {
-      res.send('<p style="color:var(--success);">&#9989; No CVE alerts found. Either no vulnerabilities detected or CVE Monitor not yet run.</p>');
+      const scanButton = `<button hx-post="/api/dashboard/admin/trigger/vuln-scan?token=${token}" hx-swap="none" style="margin-top:0.75rem;display:inline-block">&#9654; Rodar scan agora</button>`;
+      if (ecosystemFilter === 'docker') {
+        res.send(`<p style="color:var(--text-dim)">&#127798; Nenhum Docker/npm CVE encontrado. O scanner roda semanalmente via Trivy + npm audit.</p>${scanButton}`);
+      } else {
+        res.send(`<p style="color:var(--success);">&#9989; Nenhum CVE alert encontrado. O CVE Monitor roda a cada 6h.</p>${scanButton}`);
+      }
       return;
     }
 
-    const html = `<table><thead><tr><th>CVE</th><th>Server</th><th>Package</th><th>CVSS</th><th>EPSS</th><th>KEV</th><th>Fix</th><th>Actions</th></tr></thead><tbody>${
+    const html = `<table><thead><tr><th>CVE</th><th>Server</th><th>Package</th><th>Eco</th><th>CVSS</th><th>EPSS</th><th>KEV</th><th>Fix</th><th>Actions</th></tr></thead><tbody>${
       alerts.map(a => {
         const cvss = a.cvssScore ? (a.cvssScore / 10).toFixed(1) : '?';
         const cvssNum = Number(cvss);
@@ -911,6 +978,10 @@ dashboardApi.get('/cve-alerts', async (req, res) => {
         const epssDisplay = epss !== undefined ? `${(epss * 100).toFixed(1)}%` : '—';
         const epssColor = epss !== undefined && epss >= 0.5 ? 'var(--critical)' : epss !== undefined && epss >= 0.1 ? 'var(--warning)' : 'var(--text-dim)';
         const isKev = kevSet.has(a.cveId);
+        const ecoLabel = a.ecosystem === 'docker' ? '&#127798;docker'
+          : a.ecosystem === 'npm' ? '&#128230;npm'
+          : escapeHtml(a.ecosystem);
+        const ecoColor = (a.ecosystem === 'docker' || a.ecosystem === 'npm') ? 'color:#60a5fa' : 'color:var(--text-dim)';
         const actions = a.status === 'pending' ? [
           a.fixedVersion ? `<button hx-post="/api/dashboard/cve/${a.id}/update?token=${token}" hx-swap="outerHTML" hx-target="closest tr" class="success">Patch</button>` : '',
           `<button hx-post="/api/dashboard/cve/${a.id}/ignore?token=${token}" hx-swap="outerHTML" hx-target="closest tr" class="danger">Ignore</button>`,
@@ -919,6 +990,7 @@ dashboardApi.get('/cve-alerts', async (req, res) => {
           <td><code>${escapeHtml(a.cveId)}</code>${isKev ? ' <span class="severity-critical" title="CISA Known Exploited">&#9888;KEV</span>' : ''}</td>
           <td>${escapeHtml(serverMap.get(a.serverId) ?? String(a.serverId))}</td>
           <td>${escapeHtml(a.packageName)} <span style="color:var(--text-dim);font-size:0.72rem">${escapeHtml(a.installedVersion)}</span></td>
+          <td><span style="${ecoColor};font-size:0.72rem">${ecoLabel}</span></td>
           <td><span class="${cvssClass}">${cvss}</span></td>
           <td><span style="color:${epssColor};font-family:var(--font-mono)">${epssDisplay}</span></td>
           <td>${isKev ? '<span class="severity-critical">&#9888; Yes</span>' : '<span style="color:var(--text-dim)">—</span>'}</td>
@@ -938,11 +1010,50 @@ dashboardApi.get('/cve-alerts', async (req, res) => {
 dashboardApi.post('/cve/:id/update', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
-    await db.update(cveAlerts).set({ status: 'updating', resolvedAt: dbNow() }).where(eq(cveAlerts.id, id));
-    res.send(`<tr><td colspan="5" style="color:var(--success);">&#9989; CVE #${id} — update triggered</td></tr>`);
+    const [alert] = await db.select().from(cveAlerts).where(eq(cveAlerts.id, id)).limit(1);
+    if (!alert) {
+      res.status(404).send('<tr><td colspan="9" class="severity-critical">CVE não encontrado</td></tr>');
+      return;
+    }
+
+    const resolvedAt = new Date();
+    await db.update(cveAlerts)
+      .set({ status: 'resolved', resolvedAt, resolvedBy: 'dashboard' })
+      .where(eq(cveAlerts.id, id));
+
+    // Extract image name from summary "[image-name] description"
+    const imageMatch = alert.summary?.match(/^\[([^\]]+)\]/);
+    const imageRef = imageMatch ? imageMatch[1] : null;
+
+    // Time to resolve
+    const openMs = resolvedAt.getTime() - new Date(alert.createdAt).getTime();
+    const openHours = Math.floor(openMs / 3_600_000);
+    const openMins = Math.floor((openMs % 3_600_000) / 60_000);
+    const timeOpen = openHours > 0 ? `${openHours}h ${openMins}m` : `${openMins}m`;
+
+    let fixCmd = '';
+    if (alert.ecosystem === 'npm' && alert.fixedVersion) {
+      fixCmd = `docker exec &lt;container&gt; npm install ${escapeHtml(alert.packageName)}@${escapeHtml(alert.fixedVersion)}`;
+    } else if (alert.ecosystem === 'docker' && imageRef) {
+      fixCmd = `docker pull ${escapeHtml(imageRef)} &amp;&amp; docker compose up -d`;
+    } else if (alert.fixedVersion) {
+      fixCmd = `atualizar ${escapeHtml(alert.packageName)} para ${escapeHtml(alert.fixedVersion)}`;
+    }
+
+    const cmdHtml = fixCmd
+      ? `<div style="margin-top:4px;font-size:0.72rem;color:var(--text-dim)"><code style="background:var(--surface2);padding:2px 6px;border-radius:3px">${fixCmd}</code></div>`
+      : '';
+
+    res.send(`<tr style="opacity:0.5">
+      <td colspan="9">
+        <span style="color:var(--success)">&#9989; CVE #${id} (${escapeHtml(alert.cveId)}) resolvido</span>
+        <span style="font-size:0.72rem;color:var(--text-dim);margin-left:8px">&#8987; Aberto por ${timeOpen}</span>
+        ${cmdHtml}
+      </td>
+    </tr>`);
   } catch (err) {
     logger.error({ err }, 'Dashboard CVE update error');
-    res.status(500).send('<tr><td colspan="5" class="severity-critical">Error</td></tr>');
+    res.status(500).send('<tr><td colspan="9" class="severity-critical">Erro ao resolver CVE</td></tr>');
   }
 });
 
@@ -950,10 +1061,10 @@ dashboardApi.post('/cve/:id/ignore', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     await db.update(cveAlerts).set({ status: 'ignored', resolvedAt: dbNow(), resolvedBy: 'dashboard' }).where(eq(cveAlerts.id, id));
-    res.send(`<tr><td colspan="5" style="color:var(--text-dim);">CVE #${id} — ignored</td></tr>`);
+    res.send(`<tr style="opacity:0.4"><td colspan="9" style="color:var(--text-dim);">&#128683; CVE #${id} — ignorado</td></tr>`);
   } catch (err) {
     logger.error({ err }, 'Dashboard CVE ignore error');
-    res.status(500).send('<tr><td colspan="5" class="severity-critical">Error</td></tr>');
+    res.status(500).send('<tr><td colspan="9" class="severity-critical">Error</td></tr>');
   }
 });
 
@@ -2447,11 +2558,20 @@ dashboardApi.get('/export/:table', async (req, res) => {
 dashboardApi.post('/ml/retrain', requireRole('admin'), (req, res) => {
   const target = req.query.target as string;
   if (target !== 'dga' && target !== 'ip') {
-    res.status(400).json({ error: 'invalid_target' });
+    res.status(400).send('<span style="color:var(--critical);font-size:0.82rem;">✗ invalid target</span>');
     return;
   }
   const result = MLRetrainService.start(target);
-  res.json(result);
+  if (!result.ok) {
+    const msg = result.reason ?? 'unknown error';
+    res.send(`<div style="font-size:0.82rem;color:var(--critical);">✗ ERROR</div>
+    <div style="font-size:0.72rem;color:var(--critical);margin-top:0.25rem;">${escapeHtml(msg)}</div>`);
+    return;
+  }
+  // Script started — return "RUNNING" HTML so the status div updates immediately.
+  // The every-3s poll will take over from here.
+  res.send(`<div style="font-size:0.82rem;color:var(--cyan);">⟳ RUNNING</div>
+    <div style="font-size:0.72rem;color:var(--text-muted);margin-top:0.25rem;">Iniciado agora…</div>`);
 });
 
 dashboardApi.get('/ml/status', (req, res) => {
@@ -2484,6 +2604,16 @@ dashboardApi.post('/admin/trigger/cve-intel-feeds', requireRole('admin'), (_req,
   res.status(202).json({
     status: 'triggered',
     message: 'CVE intel feeds ingest started in background — check logs for progress',
+  });
+});
+
+dashboardApi.post('/admin/trigger/vuln-scan', requireRole('admin'), (_req, res) => {
+  CVEMonitorWorker.run().catch(err =>
+    logger.error({ err }, 'Manual vuln scan trigger failed')
+  );
+  res.status(202).json({
+    status: 'triggered',
+    message: 'Vulnerability scan started in background (Trivy + npm audit) — results will appear in CVE Alerts within a few minutes',
   });
 });
 

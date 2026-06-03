@@ -101,19 +101,58 @@ sudo journalctl -u mysql -u mysqld -n %LINES% --no-pager 2>/dev/null || sudo tai
 sudo journalctl -u postgresql -n %LINES% --no-pager 2>/dev/null || echo ''
 sudo journalctl -u redis -u redis-server -n %LINES% --no-pager 2>/dev/null || sudo tail -n %LINES% /var/log/redis/redis-server.log 2>/dev/null || echo ''
 
+# === BLOQUEIO DE IPs — block-ip.ts, iptables-chain.ts, rate-limit.ts ===
+
+# --- block-ip.ts: detecta se fail2ban está presente ---
+which fail2ban-client
+
+# --- block-ip.ts:tryFail2ban — bane IP na jail guardian ---
+sudo fail2ban-client set guardian-jail banip --bantime -1 %IP%
+
+# --- block-ip.ts:tryUfw — bloqueia via UFW (timestamp vira %CONTAINER_ID% após normalize) ---
+sudo ufw deny from %IP% comment 'guardian-block-%CONTAINER_ID%'
+
+# --- block-ip.ts:tryUfw via propagation worker ---
+sudo ufw deny from %IP% comment 'guardian-prop-%CONTAINER_ID%'
+
+# --- block-ip.ts:verifyBlock ufw ---
+sudo ufw status | grep -q '%IP%'
+
+# --- block-ip.ts:verifyBlock fail2ban ---
+sudo fail2ban-client status guardian-jail 2>/dev/null | grep -q '%IP%'
+
+# --- block-ip.ts:unblockIP ufw ---
+sudo ufw delete deny from %IP%
+
+# --- block-ip.ts:unblockIP fail2ban ---
+sudo fail2ban-client set guardian-jail unbanip %IP%
+
+# --- iptables-chain.ts:ensureGuardianChain — cria chain dedicada ---
+sudo iptables -N GUARDIAN-INPUT 2>&1
+
+# --- iptables-chain.ts:ensureGuardianChain — verifica se INPUT tem jump ---
+sudo iptables -C INPUT -j GUARDIAN-INPUT 2>/dev/null
+
+# --- iptables-chain.ts:ensureGuardianChain — adiciona jump INPUT→GUARDIAN-INPUT ---
+sudo iptables -I INPUT 1 -j GUARDIAN-INPUT
+
+# --- block-ip.ts:tryIptables — DROP na chain Guardian ---
+sudo iptables -A GUARDIAN-INPUT -s %IP% -j DROP
+
+# --- block-ip.ts:verifyBlock iptables ---
+sudo iptables -S GUARDIAN-INPUT 2>/dev/null | grep -q -- '-s %IP%/32'
+
+# --- block-ip.ts:unblockIP iptables ---
+sudo iptables -D GUARDIAN-INPUT -s %IP% -j DROP
+
+# --- rate-limit.ts:applyRateLimit — regras de accept+drop com limit ---
+sudo iptables -I GUARDIAN-INPUT -s %IP% -m limit --limit %LINES%/sec --limit-burst %LINES% -j ACCEPT
+sudo iptables -A GUARDIAN-INPUT -s %IP% -j DROP
+
+# --- rate-limit.ts:removeRateLimit ---
+sudo iptables -D GUARDIAN-INPUT -s %IP% -j DROP
+
 # === BLOQUEADOS — precisam refactor antes de incluir ===
-#
-# # log-collector.ts:60 (collectDockerEvents) — usa $(date +%s) command substitution
-# # SOLUÇÃO PROPOSTA: TS calcula --until em runtime e passa como UNIX_TS literal.
-#
-# # fim-collector.ts — template contém shell loop (for f in ...)
-# # SOLUÇÃO: loop em TS, cada path vira hash separado.
-#
-# # network-collector.ts:detectSuspiciousConnections — usa grep -oP (PCRE, não-POSIX)
-# # Estruturalmente templatável mas grep -oP não disponível em todos os targets Ubuntu.
-#
-# # network-collector.ts:collectConnectionRate — usa $() assignment (C1=$(...))
-# # SOLUÇÃO: calcular diferença em TS com duas chamadas separadas.
 
 # === COLLECTORS INCOMPATÍVEIS COM Opção 3 (precisam refactor antes de incluir) ===
 #

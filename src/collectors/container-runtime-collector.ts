@@ -117,7 +117,7 @@ export class ContainerRuntimeCollector {
   static async collectContainerFilesystem(target: SSHTarget): Promise<RawLogEntry[]> {
     const cmd = `for cid in $(docker ps -q 2>/dev/null); do
       name=$(docker inspect --format '{{.Name}}' $cid 2>/dev/null | tr -d /);
-      diff=$(docker diff $cid 2>/dev/null | grep -E '^[AC] .*(tmp|dev/shm|bin|usr/bin|usr/local/bin)' | grep -Ev 'node-compile-cache|qdrant.*(snapshots|tmp)|guardian-ssh-|/tmp/\\.mc|dotnet-diagnostic|clr-debug-pipe|jellyfin');
+      diff=$(docker diff $cid 2>/dev/null | grep -E '^[AC] .*(tmp|dev/shm|bin|usr/bin|usr/local/bin)' | grep -Ev 'node-compile-cache|qdrant.*(snapshots|tmp)|guardian-ssh-|/tmp/\\.mc|dotnet-diagnostic|clr-debug-pipe|jellyfin|/tmp/pg_|/tmp/pgsql_|/tmp/\\.s\\.PGSQL|/tmp/v8-compile-cache|/tmp/yarn--|/tmp/npm-');
       [ -n "$diff" ] && echo "---CONTAINER:$name---" && echo "$diff";
     done 2>/dev/null || echo ''`;
 
@@ -153,7 +153,7 @@ export class ContainerRuntimeCollector {
    * Very lightweight: <1MB I/O, 2-3s. Runs every 1h.
    */
   static async auditContainerConfig(target: SSHTarget): Promise<RawLogEntry[]> {
-    const cmd = `docker ps -q 2>/dev/null | xargs -I{} docker inspect --format '{{.Name}}|IMAGE={{.Config.Image}}|RO={{.HostConfig.ReadonlyRootfs}}|SECOPT={{join .HostConfig.SecurityOpt ","}}|CAPDROP={{join .HostConfig.CapDrop ","}}|MEM={{.HostConfig.Memory}}|CPU={{.HostConfig.CpuQuota}}' {} 2>/dev/null || echo ''`;
+    const cmd = `docker ps -q 2>/dev/null | xargs -I{} docker inspect --format '{{.Name}}|IMAGE={{.Config.Image}}|RO={{.HostConfig.ReadonlyRootfs}}|PRIVILEGED={{.HostConfig.Privileged}}|SECOPT={{join .HostConfig.SecurityOpt ","}}|CAPDROP={{join .HostConfig.CapDrop ","}}|MEM={{.HostConfig.Memory}}|CPU={{.HostConfig.CpuQuota}}' {} 2>/dev/null || echo ''`;
 
     const result = await SSHCollector.run(target, cmd, 15_000);
     if (!result.success || !result.stdout.trim()) return [];

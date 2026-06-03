@@ -107,7 +107,9 @@ export class EventCollectorWorker {
           HealthCollector.collectRebootEntry(target),
         ]);
 
-        const rawLogs = [...authLogs, ...ufwLogs, ...dockerEvents, ...suspiciousProcs, ...networkAnomaly, ...sudoLogs, ...dnsLogs, ...syslogLogs, ...proxyLogs, ...packageLogs, ...systemdLogs, ...auditLogs, ...containerProcs, ...loginSessions, ...failedLogins, ...currentSessions, ...kernelEntries, ...appLogs, ...diskEntries, ...rebootEntries];
+        // containerProcs go to container_snapshots via collectAndSnapshotProcesses —
+        // exclude from security_events pipeline to avoid ~4000 noise entries/hour.
+        const rawLogs = [...authLogs, ...ufwLogs, ...dockerEvents, ...suspiciousProcs, ...networkAnomaly, ...sudoLogs, ...dnsLogs, ...syslogLogs, ...proxyLogs, ...packageLogs, ...systemdLogs, ...auditLogs, ...loginSessions, ...failedLogins, ...currentSessions, ...kernelEntries, ...appLogs, ...diskEntries, ...rebootEntries];
         if (rawLogs.length === 0) {
           await AuditLogger.operational(serverId, 'collection_cycle', 'skipped', { server: serverName, reason: 'no_logs' });
           continue;
@@ -119,7 +121,8 @@ export class EventCollectorWorker {
           process: suspiciousProcs.length, network: networkAnomaly.length, sudo: sudoLogs.length,
           dns: dnsLogs.length, syslog: syslogLogs.length, proxy: proxyLogs.length,
           package: packageLogs.length, systemd: systemdLogs.length, audit: auditLogs.length,
-          containerProcs: containerProcs.length, loginSessions: loginSessions.length,
+          containerProcs: containerProcs.length + ' (snapshot-only)',
+          loginSessions: loginSessions.length,
           failedLogins: failedLogins.length, currentSessions: currentSessions.length,
           kernel: kernelEntries.length, appLogs: appLogs.length,
           diskCritical: diskEntries.length, reboot: rebootEntries.length,

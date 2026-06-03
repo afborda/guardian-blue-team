@@ -417,7 +417,7 @@ const DETECTION_RULES: DetectionRule[] = [
       const basename = filePath.split('/').pop() ?? '';
       const isDirectory = !basename.includes('.') && !basename.match(/[A-F0-9]{8,}/i);
       if (isDirectory) return false;
-      const benignExtensions = /\.(json|cfg|config|conf|log|pid|sock|socket|lock|tmp|cache|gz|tar|zip|png|jpg|env|ini|xml|yaml|yml)$/i;
+      const benignExtensions = /\.(json|cfg|config|conf|log|pid|sock|socket|lock|tmp|cache|gz|tar|zip|png|jpg|env|ini|xml|yaml|yml|sql|py|rb|txt|csv|md|html|css|js|ts|toml|properties)$/i;
       if (benignExtensions.test(basename)) return false;
       const debugPipeOrCache = /clr-debug-pipe|dotnet-diagnostic|node-compile-cache|jellyfin|qdrant.*upload/i;
       if (debugPipeOrCache.test(filePath)) return false;

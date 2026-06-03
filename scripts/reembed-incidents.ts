@@ -7,7 +7,7 @@
  *   npm run reembed-incidents -- --dry-run # report what would change, don't write
  */
 
-import { db, closeConnection, testConnection } from '../src/database/connection.js';
+import { db, initDatabase, closeConnection, testConnection } from '../src/database/connection.js';
 import { incidentMemory } from '../src/database/schema.js';
 import { eq } from 'drizzle-orm';
 import { EmbeddingService } from '../src/services/embedding.service.js';
@@ -38,6 +38,8 @@ async function main(): Promise<void> {
     force,
     dryRun,
   }, 'reembed-incidents starting');
+
+  await initDatabase();
 
   const dbOk = await testConnection();
   if (!dbOk) {

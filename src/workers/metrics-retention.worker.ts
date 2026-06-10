@@ -65,7 +65,9 @@ const SECURITY_EVENT_RETENTION: Array<{ types: string[]; days: number; label: st
 
 export class MetricsRetentionWorker {
   private static intervalId: NodeJS.Timeout | null = null;
-  private static readonly INTERVAL_MS = 24 * 60 * 60 * 1000;
+  // Run every 6h instead of 24h: container restarts (deploys) reset the
+  // interval timer, so a 24h cadence can skip days entirely on busy weeks.
+  private static readonly INTERVAL_MS = 6 * 60 * 60 * 1000;
   private static readonly METRICS_RETENTION_DAYS = 30;
 
   static start(): void {
@@ -79,10 +81,11 @@ export class MetricsRetentionWorker {
       this.cleanup().catch(err => logger.error({ err }, 'Metrics retention cleanup error'));
     }, this.INTERVAL_MS);
 
-    logger.info(`Metrics retention worker started (deletes >=${this.METRICS_RETENTION_DAYS}d)`);
+    logger.info(`Metrics retention worker started (deletes >=${this.METRICS_RETENTION_DAYS}d, runs every 6h)`);
   }
 
   static async cleanup(): Promise<void> {
+    logger.info('Metrics retention cleanup cycle starting');
     const metricsCutoff = new Date(Date.now() - this.METRICS_RETENTION_DAYS * 24 * 60 * 60 * 1000);
 
     try {

@@ -27,7 +27,13 @@ export interface HostSecuritySnapshot {
 }
 
 export class HostSecurityService {
-  static getDefaultTarget(): SSHTarget {
+  /**
+   * Returns a synthetic target representing the Guardian host itself.
+   * Returns null when HOST_SSH_KEY_PATH is unset — opt-in via config.
+   * Without a key path, SSH would fail anyway and produce log spam.
+   */
+  static getDefaultTarget(): SSHTarget | null {
+    if (!config.hostSecurity.sshKeyPath) return null;
     return {
       id: 0,
       name: 'local',
@@ -44,12 +50,14 @@ export class HostSecurityService {
     const from = new Date(Date.now() - hours * 3600 * 1000);
 
     const empty: HostSecuritySnapshot = {
-      serverName: t.name,
+      serverName: t?.name ?? 'local',
       bannedIpsNow: 0, jailCounts: {}, failedLoginsTotal: 0,
       failedLoginsByUser: [], failedLoginsByIp: [], successfulLogins: 0,
       blockedByPort: [], blockedTotal: 0, uniqueAttackerIps: 0,
       period: { from, to: now }, available: false,
     };
+
+    if (!t) return empty;
 
     try {
       const bannedResult = await SSHCollector.run(t,

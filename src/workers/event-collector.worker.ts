@@ -1,4 +1,4 @@
-import { ServerService } from '../services/server.service.js';
+import { ServerService, type ServerInfo } from '../services/server.service.js';
 import { AuditLogger } from '../utils/audit-logger.js';
 import { LogCollector } from '../collectors/log-collector.js';
 import { ProcessCollector } from '../collectors/process-collector.js';
@@ -37,6 +37,7 @@ import { config } from '../config/environment.js';
 import { CONSTANTS } from '../config/constants.js';
 import { logger } from '../utils/logger.js';
 import { CVEMonitorWorker } from './cve-monitor.worker.js';
+import type { SSHTarget } from '../collectors/ssh-collector.js';
 
 export class EventCollectorWorker {
   private static intervalId: NodeJS.Timeout | null = null;
@@ -62,6 +63,29 @@ export class EventCollectorWorker {
     logger.info('Event collector worker started (every 2min)');
   }
 
+  /**
+   * Build the list of SSH targets the event collector iterates over.
+   * Includes all enabled DB servers, plus the Guardian host self-target
+   * IFF HOST_SSH_KEY_PATH is configured (otherwise SSH would always fail
+   * and produce log spam every 2 minutes). Exposed as a public static
+   * for unit testing.
+   */
+  static buildCollectionTargets(
+    servers: ServerInfo[]
+  ): Array<{ id: number; name: string; target: SSHTarget }> {
+    const fromDb = servers.map(s => ({
+      id: s.id,
+      name: s.name,
+      target: ServerService.toSSHTarget(s),
+    }));
+    const guardianHost = HostSecurityService.getDefaultTarget();
+    if (!guardianHost) return fromDb;
+    return [
+      ...fromDb,
+      { id: guardianHost.id, name: guardianHost.name, target: guardianHost },
+    ];
+  }
+
   static async collect(): Promise<void> {
     if (this.running) return;
     this.running = true;
@@ -76,12 +100,9 @@ export class EventCollectorWorker {
       let totalEvents = 0;
       const newIncidentResults: CorrelationResult[] = [];
 
-      // Also monitor Guardian's own host (id=0, name='local') — not registered in DB
-      const guardianHost = HostSecurityService.getDefaultTarget();
-      const allTargets: Array<{ id: number; name: string; target: typeof guardianHost }> = [
-        ...servers.map(s => ({ id: s.id, name: s.name, target: ServerService.toSSHTarget(s) })),
-        { id: guardianHost.id, name: guardianHost.name, target: guardianHost },
-      ];
+      // Also monitor Guardian's own host (id=0, name='local') — opt-in via
+      // HOST_SSH_KEY_PATH; see buildCollectionTargets() for details.
+      const allTargets = this.buildCollectionTargets(servers);
 
       for (const { id: serverId, name: serverName, target } of allTargets) {
         const [authLogs, ufwLogs, dockerEvents, suspiciousProcs, networkAnomaly, sudoLogs, dnsLogs, syslogLogs, proxyLogs, packageLogs, systemdLogs, auditLogs, containerProcs, loginSessions, failedLogins, currentSessions, kernelEntries, appLogs, diskEntries, rebootEntries] = await Promise.all([

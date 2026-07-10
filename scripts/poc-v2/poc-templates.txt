@@ -1,0 +1,7 @@
+# PoC v2 templates — built 2026-05-31T16:12:52-03:00
+# format: <sha256>  <template>
+
+3c0682b6dc926a36abbeb9ce6c952a6e25cbc8caf1e53f592ce01b8ea1a2192a  sudo journalctl -u ssh -u sshd --since '%ISO_DATETIME%' --no-pager -o short-iso 2>/dev/null || sudo tail -n %LINES% /var/log/auth.log 2>/dev/null || echo ''
+5cc6be2d9667d93f6577cdad6a53a72bcff6b6eac300e7e0685512bdeaff5d32  sudo tail -n %LINES% /var/log/ufw.log 2>/dev/null || echo ''
+16044b22d56ed3c05d6fc832b23c727471e95b6823533a8836e301616ca87917  journalctl _COMM=sudo --since '%MINUTES% min ago' --no-pager -o short-iso 2>/dev/null || grep -i sudo /var/log/auth.log | tail -n %LINES%
+f5bd58b5caf3f4c46fed1245a7ba2ad30cc43aebf81e79c3e9451eb65a586ca1  dmesg --time-format iso 2>/dev/null | tail -n %LINES% && echo "---SSEP---" && journalctl -p err --since "%MINUTES% min ago" --no-pager -o short-iso 2>/dev/null | tail -n %LINES% && echo "---SSEP---" && systemctl list-units --failed --no-legend --no-pager 2>/dev/null

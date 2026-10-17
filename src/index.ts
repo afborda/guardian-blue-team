@@ -24,6 +24,7 @@ import { ContainerSecurityWorker } from './workers/container-security.worker.js'
 import { IpThreatScorerWorker } from './workers/ip-threat-scorer.worker.js';
 import { LegacyMigrationWorker } from './workers/legacy-migration.worker.js';
 import { GuardianShellSyncWorker } from './workers/guardian-shell-sync.worker.js';
+import { WeeklyAuditWorker } from './workers/weekly-audit.worker.js';
 import { ThreatIntelManager } from './threat-intel/manager.js';
 import { PlaybookRegistry } from './playbooks/registry.js';
 import { loadTrustedEntities } from './pipeline/detector.js';
@@ -302,6 +303,7 @@ async function start(): Promise<void> {
   MetricsRetentionWorker.start();
   IntelligenceWorker.start();
   DailyReportWorker.start();
+  WeeklyAuditWorker.start();
   VulnScannerWorker.start();
   BlockCleanupWorker.start();
   BlockPropagationWorker.start();
@@ -337,6 +339,7 @@ async function shutdown(signal: string): Promise<void> {
 
   await Promise.allSettled([
     DailyReportWorker.stop(),
+    WeeklyAuditWorker.stop(),
     EventCollectorWorker.stop(),
     FIMWorker.stop(),
     ScoreCalculatorWorker.stop(),

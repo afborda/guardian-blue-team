@@ -31,8 +31,11 @@ const MARK = '<<<SEP>>>';
 
 // ── Limiares declarados (ver /AGENTS.md §7) ─────────────────────────────────
 const BABARATO_MAX_AGE_HOURS = 26; // cron 03:00 UTC; espelha src/collectors/backup-collector.ts
-const BABARATO_MIN_SIZE_BYTES = 1_000_000_000;
-// Offsite do babarato: mecânica de sincronização ainda "a confirmar" (ver /AGENTS.md §5).
+// Diário leve (zstd + GPG, sem ingested_messages): ~40-120 MB.
+const BABARATO_MIN_SIZE_BYTES = 10_000_000;
+// Full mensal (cron dia 1, 03:20 UTC) em /backup/monthly — 45d tolera um mês perdido.
+const BABARATO_FULL_MAX_AGE_DAYS = 45;
+// Offsite do babarato: backup_offsite.sh (diário, 04:10 UTC) copia para o Storage Box.
 // Tolerância de 8 dias para não gerar ruído semanal e ainda pegar sincronização parada.
 const BABARATO_OFFSITE_MAX_AGE_HOURS = 8 * 24;
 const VERBO_MAX_AGE_HOURS = 26; // cron 05,13,21 UTC (cadência de 8h)
@@ -77,13 +80,15 @@ const CMD_USAGE = [
 const CMD_VARBACKUPS = `ls -1A /var/backups`;
 
 const CMD_BACKUPS = [
-  // babarato local: último arquivo + idade/tamanho (mesma lógica do backup-collector.ts)
-  `timeout 30 find /backup/daily -maxdepth 1 -name 'babarato-*.sql.gz.gpg' -printf '%T@ %s %f\\n' 2>/dev/null | sort -rn | head -1`,
+  // babarato local: último arquivo do diário leve (novo .sql.zst.gpg ou legado .gz.gpg)
+  `timeout 30 find /backup/daily -maxdepth 1 \\( -name 'babarato-*.sql.zst.gpg' -o -name 'babarato-*.sql.gz.gpg' \\) -printf '%T@ %s %f\\n' 2>/dev/null | sort -rn | head -1`,
+  // babarato full mensal (cron dia 1 03:20 UTC): último arquivo de /backup/monthly
+  `timeout 30 find /backup/monthly -maxdepth 1 -name 'babarato-full-*.sql.zst.gpg' -printf '%T@ %s %f\\n' 2>/dev/null | sort -rn | head -1`,
   // staging do verbo: deve estar vazio (só transita durante o backup)
   `timeout 30 find /backup/verbo-connect-staging -mindepth 1 -maxdepth 1 -printf '%f\\n' 2>/dev/null | head -5`,
   // verbo offsite: último arquivo
   `timeout 30 find /var/media/jellyfin/bancoVerboConnect -maxdepth 1 -name 'verbo-connect-*.db' -printf '%T@ %s %f\\n' 2>/dev/null | sort -rn | head -1`,
-  // babarato offsite: arquivos (mecânica ainda a confirmar — reportar estado, não julgar)
+  // babarato offsite (backup_offsite.sh → Storage Box): arquivos; reportar estado (pruning é do script)
   `timeout 30 find /var/media/jellyfin/babarato-backups -maxdepth 1 -type f -printf '%T@ %s %f\\n' 2>/dev/null | sort -rn | head -10`,
   // Storage Box montado?
   `findmnt -n -o SOURCE --target /var/media/jellyfin 2>/dev/null || echo NOTMOUNTED`,
@@ -412,7 +417,7 @@ export class WeeklyAuditWorker {
       failures++;
       lines.push(' • ⚠️ coleta falhou');
     } else {
-      const [dailySeg, stagingSeg, verboSeg, babaSbSeg, mountSeg] = splitSegments(backupsOut, [MARK, MARK, MARK, MARK]);
+      const [dailySeg, fullSeg, stagingSeg, verboSeg, babaSbSeg, mountSeg] = splitSegments(backupsOut, [MARK, MARK, MARK, MARK, MARK]);
 
       const daily = parseBackupLine(dailySeg);
       if (!daily) {
@@ -420,7 +425,17 @@ export class WeeklyAuditWorker {
       } else {
         const ok = daily.ageHours <= BABARATO_MAX_AGE_HOURS && daily.sizeBytes >= BABARATO_MIN_SIZE_BYTES;
         lines.push(
-          ` • babarato local: <code>${esc(daily.name)}</code> (${fmtAgeHours(daily.ageHours)}, ${fmtBytes(daily.sizeBytes)}) ${ok ? '✅' : '⚠️ fora do esperado (<26h, >1G)'}`,
+          ` • babarato local: <code>${esc(daily.name)}</code> (${fmtAgeHours(daily.ageHours)}, ${fmtBytes(daily.sizeBytes)}) ${ok ? '✅' : '⚠️ fora do esperado (<26h, >10M)'}`,
+        );
+      }
+
+      const full = parseBackupLine(fullSeg);
+      if (!full) {
+        lines.push(' • ⚠️ babarato full mensal: nenhum arquivo em /backup/monthly');
+      } else {
+        const ok = full.ageHours <= BABARATO_FULL_MAX_AGE_DAYS * 24;
+        lines.push(
+          ` • babarato full mensal: <code>${esc(full.name)}</code> (${fmtAgeHours(full.ageHours)}, ${fmtBytes(full.sizeBytes)}) ${ok ? '✅' : '⚠️ fora do esperado (<45d)'}`,
         );
       }
 

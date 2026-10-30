@@ -3,6 +3,7 @@ import type { RawLogEntry } from './log-collector.js';
 import { CONSTANTS } from '../config/constants.js';
 import { config } from '../config/environment.js';
 import { logger } from '../utils/logger.js';
+import { createHash } from 'node:crypto';
 
 const DOCKER_TS = /^(\d{4}-\d{2}-\d{2}T[^\s]+)\s(.*)$/;
 const MAX_MATCHES_PER_CONTAINER = 50;
@@ -30,6 +31,24 @@ export function isSuspiciousContainerLine(line: string): boolean {
 }
 
 export class ContainerLogsCollector {
+  private static seen = new Map<string, number>();
+  private static readonly SEEN_TTL_MS = 10 * 60 * 1000;
+
+  private static alreadyEmitted(serverId: number, container: string, line: string): boolean {
+    const key = `${serverId}:${container}:${createHash('sha1').update(line).digest('hex')}`;
+    const last = this.seen.get(key) ?? 0;
+    if (Date.now() - last < this.SEEN_TTL_MS) return true;
+    this.seen.set(key, Date.now());
+
+    if (this.seen.size > 5_000) {
+      const cutoff = Date.now() - this.SEEN_TTL_MS;
+      for (const [seenKey, seenAt] of this.seen) {
+        if (seenAt < cutoff) this.seen.delete(seenKey);
+      }
+    }
+    return false;
+  }
+
   static async collect(target: SSHTarget): Promise<RawLogEntry[]> {
     const wanted = new Set(config.collection?.logContainers ?? []);
     if (wanted.size === 0) return [];
@@ -58,6 +77,7 @@ export class ContainerLogsCollector {
       let matched = 0;
       for (const raw of logs.stdout.split('\n')) {
         if (!raw.trim() || !isSuspiciousContainerLine(raw)) continue;
+        if (this.alreadyEmitted(target.id, container.name, raw)) continue;
         const parsed = parseDockerLogLine(raw);
         entries.push({
           serverId: target.id,

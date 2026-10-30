@@ -148,7 +148,7 @@ export class EgressCollector {
   static async collect(target: SSHTarget): Promise<RawLogEntry[]> {
     const list = await SSHCollector.run(
       target,
-      "docker ps --format '{{.ID}}\\t{{.Names}}' 2>/dev/null | head -40",
+      "docker ps --format '{{.ID}} {{.Names}}' 2>/dev/null | head -40",
       10_000,
     );
     logger.info({
@@ -160,8 +160,8 @@ export class EgressCollector {
     if (!list.success || !list.stdout.trim()) return [];
 
     const containers = list.stdout.trim().split('\n').map(line => {
-      const [id, name] = line.split('\t');
-      return { id: id?.trim() ?? '', name: name?.trim() ?? '' };
+      const [id, ...nameParts] = line.trim().split(/\s+/);
+      return { id: id ?? '', name: nameParts.join(' ') };
     }).filter(item => item.id.length >= 12 && item.name.length > 0);
 
     const entries: RawLogEntry[] = [];

@@ -99,7 +99,7 @@ HASHES["0b9c0898fbc24ca15b72f9cf6f79a9a746b3a90d938a638c259760966c3c0cb6"]='sudo
 HASHES["e3fff8bcf665acbbb226799cbb80d8bf1a165cfbd626486a1b9ebbe2a141a64a"]='sudo iptables -I GUARDIAN-INPUT -s %IP% -m limit --limit %LINES%/sec --limit-burst %LINES% -j ACCEPT'
 HASHES["82ab5d49358493adf04db0cca5468b5c370f51d92d9af98b2b0b47e628ff1d0e"]='sudo iptables -A GUARDIAN-INPUT -s %IP% -j DROP'
 HASHES["0b9c0898fbc24ca15b72f9cf6f79a9a746b3a90d938a638c259760966c3c0cb6"]='sudo iptables -D GUARDIAN-INPUT -s %IP% -j DROP'
-HASHES["6e8360bbafd152e3c0adfeb944c30752aef437d8eeac82078ae88570e7de3b05"]='docker ps --format '\''{{.ID}}\t{{.Names}}'\'' 2>/dev/null | head -40'
+HASHES["5c0e0b003b0f62c76febef076234a29e1b3ee6e07192a746a182d98e96d32624"]='docker ps --format '\''{{.ID}} {{.Names}}'\'' 2>/dev/null | head -40'
 HASHES["e21616bfb3d8dc22c95728e5487f345378f42e4940ae5b162b634c2eb5bc173b"]='docker inspect --format '\''{{.State.Pid}}|{{.HostConfig.NetworkMode}}'\'' %CONTAINER_ID% 2>/dev/null'
 HASHES["10be3741e8d3a3c3c549137e7661f15a120d846fac5816be7cdba38487492cbc"]='sudo nsenter -t %PID% -n ss -tnp state syn-sent 2>/dev/null | head -200'
 # END_ALLOWLIST

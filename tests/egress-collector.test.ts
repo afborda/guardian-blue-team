@@ -8,10 +8,10 @@ import { EventDetector } from '../src/pipeline/detector.js';
 import { EventNormalizer } from '../src/pipeline/normalizer.js';
 import type { NormalizedEvent } from '../src/pipeline/normalizer.js';
 
-const SS_OUTPUT = `State Recv-Q Send-Q Local Address:Port Peer Address:Port Process
-SYN-SENT 0 1 172.18.0.5:40000 1.2.3.4:80 users:(("next-server",pid=123,fd=20))
-SYN-SENT 0 1 172.18.0.5:40001 5.6.7.8:443 users:(("next-server",pid=123,fd=21))
-SYN-SENT 0 1 172.18.0.5:40002 10.0.0.9:5432 users:(("node",pid=999,fd=22))
+const SS_OUTPUT = `Recv-Q Send-Q Local Address:Port Peer Address:Port Process
+0 1 172.18.0.5:40000 1.2.3.4:80 users:(("next-server",pid=123,fd=20))
+0 1 172.18.0.5:40001 5.6.7.8:443 users:(("next-server",pid=123,fd=21))
+0 1 172.18.0.5:40002 10.0.0.9:5432 users:(("node",pid=999,fd=22))
 `;
 
 function egressEvent(metadata: Record<string, unknown>): NormalizedEvent {

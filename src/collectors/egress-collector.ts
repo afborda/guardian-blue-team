@@ -20,7 +20,9 @@ export interface EgressSummary {
   sample: string[];
 }
 
-const SYN_LINE = /SYN-SENT\s+\d+\s+\d+\s+\S+\s+(\S+)\s+users:\(\("([^"]+)",pid=(\d+)/;
+// `ss` omite a coluna State quando o filtro `state syn-sent` é usado;
+// por isso ancoramos no peer imediatamente antes de `users:((`.
+const SYN_LINE = /\s(\S+)\s+users:\(\("([^"]+)",pid=(\d+)/;
 
 function splitHostPort(value: string): { host: string; port: number } | null {
   const match = value.match(/^\[?([^\]]+?)\]?:(\d+)$/);

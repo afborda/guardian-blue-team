@@ -166,7 +166,7 @@ export class EgressCollector {
   static async collect(target: SSHTarget): Promise<RawLogEntry[]> {
     const list = await SSHCollector.run(
       target,
-      "docker ps --format '{{.ID}} {{.Names}}' 2>/dev/null | head -40",
+      "docker ps --format '{{.ID}} {{.Names}}' 2>/dev/null | head -200",
       10_000,
     );
     logger.debug({

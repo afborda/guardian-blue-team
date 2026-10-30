@@ -78,6 +78,11 @@ describe('egress collector', () => {
     });
   });
 
+  it('ignores a container with only inbound established connections', () => {
+    const inbound = 'ESTAB 0 0 172.18.0.5:80 9.9.9.9:55555 users:(("nginx",pid=321,fd=1))';
+    expect(summarizeContainer('web', parseSockets(inbound))).toBeNull();
+  });
+
   it('normalizes the aggregate line into a container_egress event', () => {
     const [event] = EventNormalizer.normalizeBatch([{
       serverId: 1,

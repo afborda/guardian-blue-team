@@ -112,6 +112,10 @@ export function summarizeContainer(container: string, connections: SocketConnect
     }
   }
 
+  // Um container com apenas conexões inbound (ex.: servidor web atendendo)
+  // não é egress: não gera evento nem log a cada ciclo.
+  if (synSent === 0 && establishedWeb === 0) return null;
+
   return {
     container,
     synSent,

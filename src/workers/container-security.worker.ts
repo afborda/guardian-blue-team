@@ -88,7 +88,9 @@ export class ContainerSecurityWorker {
       const servers = await ServerService.getEnabled();
       for (const server of servers) {
         const target = ServerService.toSSHTarget(server);
+        logger.info({ server: server.name }, 'Egress collector: iniciando ciclo');
         const rawLogs = await EgressCollector.collect(target);
+        logger.info({ server: server.name, entries: rawLogs.length }, 'Egress collector: ciclo concluído');
         if (rawLogs.length === 0) continue;
         await this.processThroughPipeline(rawLogs);
       }

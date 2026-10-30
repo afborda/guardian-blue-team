@@ -2,6 +2,7 @@ import type { NormalizedEvent } from './normalizer.js';
 import { logger } from '../utils/logger.js';
 import { CONSTANTS } from '../config/constants.js';
 import { db } from '../database/connection.js';
+import { config } from '../config/environment.js';
 import { trustedEntities } from '../database/schema.js';
 import { isPrivateIp } from '../utils/sanitize.js';
 
@@ -17,8 +18,18 @@ export interface DetectionRule {
 const TRUSTED_IPS = new Set(CONSTANTS.trustedIps);
 
 function isTrustedIp(ip: string): boolean {
-  if (TRUSTED_IPS.has(ip)) return true;
-  return isPrivateIp(ip);
+  // Allowlist explícita (env/DB). IP privado não é "confiável" por si só.
+  return TRUSTED_IPS.has(ip);
+}
+
+/**
+ * Logins internos (admin/workstation) continuam tratados como rotina por
+ * padrão. Brute force e movimento lateral NÃO usam esta função: um host
+ * interno comprometido precisa gerar alerta.
+ */
+function isPrivateLoginTrusted(ip: string): boolean {
+  const trustPrivate = config.security?.trustPrivateIps ?? true;
+  return trustPrivate && isPrivateIp(ip);
 }
 
 const TRUSTED_FINGERPRINTS = new Set(CONSTANTS.trustedFingerprints);
@@ -180,7 +191,7 @@ const DETECTION_RULES: DetectionRule[] = [
     condition: (_events, current) => {
       if (current.eventType !== 'ssh_login_success') return false;
       if (!current.sourceIp) return false;
-      if (isTrustedIp(current.sourceIp)) return false;
+      if (isTrustedIp(current.sourceIp) || isPrivateLoginTrusted(current.sourceIp)) return false;
       if (isTrustedFingerprint(current)) return false;
       return true;
     },
@@ -202,7 +213,7 @@ const DETECTION_RULES: DetectionRule[] = [
     description: 'SSH login between 00:00 and 06:00 BRT from non-trusted IP',
     condition: (_events, current) => {
       if (current.eventType !== 'ssh_login_success') return false;
-      if (!current.sourceIp || isTrustedIp(current.sourceIp)) return false;
+      if (!current.sourceIp || isTrustedIp(current.sourceIp) || isPrivateLoginTrusted(current.sourceIp)) return false;
       if (current.userName && KNOWN_USERS.has(current.userName)) return false;
       const brt = new Date(current.timestamp.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
       const hour = brt.getHours();
@@ -321,7 +332,7 @@ const DETECTION_RULES: DetectionRule[] = [
     condition: (events, current) => {
       if (current.eventType !== 'proxy_scanner_detected') return false;
       if (!current.sourceIp) return false;
-      if (isTrustedIp(current.sourceIp)) return false;
+      if (isTrustedIp(current.sourceIp) || isPrivateLoginTrusted(current.sourceIp)) return false;
 
       const count = events.filter(e =>
         e.sourceIp === current.sourceIp &&
@@ -495,7 +506,7 @@ const DETECTION_RULES: DetectionRule[] = [
     description: 'Interactive wtmp session started between 00:00–06:00 BRT from non-trusted IP',
     condition: (_events, current) => {
       if (current.eventType !== 'interactive_session_active' && current.eventType !== 'interactive_session_history') return false;
-      if (!current.sourceIp || isTrustedIp(current.sourceIp)) return false;
+      if (!current.sourceIp || isTrustedIp(current.sourceIp) || isPrivateLoginTrusted(current.sourceIp)) return false;
       if (current.userName && KNOWN_USERS.has(current.userName)) return false;
       const brt = new Date(current.timestamp.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
       const hour = brt.getHours();

@@ -28,6 +28,8 @@ const envSchema = z.object({
   TELEGRAM_TEST_CHAT_ID: z.string().optional(),
   // Containers cujo stdout/stderr deve ser coletado (separados por vírgula).
   GUARDIAN_LOG_CONTAINERS: z.string().optional(),
+  // Logins de IP privado continuam rotina por padrão; brute force/lateral não.
+  TRUST_PRIVATE_IPS: z.string().default('true'),
 
   // Base URL for webhook registration
   GUARDIAN_BASE_URL: z.string().optional(),
@@ -210,6 +212,7 @@ export const config = {
   security: {
     trustedIps: env.TRUSTED_IPS.split(',').map(s => s.trim()).filter(Boolean),
     trustedFingerprints: env.TRUSTED_FINGERPRINTS.split(',').map(s => s.trim()).filter(Boolean),
+    trustPrivateIps: env.TRUST_PRIVATE_IPS !== 'false',
   },
 
   threatIntel: {

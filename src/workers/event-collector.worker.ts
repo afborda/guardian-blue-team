@@ -25,6 +25,7 @@ import { enrichWithMarkovScore } from '../intelligence/markov-enricher.js';
 import { EventCorrelator, type CorrelationResult } from '../pipeline/correlator.js';
 import { EventIngestor } from '../pipeline/ingestor.js';
 import { IncidentAlertService } from '../services/incident-alert.service.js';
+import { shouldAutoEnforceIncident } from '../services/incident-policy.js';
 import { PlaybookRegistry } from '../playbooks/registry.js';
 import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
 import { AIBlockAdvisor } from '../services/ai-block-advisor.service.js';
@@ -230,6 +231,10 @@ export class EventCollectorWorker {
       const servers = await ServerService.getEnabled();
 
       for (const incident of openIncidents) {
+        if (!shouldAutoEnforceIncident(incident.category)) {
+          logger.debug({ incidentId: incident.id, category: incident.category }, 'Auto-enforce skipped for category');
+          continue;
+        }
         const ips = (incident.sourceIps ?? []) as string[];
         if (ips.length === 0) continue;
 

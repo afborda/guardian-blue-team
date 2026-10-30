@@ -963,6 +963,8 @@ export class EventNormalizer {
         distinctPorts: number('ports'),
         webDst: number('web'),
         rfc1918Dst: number('rfc'),
+        establishedWeb: number('est'),
+        establishedDst: number('estdst'),
         sample,
       },
     };

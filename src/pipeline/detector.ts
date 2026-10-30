@@ -428,9 +428,11 @@ const DETECTION_RULES: DetectionRule[] = [
       const distinctDst = Number(current.metadata?.distinctDst ?? 0);
       const rfc1918 = Number(current.metadata?.rfc1918Dst ?? 0);
       const web = Number(current.metadata?.webDst ?? 0);
+      const establishedDst = Number(current.metadata?.establishedDst ?? 0);
       const webRatio = distinctDst > 0 ? web / distinctDst : 0;
 
       return rfc1918 >= CONSTANTS.container.egressRfc1918Threshold
+        || establishedDst >= CONSTANTS.container.egressEstablishedDstThreshold
         || (synSent >= CONSTANTS.container.egressSynThreshold && distinctDst >= 5)
         || (distinctDst >= CONSTANTS.container.egressDistinctDstThreshold
           && webRatio >= CONSTANTS.container.egressWebRatio);

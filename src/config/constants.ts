@@ -163,6 +163,7 @@ export const CONSTANTS = {
     egressDistinctDstThreshold: 20,
     egressRfc1918Threshold: 5,
     egressWebRatio: 0.8,
+    egressEstablishedDstThreshold: 20,
     filesystemIntervalMs: 30 * 60 * 1000,   // 30 min — heavy, cached
     configAuditIntervalMs: 60 * 60 * 1000,  // 1h — very light
     imageScanIntervalMs: 6 * 60 * 60 * 1000, // 6h — heavy, separate worker

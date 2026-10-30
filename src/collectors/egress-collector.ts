@@ -150,6 +150,14 @@ export function summarizeEgress(
     .sort((a, b) => (b.distinctDst + b.establishedDst) - (a.distinctDst + a.establishedDst));
 }
 
+/** Evita gravar telemetria de conexões isoladas/normais a cada ciclo. */
+export function isInterestingEgress(summary: EgressSummary): boolean {
+  return summary.synSent >= 5
+    || summary.establishedWeb >= 5
+    || summary.distinctDst >= 5
+    || summary.rfc1918 >= 3;
+}
+
 export class EgressCollector {
   /**
    * Coleta, por container, sockets SYN_SENT e established no netns e agrega
@@ -200,7 +208,7 @@ export class EgressCollector {
       if (!sockets.success || !sockets.stdout.trim()) continue;
 
       const summary = summarizeContainer(container.name, parseSockets(sockets.stdout));
-      if (!summary) continue;
+      if (!summary || !isInterestingEgress(summary)) continue;
 
       entries.push({
         serverId: target.id,

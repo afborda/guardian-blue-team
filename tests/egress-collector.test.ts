@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   parseSockets,
   parseSynSent,
+  isInterestingEgress,
   summarizeContainer,
   summarizeEgress,
 } from '../src/collectors/egress-collector.js';
@@ -76,6 +77,25 @@ describe('egress collector', () => {
       establishedWeb: 2,
       establishedDst: 2,
     });
+  });
+
+  it('filters out normal single connections', () => {
+    const normal = summarizeContainer('app', parseSockets(
+      'ESTAB 0 0 172.18.0.5:50000 1.1.1.1:443 users:(("node",pid=1,fd=1))',
+    ));
+    expect(normal && isInterestingEgress(normal)).toBe(false);
+  });
+
+  it('drops a single SYN and keeps a small fan-out', () => {
+    const single = summarizeContainer('app', parseSockets(
+      'SYN-SENT 0 1 172.18.0.5:40000 1.2.3.4:80 users:(("node",pid=1,fd=1))',
+    ));
+    expect(single && isInterestingEgress(single)).toBe(false);
+
+    const rows = [1, 2, 3, 4, 5].map(port =>
+      `SYN-SENT 0 1 172.18.0.5:${40000 + port} 1.2.3.${port}:80 users:(("node",pid=1,fd=${port}))`);
+    const fanout = summarizeContainer('app', parseSockets(rows.join('\n')));
+    expect(fanout && isInterestingEgress(fanout)).toBe(true);
   });
 
   it('ignores a container with only inbound established connections', () => {

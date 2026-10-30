@@ -104,6 +104,19 @@ describe('egress collector', () => {
     expect(detected.some(event => event.eventType === 'container_egress_scan')).toBe(true);
   });
 
+  it('does not fire on many retries to a single destination', () => {
+    const detected = EventDetector.detect([egressEvent({
+      containerName: 'synthfin-web',
+      synSent: 80,
+      distinctDst: 1,
+      distinctPorts: 1,
+      webDst: 1,
+      rfc1918Dst: 0,
+    })]);
+
+    expect(detected.some(event => event.eventType === 'container_egress_scan')).toBe(false);
+  });
+
   it('stays quiet for a handful of legitimate connections', () => {
     const detected = EventDetector.detect([egressEvent({
       containerName: 'synthfin-web',

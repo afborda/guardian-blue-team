@@ -44,6 +44,8 @@ export class EventCollectorWorker {
   private static intervalId: NodeJS.Timeout | null = null;
   private static readonly INTERVAL_MS = 2 * 60 * 1000;
   private static running = false;
+  private static unexpectedSeen = new Map<string, number>();
+  private static readonly UNEXPECTED_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
   static start(): void {
     if (this.intervalId) return;
@@ -467,6 +469,10 @@ export class EventCollectorWorker {
       const unexpected = active.filter(name => !known.has(name));
 
       for (const containerName of unexpected) {
+        const seenKey = `${serverId}:${containerName}`;
+        const lastSeen = this.unexpectedSeen.get(seenKey) ?? 0;
+        if (Date.now() - lastSeen < this.UNEXPECTED_COOLDOWN_MS) continue;
+        this.unexpectedSeen.set(seenKey, Date.now());
         logger.warn({ serverName, containerName }, 'Unexpected container detected');
         results.push({
           serverId,

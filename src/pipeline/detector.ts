@@ -421,7 +421,7 @@ const DETECTION_RULES: DetectionRule[] = [
       const webRatio = distinctDst > 0 ? web / distinctDst : 0;
 
       return rfc1918 >= CONSTANTS.container.egressRfc1918Threshold
-        || synSent >= CONSTANTS.container.egressSynThreshold
+        || (synSent >= CONSTANTS.container.egressSynThreshold && distinctDst >= 5)
         || (distinctDst >= CONSTANTS.container.egressDistinctDstThreshold
           && webRatio >= CONSTANTS.container.egressWebRatio);
     },

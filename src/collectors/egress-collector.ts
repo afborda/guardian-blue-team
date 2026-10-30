@@ -1,6 +1,7 @@
 import { SSHCollector, type SSHTarget } from './ssh-collector.js';
 import type { RawLogEntry } from './log-collector.js';
 import { isPrivateIp } from '../utils/sanitize.js';
+import { logger } from '../utils/logger.js';
 
 export interface SynSentConnection {
   pid: number;
@@ -160,11 +161,15 @@ export class EgressCollector {
     for (const container of containers) {
       const inspect = await SSHCollector.run(
         target,
-        `docker inspect --format '{{.State.Pid}}' ${container.id} 2>/dev/null`,
+        `docker inspect --format '{{.State.Pid}}|{{.HostConfig.NetworkMode}}' ${container.id} 2>/dev/null`,
         10_000,
       );
-      const pid = Number.parseInt(inspect.stdout.trim(), 10);
+      const [pidRaw, networkMode = ''] = inspect.stdout.trim().split('|');
+      const pid = Number.parseInt(pidRaw ?? '', 10);
       if (!inspect.success || !Number.isFinite(pid) || pid <= 0) continue;
+      // Container em host network compartilha o netns do host; os sockets não
+      // são atribuíveis só a ele e gerariam falso positivo.
+      if (networkMode === 'host') continue;
 
       const syn = await SSHCollector.run(
         target,
@@ -193,7 +198,12 @@ export class EgressCollector {
       });
     }
 
+    if (entries.length > 0) {
+      logger.info({ server: target.name, containers: entries.length }, 'Egress collector found SYN_SENT fan-out');
+    } else {
+      logger.debug({ server: target.name, containers: containers.length }, 'Egress collector cycle: no SYN_SENT');
+    }
+
     return entries;
   }
-
 }

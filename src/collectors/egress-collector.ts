@@ -151,6 +151,12 @@ export class EgressCollector {
       "docker ps --format '{{.ID}}\\t{{.Names}}' 2>/dev/null | head -40",
       10_000,
     );
+    logger.info({
+      server: target.name,
+      success: list.success,
+      stdoutLen: list.stdout.length,
+      error: list.error,
+    }, 'Egress collector: resultado do docker ps');
     if (!list.success || !list.stdout.trim()) return [];
 
     const containers = list.stdout.trim().split('\n').map(line => {

@@ -1,6 +1,7 @@
 import { ServerService } from '../services/server.service.js';
 import { ServerUpgradeService } from '../services/server-upgrade.service.js';
 import { config } from '../config/environment.js';
+import { telegram } from '../telegram/messaging/sender.js';
 import { logger } from '../utils/logger.js';
 import type { ServerInfo } from '../services/server.service.js';
 
@@ -86,9 +87,5 @@ function formatFailedSteps(steps: { name: string; status: string; detail?: strin
 }
 
 async function notify(text: string): Promise<void> {
-  await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: config.telegram.chatId, text, parse_mode: 'HTML' }),
-  }).catch(err => logger.warn({ err }, 'LegacyMigrationWorker: Telegram notify failed'));
+  await telegram.sendText(text).catch(err => logger.warn({ err }, 'LegacyMigrationWorker: Telegram notify failed'));
 }

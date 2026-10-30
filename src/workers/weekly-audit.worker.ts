@@ -22,6 +22,8 @@
 import { ServerService } from '../services/server.service.js';
 import { SSHCollector, type SSHTarget } from '../collectors/ssh-collector.js';
 import { NotifierManager } from '../plugins/notifier-manager.js';
+import { stripHtml } from '../telegram/messaging/style.js';
+import type { MessageSpec } from '../telegram/messaging/types.js';
 import { logger } from '../utils/logger.js';
 
 const AUDIT_SERVER_NAME = 'hetzner-prod';
@@ -304,23 +306,33 @@ export class WeeklyAuditWorker {
     const target = ServerService.toSSHTarget(server);
 
     const { body, warnings } = await this.buildReport(target);
-    const finalBody = options.test ? `🧪 <b>[TESTE]</b> (disparo manual)\n${body}` : body;
     const title = options.test
-      ? `[teste] Auditoria Semanal — ${AUDIT_SERVER_NAME}`
-      : `Auditoria Semanal — ${AUDIT_SERVER_NAME}`;
+      ? `Auditoria semanal (teste) — ${AUDIT_SERVER_NAME}`
+      : `Auditoria semanal — ${AUDIT_SERVER_NAME}`;
 
     if (options.dryRun) {
-      // eslint-disable-next-line no-console
-      console.log(`--- ${title} ---\n${finalBody}\n--- (${finalBody.length} chars) ---`);
+      console.log(`--- ${title} ---\n${body}\n--- (${body.length} chars) ---`);
       return;
     }
 
-    await NotifierManager.notify({
-      title,
-      body: finalBody,
+    const details = body.split('\n').map(stripHtml);
+    const spec: MessageSpec = {
+      kind: 'report',
       severity: warnings > 0 ? 'medium' : 'low',
-      metadata: { type: 'weekly-audit' },
-    });
+      title,
+      lead: `Auditoria semanal de ${AUDIT_SERVER_NAME}, somente leitura.`,
+      action: {
+        required: warnings > 0,
+        title: 'Precisa de você',
+        steps: warnings > 0
+          ? [`${warnings} aviso(s) encontrados. Veja os detalhes abaixo.`]
+          : ['Nenhum aviso encontrado.'],
+      },
+      sections: [{ title: 'Detalhes', lines: details }],
+      footer: options.test ? 'Disparo manual de teste.' : undefined,
+    };
+
+    await NotifierManager.notifySpec(spec);
     logger.info({ warnings, test: !!options.test }, 'Weekly audit sent');
   }
 

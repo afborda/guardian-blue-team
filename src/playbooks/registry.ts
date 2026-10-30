@@ -212,6 +212,16 @@ const PLAYBOOKS: PlaybookDefinition[] = [
     requiresApproval: false,
   },
   {
+    name: 'container-egress-containment',
+    description: 'Responde a scan de saída de container — isola a rede e alerta sem reiniciar',
+    trigger: { eventType: 'container_egress_scan' },
+    steps: [
+      { action: 'disconnect-container' },
+      { action: 'notify', params: { severity: 'critical' } },
+    ],
+    requiresApproval: false,
+  },
+  {
     name: 'container-fs-tampering-response',
     description: 'Alerts on suspicious filesystem changes inside container',
     trigger: { eventType: 'container_fs_tampering' },
@@ -240,6 +250,47 @@ const PLAYBOOKS: PlaybookDefinition[] = [
       { action: 'notify', params: { severity: 'high', message: '&#128065; EXECUCAO SUSPEITA EM CONTAINER\n\nProcesso iniciado de /tmp ou /dev/shm — tipico de exploit que baixa e executa payload. Guardian matou o processo automaticamente.' } },
     ],
     requiresApproval: false,
+  },
+  // ─── Scanner / Bot Blocking ─────────────────────────────────────────────────
+  {
+    name: 'proxy-scanner-block',
+    description: 'Blocks IPs that trigger proxy_scanner_burst — bots scanning for .env, .git, credentials',
+    trigger: { eventType: 'proxy_scanner_burst', threshold: 1, window: '10m' },
+    steps: [
+      { action: 'enrich-ip' },
+      { action: 'block-ip', params: { duration: 'permanent' } },
+      { action: 'notify', params: { severity: 'medium', message: '🤖 SCANNER BLOQUEADO\n\nIP detectado varrendo rotas sensíveis (.env, .git, credenciais). Guardian bloqueou permanentemente.' } },
+    ],
+    requiresApproval: false,
+  },
+  // ─── Backup Health Playbooks ────────────────────────────────────────────────
+  {
+    name: 'backup-missing-alert',
+    description: 'Alerts when the daily backup file is not found within expected window',
+    trigger: { eventType: 'backup_missing' },
+    steps: [
+      { action: 'notify', params: { severity: 'high', message: '💾 BACKUP NÃO ENCONTRADO\n\nO arquivo de backup diário não foi criado no horário esperado (03h). Verifique o cron e o script backup_prod.sh imediatamente.' } },
+    ],
+    requiresApproval: false,
+  },
+  {
+    name: 'backup-too-small-alert',
+    description: 'Alerts when the daily backup file is suspiciously small',
+    trigger: { eventType: 'backup_too_small' },
+    steps: [
+      { action: 'notify', params: { severity: 'high', message: '💾 BACKUP SUSPEITO — ARQUIVO MUITO PEQUENO\n\nO backup diário foi criado mas está com tamanho abaixo do mínimo esperado. Possível dump corrompido ou vazio. Verifique antes de descartar o backup anterior.' } },
+    ],
+    requiresApproval: false,
+  },
+  // ─── Container Inventory Playbooks ─────────────────────────────────────────
+  {
+    name: 'unexpected-container-alert',
+    description: 'Alerts when a container running is not in the known baseline',
+    trigger: { eventType: 'unexpected_container' },
+    steps: [
+      { action: 'notify', params: { severity: 'high', message: '🐳 CONTAINER NÃO ESPERADO DETECTADO\n\nUm container está rodando que não estava no baseline conhecido. Pode indicar deploy não autorizado ou comprometimento. Verifique e adicione ao baseline se legítimo.' } },
+    ],
+    requiresApproval: true,
   },
 ];
 

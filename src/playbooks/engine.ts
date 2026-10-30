@@ -28,6 +28,8 @@ export interface PlaybookContext {
   sourceIp?: string;
   triggeredBy: string;
   variables: Record<string, unknown>;
+  /** Preenchido pelo engine ao executar; o notify usa para achar a copy. */
+  playbookName?: string;
 }
 
 export type ActionFn = (ctx: PlaybookContext, params?: Record<string, unknown>) => Promise<{ success: boolean; message: string }>;
@@ -53,8 +55,10 @@ export class PlaybookEngine {
 
     logger.info({ playbook: playbook.name, executionId: execution.id, server: ctx.serverName }, 'Playbook started');
 
+    const playbookCtx: PlaybookContext = { ...ctx, playbookName: ctx.playbookName ?? playbook.name };
+
     for (const step of playbook.steps) {
-      if (step.condition && !this.evaluateCondition(step.condition, ctx)) {
+      if (step.condition && !this.evaluateCondition(step.condition, playbookCtx)) {
         logger.debug({ step: step.action, playbook: playbook.name }, 'Step skipped (condition not met)');
         continue;
       }
@@ -67,7 +71,7 @@ export class PlaybookEngine {
       }
 
       try {
-        const result = await actionFn(ctx, step.params);
+        const result = await actionFn(playbookCtx, step.params);
         if (result.success) {
           stepsCompleted.push(`${step.action}: ${result.message}`);
         } else {

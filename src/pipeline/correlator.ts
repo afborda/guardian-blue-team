@@ -65,6 +65,11 @@ export class EventCorrelator {
       return r ? { ...r, category: 'ddos' } : null;
     }
 
+    if (event.eventType === 'container_egress_scan') {
+      const r = await this.correlateEgress(event);
+      return r ? { ...r, category: 'egress' } : null;
+    }
+
     return null;
   }
 
@@ -270,6 +275,43 @@ export class EventCorrelator {
     }).returning();
 
     logger.warn({ ip: event.sourceIp, type: event.eventType, incidentId: newIncident.id }, 'New DDoS incident detected');
+    return { id: newIncident.id, isNew: true };
+  }
+
+  private static async correlateEgress(event: NormalizedEvent): Promise<{ id: number; isNew: boolean } | null> {
+    const container = (event.metadata?.containerName as string | undefined) ?? 'container';
+    const cutoff = new Date(Date.now() - CORRELATION_WINDOW_MS);
+
+    const existing = await db.select().from(socIncidents)
+      .where(and(
+        eq(socIncidents.category, 'egress'),
+        eq(socIncidents.status, 'open'),
+        gte(socIncidents.lastSeenAt, dbDate(cutoff)),
+      ))
+      .then(rows => rows.find(row => {
+        const servers = (row.affectedServers ?? []) as number[];
+        return servers.includes(event.serverId) && row.title.includes(container);
+      }));
+
+    if (existing) {
+      await db.update(socIncidents)
+        .set({ lastSeenAt: dbNow(), eventCount: existing.eventCount + 1 })
+        .where(eq(socIncidents.id, existing.id));
+      return { id: existing.id, isNew: false };
+    }
+
+    const [newIncident] = await db.insert(socIncidents).values({
+      title: `Tráfego de saída suspeito — ${container}`,
+      severity: 'critical',
+      category: 'egress',
+      sourceIps: event.sourceIp ? [event.sourceIp] : [],
+      affectedServers: [event.serverId],
+      eventCount: 1,
+      firstSeenAt: dbNow(),
+      lastSeenAt: dbNow(),
+    }).returning();
+
+    logger.warn({ container, serverId: event.serverId, incidentId: newIncident.id }, 'Egress scan incident created');
     return { id: newIncident.id, isNew: true };
   }
 

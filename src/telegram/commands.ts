@@ -21,7 +21,9 @@ import { discoverRemoteServer, formatDiscoveryApprovalKeyboard } from '../discov
 import { ServerReadinessService } from '../services/server-readiness.service.js';
 import { rotateToken } from '../dashboard/auth.js';
 import { config } from '../config/environment.js';
+import { telegram } from './messaging/sender.js';
 import { LegacyMigrationWorker } from '../workers/legacy-migration.worker.js';
+import { threatAdvice } from './threat-copy.js';
 
 const pendingDiscoveries = new Map<number, { analysis: import('../discovery/types.js').DiscoveryResult; serverName: string }>();
 const pendingReadiness = new Map<number, { target: ReturnType<typeof ServerService.toSSHTarget>; missing: import('../services/server-readiness.service.js').ReadinessCheck[]; serverName: string }>();
@@ -307,16 +309,7 @@ async function getOpenIncidents(withButtons = false): Promise<string> {
         ]);
       }
 
-      await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: config.telegram.chatId,
-          text,
-          parse_mode: 'HTML',
-          reply_markup: { inline_keyboard: buttons },
-        }),
-      }).catch(() => {});
+      await telegram.sendText(text, { replyMarkup: { inline_keyboard: buttons } });
     }
 
     return `🚨 <b>Incidentes Abertos: ${incidents.length}</b>`;
@@ -351,6 +344,7 @@ const EVENT_TYPE_PT: Record<string, string> = {
   port_scan: 'port scan',
   brute_force: 'força bruta',
   ssh_brute_force: 'força bruta SSH',
+  firewall_block: 'pacote recusado pelo firewall (porta que já não atende)',
   crypto_mining: 'mineração de cripto',
   container_escape: 'escape de container',
   dns_dga: 'DNS suspeito (C2)',
@@ -412,48 +406,22 @@ async function threatLookup(ip: string | undefined): Promise<string> {
 
   lines.push('');
 
-  // Recomendação em português baseada no score e eventos
-  if (report) {
-    const eventCount = eventsByServer.reduce((sum, r) => sum + Number(r.cnt), 0);
-    if (report.score >= 80) {
-      lines.push(
-        '⚠️ <b>RECOMENDAÇÃO: BLOQUEAR</b>',
-        `Este IP é altamente malicioso (score ${report.score}/100).`,
-        `Reportado ${report.totalReports} vezes. Risco real de ataque.`,
-        `→ /block ${ip}`,
-      );
-    } else if (report.score >= 50) {
-      lines.push(
-        '🟠 <b>RECOMENDAÇÃO: PROVÁVEL AMEAÇA</b>',
-        `Score moderado (${report.score}/100) com ${report.totalReports} reports.`,
-        eventCount > 5
-          ? 'Múltiplas tentativas nos nossos logs. Recomendo bloquear.'
-          : 'Poucos eventos locais. Monitorar, bloquear se persistir.',
-        `→ /block ${ip}`,
-      );
-    } else if (report.score >= 25) {
-      lines.push(
-        '🟡 <b>RECOMENDAÇÃO: SUSPEITO</b>',
-        `Score baixo-médio (${report.score}/100). Pode ser scanner automatizado.`,
-        eventCount > 10
-          ? 'Muita atividade local — considere bloquear.'
-          : 'Monitorar por agora. Não é urgente.',
-      );
-    } else {
-      lines.push(
-        '🟢 <b>RECOMENDAÇÃO: SEGURO</b>',
-        `IP com boa reputação (score ${report.score}/100).`,
-        'Provavelmente legítimo. Não precisa bloquear.',
-      );
-    }
-  } else {
-    const eventCount = eventsByServer.reduce((sum, r) => sum + Number(r.cnt), 0);
-    if (eventCount > 20) {
-      lines.push('🟠 <b>RECOMENDAÇÃO: BLOQUEAR</b>', 'Muita atividade suspeita nos logs, mesmo sem dados do AbuseIPDB.');
-    } else {
-      lines.push('⚪ <b>SEM DADOS SUFICIENTES</b>', 'Sem AbuseIPDB e pouca atividade. Monitorar.');
-    }
-  }
+  const eventCount = eventsByServer.reduce((sum, r) => sum + Number(r.cnt), 0);
+  const firewallEvents = eventsByServer
+    .filter((r) => r.eventType === 'firewall_block')
+    .reduce((sum, r) => sum + Number(r.cnt), 0);
+  const alreadyBlocked = await db.select({ id: blockedIps.id }).from(blockedIps)
+    .where(and(eq(blockedIps.ip, ip), eq(blockedIps.active, dbTrue)))
+    .limit(1)
+    .then((rows) => rows.length > 0);
+
+  lines.push(...threatAdvice({
+    score: report ? report.score : null,
+    totalReports: report?.totalReports ?? 0,
+    eventCount,
+    alreadyBlocked,
+    firewallEvents,
+  }));
 
   return lines.join('\n');
 }
@@ -658,15 +626,7 @@ async function addServer(args: string[]): Promise<string> {
       const synced = await syncBlocksToServer(server.id);
       const syncMsg = synced > 0 ? `\n🔒 ${synced} IPs bloqueados sincronizados.` : '';
 
-      await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: config.telegram.chatId,
-          text: `✅ <b>${name}</b> — todas ferramentas OK!\n\n🛠️ Instalados: ${readiness.installed.join(', ')}${syncMsg}`,
-          parse_mode: 'HTML',
-        }),
-      }).catch(() => {});
+      await telegram.sendText(`✅ <b>${name}</b> — todas ferramentas OK!\n\n🛠️ Instalados: ${readiness.installed.join(', ')}${syncMsg}`);
     } else {
       // Missing tools — ask user
       pendingReadiness.set(server.id, { target, missing: readiness.missing, serverName: name });
@@ -689,16 +649,8 @@ async function addServer(args: string[]): Promise<string> {
         ]],
       };
 
-      await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: config.telegram.chatId,
-          text: lines.join('\n'),
-          parse_mode: 'HTML',
-          reply_markup: keyboard,
-        }),
-      }).catch(err => logger.warn({ err }, 'Failed to send readiness message'));
+      await telegram.sendText(lines.join('\n'), { replyMarkup: keyboard })
+        .catch(err => logger.warn({ err }, 'Failed to send readiness message'));
     }
   }).catch(err => logger.warn({ err }, 'Readiness check failed'));
 
@@ -709,16 +661,8 @@ async function addServer(args: string[]): Promise<string> {
     pendingDiscoveries.set(server.id, { analysis: discoveryResult.analysis, serverName: name });
 
     const keyboard = formatDiscoveryApprovalKeyboard(server.id);
-    await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: config.telegram.chatId,
-        text: discoveryResult.telegramMessage,
-        parse_mode: 'HTML',
-        reply_markup: keyboard,
-      }),
-    }).catch(err => logger.warn({ err }, 'Failed to send discovery message'));
+    await telegram.sendText(discoveryResult.telegramMessage, { replyMarkup: keyboard as { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } })
+      .catch(err => logger.warn({ err }, 'Failed to send discovery message'));
 
     setTimeout(() => pendingDiscoveries.delete(server.id), 30 * 60_000);
   }).catch(err => logger.warn({ err }, 'Background discovery failed'));
@@ -873,9 +817,9 @@ async function verifyBlocksCommand(): Promise<string> {
     if (!server) continue;
 
     const target = ServerService.toSSHTarget(server);
-    const isBlocked = await verifyBlock(target, block.ip, (block.method as BlockMethod) || 'ufw');
+    const check = await verifyBlock(target, block.ip, (block.method as BlockMethod) || 'ufw');
 
-    if (isBlocked) {
+    if (check.verified) {
       verified++;
       if (!block.verified) {
         await db.update(blockedIps).set({ verified: true }).where(eq(blockedIps.id, block.id));

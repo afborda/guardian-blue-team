@@ -158,6 +158,11 @@ export const CONSTANTS = {
   container: {
     processIntervalMs: 2 * 60 * 1000,       // 2 min — lightweight, critical detection
     networkIntervalMs: 5 * 60 * 1000,       // 5 min — moderate I/O
+    egressIntervalMs: 2 * 60 * 1000,        // 2 min — SYN_SENT + fan-out
+    egressSynThreshold: 50,
+    egressDistinctDstThreshold: 20,
+    egressRfc1918Threshold: 5,
+    egressWebRatio: 0.8,
     filesystemIntervalMs: 30 * 60 * 1000,   // 30 min — heavy, cached
     configAuditIntervalMs: 60 * 60 * 1000,  // 1h — very light
     imageScanIntervalMs: 6 * 60 * 60 * 1000, // 6h — heavy, separate worker

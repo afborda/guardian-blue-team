@@ -8,6 +8,7 @@ import { logger } from '../../utils/logger.js';
 import { AuditLogger } from '../../utils/audit-logger.js';
 import { isValidIp } from '../../utils/sanitize.js';
 import { ensureGuardianChain, GUARDIAN_CHAIN } from './iptables-chain.js';
+import { ufwDenyAppendCommand, ufwDenyCommand, ufwVerifyCommand } from './firewall-commands.js';
 
 export type BlockMethod = 'fail2ban' | 'ufw' | 'iptables';
 
@@ -43,13 +44,20 @@ async function tryFail2ban(target: ReturnType<typeof ServerService.toSSHTarget>,
   return result.success;
 }
 
-async function tryUfw(target: ReturnType<typeof ServerService.toSSHTarget>, ip: string): Promise<boolean> {
+export async function applyUfwDeny(
+  target: ReturnType<typeof ServerService.toSSHTarget>,
+  ip: string,
+  commentPrefix: 'guardian-block' | 'guardian-prop',
+): Promise<boolean> {
   if (!isValidIp(ip)) return false;
-  const result = await SSHCollector.run(target,
-    `sudo ufw deny from ${ip} comment 'guardian-block-${Date.now()}'`,
-    10_000
-  );
-  return result.success;
+  const inserted = await SSHCollector.run(target, ufwDenyCommand(ip, commentPrefix), 20_000);
+  if (inserted.success) return true;
+  const appended = await SSHCollector.run(target, ufwDenyAppendCommand(ip, commentPrefix), 20_000);
+  return appended.success;
+}
+
+async function tryUfw(target: ReturnType<typeof ServerService.toSSHTarget>, ip: string): Promise<boolean> {
+  return applyUfwDeny(target, ip, 'guardian-block');
 }
 
 /**
@@ -91,7 +99,7 @@ export async function verifyBlock(
     return { verified: result.success, method: 'fail2ban' };
   }
   if (method === 'ufw') {
-    const result = await SSHCollector.run(target, `sudo ufw status | grep -q "${ip}"`, 10_000);
+    const result = await SSHCollector.run(target, ufwVerifyCommand(ip), 10_000);
     return { verified: result.success, method: 'ufw' };
   }
   if (method === 'iptables') {
@@ -109,7 +117,7 @@ export async function verifyBlock(
   // for hosts where Guardian had to use the chain fallback. Whichever backend
   // confirms the rule wins and the caller persists `method` so the next
   // reverify is cheap.
-  const ufwResult = await SSHCollector.run(target, `sudo ufw status | grep -q "${ip}"`, 10_000);
+  const ufwResult = await SSHCollector.run(target, ufwVerifyCommand(ip), 10_000);
   if (ufwResult.success) return { verified: true, method: 'ufw' };
 
   const f2bResult = await SSHCollector.run(target, `sudo fail2ban-client status guardian-jail 2>/dev/null | grep -q "${ip}"`, 10_000);
@@ -149,8 +157,8 @@ export async function blockIP(ctx: PlaybookContext, params?: Record<string, unkn
     .then(rows => rows[0]);
 
   if (existing) {
-    const expiresLabel = existing.expiresAt ? `expires ${existing.expiresAt.toISOString()}` : 'permanent';
-    return { success: true, message: `IP ${ctx.sourceIp} already blocked on ${ctx.serverName} (${expiresLabel})` };
+    const expiresLabel = existing.expiresAt ? `até ${existing.expiresAt.toISOString()}` : 'permanente';
+    return { success: true, message: `IP ${ctx.sourceIp} já estava bloqueado em ${ctx.serverName} (${expiresLabel}). Nenhuma regra nova.` };
   }
 
   const target = ServerService.toSSHTarget(server);
@@ -198,7 +206,7 @@ export async function blockIP(ctx: PlaybookContext, params?: Record<string, unkn
     // Unique constraint violation (race condition) — another process inserted first
     if (err?.code === '23505' || err?.message?.includes('UNIQUE constraint')) {
       logger.info({ ip: ctx.sourceIp, server: ctx.serverName }, 'IP block race condition — already inserted by another process');
-      return { success: true, message: `IP ${ctx.sourceIp} already blocked on ${ctx.serverName} (concurrent insert)` };
+      return { success: true, message: `IP ${ctx.sourceIp} já estava bloqueado em ${ctx.serverName} (inserção concorrente). Nenhuma regra nova.` };
     }
     throw err;
   }

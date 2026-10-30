@@ -6,6 +6,8 @@ import { ServerService } from '../services/server.service.js';
 import { isValidIp } from '../utils/sanitize.js';
 import { NotifierManager } from '../plugins/notifier-manager.js';
 import { verifyBlock, type BlockMethod } from '../playbooks/actions/block-ip.js';
+import { shouldNotifyBlockLost } from '../playbooks/actions/firewall-commands.js';
+import { buildBlockLostSpec } from '../telegram/copy/block.js';
 
 const RECONCILE_INTERVAL_MS = 60 * 60_000;     // 1 hour
 const REVERIFY_INTERVAL_MS = 6 * 60 * 60_000;  // 6 hours
@@ -200,21 +202,14 @@ export class BlockReconcileWorker {
           });
           reapplied++;
 
-          await NotifierManager.notify({
-            title: 'Block lost on monitored server',
-            body:
-              `Block of ${row.ip} on ${server.name} failed verification ${newFailures} times.\n` +
-              `Method: ${storedMethod ?? 'unknown'}. Last verified: ${row.lastVerifiedAt ? new Date(row.lastVerifiedAt).toISOString() : 'never'}.\n\n` +
-              `Re-enqueued for reapply. If this repeats, the firewall on this server may have been flushed.`,
-            severity: 'high',
-            metadata: {
-              type: 'block_lost',
-              ip: row.ip,
-              serverId: String(row.serverId),
-              serverName: server.name,
-              failures: String(newFailures),
-            },
-          }).catch((err) => logger.error({ err }, 'Re-verify alert failed'));
+          if (shouldNotifyBlockLost(newFailures)) {
+            await NotifierManager.notifySpec(buildBlockLostSpec(
+              server.name,
+              row.ip,
+              newFailures,
+              row.lastVerifiedAt ? new Date(row.lastVerifiedAt).toISOString() : '',
+            )).catch((err) => logger.error({ err }, 'Re-verify alert failed'));
+          }
         }
       }
 

@@ -1,5 +1,6 @@
 import { VulnScanner } from '../vuln-scanner/scanner.js';
 import { NotifierManager } from '../plugins/notifier-manager.js';
+import { buildVulnReportSpec } from '../telegram/copy/system.js';
 import { logger } from '../utils/logger.js';
 
 export class VulnScannerWorker {
@@ -36,29 +37,18 @@ export class VulnScannerWorker {
     const results = await VulnScanner.scanAll();
     if (results.length === 0) return;
 
-    const lines = [
-      `📅 ${new Date().toLocaleDateString('pt-BR')}`,
-      ``,
-    ];
-
-    for (const r of results) {
-      const icon = r.totalFindings === 0 ? '✅' : r.totalFindings > 5 ? '🔴' : '🟡';
-      lines.push(
-        `${icon} <b>${r.serverName}</b>: ${r.totalFindings} finding(s)`,
-        `   Portas: ${r.portsOpen} open (${r.portsUnexpected} unexpected)`,
-        `   Packages: ${r.packagesUpgradable} upgradable (${r.securityUpdates} security)`,
-        `   Docker: ${r.dockerIssues} issue(s)`,
-        `   Runtimes EOL: ${r.runtimeEolCount ?? 0}`,
-        ``,
-      );
-    }
-
-    await NotifierManager.notify({
-      title: 'Weekly Vulnerability Report',
-      body: lines.join('\n'),
-      severity: results.some(r => r.totalFindings > 5) ? 'high' : 'medium',
-      metadata: { type: 'vuln-scan-weekly' },
-    });
+    await NotifierManager.notifySpec(buildVulnReportSpec({
+      servers: results.map(r => ({
+        serverName: r.serverName,
+        totalFindings: r.totalFindings,
+        portsOpen: r.portsOpen,
+        portsUnexpected: r.portsUnexpected,
+        packagesUpgradable: r.packagesUpgradable,
+        securityUpdates: r.securityUpdates,
+        dockerIssues: r.dockerIssues,
+        runtimeEolCount: r.runtimeEolCount,
+      })),
+    }));
   }
 
   static async stop(): Promise<void> {

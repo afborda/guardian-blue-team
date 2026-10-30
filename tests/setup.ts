@@ -6,8 +6,8 @@ vi.mock('../src/config/environment.js', () => ({
   config: {
     server: { port: 3334, nodeEnv: 'test' },
     database: { url: 'postgres://test:test@localhost:5432/test' },
-    telegram: { botToken: 'test-token', chatId: '12345', webhookSecret: undefined },
-    ai: { provider: 'auto', geminiApiKey: null, geminiModel: 'test', openaiApiKey: null, openaiModel: 'test', anthropicApiKey: null, anthropicModel: 'test', ollamaUrl: 'http://localhost:11434', ollamaModel: 'test', ollamaChatModel: 'test' },
+    telegram: { botToken: 'test-token', chatId: '12345', webhookSecret: undefined, dryRun: false, copyV2: 'all', testChatId: null },
+    ai: { provider: 'auto', geminiApiKey: null, geminiModel: 'test', openaiApiKey: null, openaiModel: 'test', anthropicApiKey: null, anthropicModel: 'test', ollamaUrl: 'http://localhost:11434', ollamaModel: 'test', ollamaChatModel: 'test', nvidiaApiKey: null, nvidiaBaseUrl: 'https://integrate.api.nvidia.com/v1', nvidiaModel: 'z-ai/glm-5.3', nvidiaFastModel: 'z-ai/glm-5.3-flash' },
     resend: { apiKey: null, fromEmail: 'test@test.com' },
     abuse: { confidenceThreshold: 70 },
     health: { uptimeKumaPushUrl: null },
@@ -42,4 +42,9 @@ vi.mock('../src/utils/logger.js', () => ({
   },
 }));
 
-global.fetch = vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) })) as unknown as typeof fetch;
+global.fetch = vi.fn(() => Promise.resolve({
+  ok: true,
+  status: 200,
+  json: () => Promise.resolve({}),
+  text: () => Promise.resolve(JSON.stringify({ ok: true, result: { message_id: 1 } })),
+})) as unknown as typeof fetch;

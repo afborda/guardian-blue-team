@@ -1,12 +1,14 @@
 import { config } from '../config/environment.js';
+import { readNvidiaMessage } from '../intelligence/nvidia-text.js';
 import { logger } from '../utils/logger.js';
 
 export type AIProviderName = 'gemini' | 'openai' | 'claude' | 'ollama';
 
 export interface AIResponse {
   text: string;
-  provider: AIProviderName;
+  provider: AIProviderName | 'nvidia';
   durationMs: number;
+  model?: string;
 }
 
 export class AIProvider {
@@ -31,7 +33,21 @@ export class AIProvider {
   }
 
   static isAvailable(): boolean {
-    return !!(config.ai.geminiApiKey || config.ai.openaiApiKey || config.ai.anthropicApiKey || config.ai.ollamaUrl);
+    return !!(config.ai.geminiApiKey || config.ai.openaiApiKey || config.ai.anthropicApiKey || config.ai.ollamaUrl || config.ai.nvidiaApiKey);
+  }
+
+  /** Advisor call. Does not join the failover chain used by discovery and blocking. */
+  static async advise(
+    prompt: string,
+    systemPrompt?: string,
+    tier: 'fast' | 'strong' = 'fast',
+  ): Promise<AIResponse | null> {
+    if (!config.ai.nvidiaApiKey) return null;
+    const start = Date.now();
+    const model = tier === 'strong' ? config.ai.nvidiaModel : config.ai.nvidiaFastModel;
+    const text = await this.callNvidia(prompt, systemPrompt, model);
+    if (!text) return null;
+    return { text, provider: 'nvidia', durationMs: Date.now() - start, model };
   }
 
   // Fire-and-forget: loads the Ollama model into RAM so first real request is fast
@@ -97,12 +113,19 @@ export class AIProvider {
 
   static getStatus(): Array<{ name: string; available: boolean; model: string; priority: number }> {
     const order = this.getProviderOrder();
-    return order.map((name, i) => ({
+    const rows: Array<{ name: string; available: boolean; model: string; priority: number }> = order.map((name, i) => ({
       name,
       available: this.isProviderAvailable(name),
       model: this.getModelForProvider(name),
       priority: i + 1,
     }));
+    rows.push({
+      name: 'nvidia-advisor',
+      available: !!config.ai.nvidiaApiKey,
+      model: `${config.ai.nvidiaFastModel} / ${config.ai.nvidiaModel}`,
+      priority: rows.length + 1,
+    });
+    return rows;
   }
 
   private static isProviderAvailable(name: AIProviderName): boolean {
@@ -135,6 +158,45 @@ export class AIProvider {
       logger.warn({ provider, err: String(err) }, 'AI provider call failed');
       return null;
     }  }
+
+  private static async callNvidia(prompt: string, systemPrompt: string | undefined, model: string): Promise<string | null> {
+    if (!config.ai.nvidiaApiKey) return null;
+
+    const messages: Array<{ role: string; content: string }> = [];
+    if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+    messages.push({ role: 'user', content: prompt });
+
+    try {
+      const res = await fetch(`${config.ai.nvidiaBaseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${config.ai.nvidiaApiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: 0.2,
+          max_tokens: 4096,
+        }),
+        signal: AbortSignal.timeout(90_000),
+      });
+
+      if (!res.ok) {
+        const err = (await res.text().catch(() => '')).replace(/nvapi-[A-Za-z0-9_-]+/g, 'nvapi-<redacted>');
+        logger.warn({ model, status: res.status, err: err.slice(0, 240) }, 'NVIDIA advisor call failed');
+        return null;
+      }
+
+      const data = await res.json() as { choices?: Array<{ message?: { content?: string | null; reasoning?: string | null; reasoning_content?: string | null } }> };
+      const text = readNvidiaMessage(data.choices?.[0]?.message);
+      if (!text) logger.warn({ model }, 'NVIDIA advisor returned an empty message');
+      return text;
+    } catch (err) {
+      logger.warn({ model, err: String(err) }, 'NVIDIA advisor call failed');
+      return null;
+    }
+  }
 
   private static async callGemini(prompt: string, systemPrompt?: string): Promise<string | null> {
     if (!config.ai.geminiApiKey) return null;

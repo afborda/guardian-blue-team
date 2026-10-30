@@ -114,6 +114,10 @@ describe.skipIf(!dockerOk)('normalize() bash↔TS parity (Docker)', () => {
     ['docker inspect abc12', '5-char hex (below min, NOT matched)'],
     ['docker inspect ABC123DEF456', 'uppercase hex (NOT matched, only [0-9a-f])'],
 
+    // === PID (nsenter) ===
+    ['sudo nsenter -t 12345 -n ss -tnp state syn-sent 2>/dev/null | head -200', 'nsenter PID'],
+    ['sudo nsenter -t 0 -n ss -tnp state syn-sent', 'PID zero (normaliza; validação rejeita)'],
+
     // === Edge cases — não devem ser substituídos ===
     ['echo "no placeholder here"', 'plain string'],
     ['echo 12345', 'short number'],

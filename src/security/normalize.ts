@@ -40,6 +40,9 @@ export function normalize(cmd: string): string {
   s = s.replace(/(tail|--tail) \d+/g, '$1 %LINES%');
   s = s.replace(/last -F -n \d+/g, 'last -F -n %LINES%');
 
+  // %PID% — nsenter -t 12345 (PID do host)
+  s = s.replace(/nsenter -t \d+/g, 'nsenter -t %PID%');
+
   // %CONTAINER_ID% — hex 12-64 chars
   s = s.replace(/\b[0-9a-f]{12,64}\b/g, '%CONTAINER_ID%');
 

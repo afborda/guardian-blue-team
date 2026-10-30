@@ -12,6 +12,7 @@ import { EventNormalizer } from '../pipeline/normalizer.js';
 import { EventDetector } from '../pipeline/detector.js';
 import { EventCorrelator } from '../pipeline/correlator.js';
 import { EventIngestor } from '../pipeline/ingestor.js';
+import { IncidentAlertService } from '../services/incident-alert.service.js';
 import type { RawLogEntry } from '../collectors/log-collector.js';
 import type { SSHTarget } from '../collectors/ssh-collector.js';
 
@@ -339,5 +340,6 @@ export class FIMWorker {
 
     const correlated = await EventCorrelator.correlate(allEvents);
     await EventIngestor.persist(correlated);
+    await IncidentAlertService.onNewIncidents(correlated);
   }
 }

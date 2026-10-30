@@ -3,6 +3,7 @@ import { serverMetrics } from '../database/schema.js';
 import { eq, gte, and } from 'drizzle-orm';
 import { logger } from '../utils/logger.js';
 import { stlDecompose, scoreCurrentAgainstSTL, estimatePeriod } from './stl.js';
+import { gateAnomaly } from './anomaly-copy.js';
 
 export interface Anomaly {
   serverId: number;
@@ -130,7 +131,7 @@ export class AnomalyDetector {
         const isIncreaseOnly = this.INCREASE_ONLY_METRICS.has(check.metric);
         const directionOk = !isIncreaseOnly || check.current >= mean;
         if (deviations >= this.THRESHOLD && directionOk) {
-          anomalies.push({
+          const gated = gateAnomaly({
             serverId,
             metric: check.metric,
             currentValue: Math.round(check.current * 100) / 100,
@@ -140,12 +141,16 @@ export class AnomalyDetector {
             severity: deviations >= 4 ? 'critical' : 'warning',
             method: 'sigma',
           });
+          if (gated) anomalies.push(gated);
         }
       }
 
       if (this.STL_METRICS.has(check.metric)) {
         const stlAnomaly = this.scoreSTL(serverId, check.metric, check.current, check.values, historyTimestamps);
-        if (stlAnomaly) anomalies.push(stlAnomaly);
+        if (stlAnomaly) {
+          const gated = gateAnomaly(stlAnomaly);
+          if (gated) anomalies.push(gated);
+        }
       }
     }
 

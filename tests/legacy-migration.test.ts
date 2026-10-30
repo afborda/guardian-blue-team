@@ -11,7 +11,11 @@ vi.mock('../src/services/server-upgrade.service.js', () => ({
   },
 }));
 // suppress Telegram fetch calls
-vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
+vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+  ok: true,
+  status: 200,
+  text: async () => JSON.stringify({ ok: true, result: { message_id: 1 } }),
+}));
 
 import { ServerService } from '../src/services/server.service.js';
 import { ServerUpgradeService } from '../src/services/server-upgrade.service.js';

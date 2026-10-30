@@ -1,10 +1,12 @@
 import { ServerService } from '../services/server.service.js';
 import { ContainerRuntimeCollector } from '../collectors/container-runtime-collector.js';
+import { EgressCollector } from '../collectors/egress-collector.js';
 import { EventNormalizer } from '../pipeline/normalizer.js';
 import { EventDetector } from '../pipeline/detector.js';
 import { EventEnricher } from '../pipeline/enricher.js';
 import { EventCorrelator } from '../pipeline/correlator.js';
 import { EventIngestor } from '../pipeline/ingestor.js';
+import { IncidentAlertService } from '../services/incident-alert.service.js';
 import { db, dbNow } from '../database/connection.js';
 import { containerSnapshots } from '../database/schema.js';
 import { eq, and } from 'drizzle-orm';
@@ -13,9 +15,10 @@ import { logger } from '../utils/logger.js';
 
 export class ContainerSecurityWorker {
   private static networkIntervalId: NodeJS.Timeout | null = null;
+  private static egressIntervalId: NodeJS.Timeout | null = null;
   private static filesystemIntervalId: NodeJS.Timeout | null = null;
   private static configIntervalId: NodeJS.Timeout | null = null;
-  private static running = { network: false, filesystem: false, config: false };
+  private static running = { network: false, egress: false, filesystem: false, config: false };
 
   static start(): void {
     // Network scan: every 5 min
@@ -23,6 +26,13 @@ export class ContainerSecurityWorker {
     this.networkIntervalId = setInterval(
       () => this.collectNetwork().catch(e => logger.error({ err: e }, 'Container network collector error')),
       CONSTANTS.container.networkIntervalMs
+    );
+
+    // Egress scan: every 2 min — SYN_SENT + fan-out por container
+    setTimeout(() => this.collectEgress().catch(e => logger.error({ err: e }, 'Container egress collector error')), 45_000);
+    this.egressIntervalId = setInterval(
+      () => this.collectEgress().catch(e => logger.error({ err: e }, 'Container egress collector error')),
+      CONSTANTS.container.egressIntervalMs,
     );
 
     // Filesystem diff: every 30 min
@@ -39,11 +49,12 @@ export class ContainerSecurityWorker {
       CONSTANTS.container.configAuditIntervalMs
     );
 
-    logger.info('Container security worker started (network:5m, fs:30m, config:1h)');
+    logger.info('Container security worker started (network:5m, egress:2m, fs:30m, config:1h)');
   }
 
   static stop(): void {
     if (this.networkIntervalId) clearInterval(this.networkIntervalId);
+    if (this.egressIntervalId) clearInterval(this.egressIntervalId);
     if (this.filesystemIntervalId) clearInterval(this.filesystemIntervalId);
     if (this.configIntervalId) clearInterval(this.configIntervalId);
   }
@@ -66,6 +77,23 @@ export class ContainerSecurityWorker {
       }
     } finally {
       this.running.network = false;
+    }
+  }
+
+  private static async collectEgress(): Promise<void> {
+    if (this.running.egress) return;
+    this.running.egress = true;
+
+    try {
+      const servers = await ServerService.getEnabled();
+      for (const server of servers) {
+        const target = ServerService.toSSHTarget(server);
+        const rawLogs = await EgressCollector.collect(target);
+        if (rawLogs.length === 0) continue;
+        await this.processThroughPipeline(rawLogs);
+      }
+    } finally {
+      this.running.egress = false;
     }
   }
 
@@ -238,5 +266,11 @@ export class ContainerSecurityWorker {
     normalized = await EventEnricher.enrich(normalized);
     const correlated = await EventCorrelator.correlate(normalized);
     await EventIngestor.persist(correlated);
+    await IncidentAlertService.onNewIncidents(correlated);
+
+    // Este worker não passa pelo loop do EventCollector; sem isto, playbooks
+    // de container (incluindo a contenção de egress) nunca disparariam.
+    const { EventCollectorWorker } = await import('./event-collector.worker.js');
+    await EventCollectorWorker.triggerPlaybooks(correlated);
   }
 }

@@ -5,6 +5,7 @@ import { blockIP } from '../playbooks/actions/block-ip.js';
 import { removeRateLimit } from '../playbooks/actions/rate-limit.js';
 import { ServerService } from '../services/server.service.js';
 import { NotifierManager } from '../plugins/notifier-manager.js';
+import { buildDdosEscalationSpec } from '../telegram/copy/block.js';
 import { logger } from '../utils/logger.js';
 import { CONSTANTS } from '../config/constants.js';
 
@@ -62,12 +63,7 @@ export class DDoSEscalationWorker {
           .where(eq(rateLimitedIps.id, rl.id));
 
         if (blockResult.success) {
-          await NotifierManager.notify({
-            title: 'DDoS Escalation',
-            body: `IP ${rl.ip} escalated from rate-limit to PERMANENT BLOCK on ${server.name}\nReason: ${newEvents.length} DDoS event(s) detected after rate-limit`,
-            severity: 'critical',
-            metadata: { type: 'ddos_escalation', ip: rl.ip },
-          });
+          await NotifierManager.notifySpec(buildDdosEscalationSpec(rl.ip, server.name, newEvents.length));
           logger.info({ ip: rl.ip, server: server.name, events: newEvents.length }, 'DDoS escalation: rate-limit -> permanent block');
         }
       }

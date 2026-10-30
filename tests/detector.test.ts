@@ -94,13 +94,14 @@ describe('EventDetector', () => {
     expect(detected.some(e => e.eventType === 'unauthorized_login')).toBe(true);
   });
 
+  // IP público de documentação: RFC1918 é tratado como confiável pelo detector.
   it('detects SSH brute force burst (20+ failures from same IP)', () => {
     const events: NormalizedEvent[] = Array.from({ length: 25 }, () =>
       makeEvent({
         eventType: 'ssh_failed_password',
-        sourceIp: '192.168.100.50',
+        sourceIp: '203.0.113.50',
         source: 'auth.log',
-        rawLog: 'Failed password for root from 192.168.100.50',
+        rawLog: 'Failed password for root from 203.0.113.50',
       })
     );
     const detected = EventDetector.detect(events);
@@ -111,24 +112,25 @@ describe('EventDetector', () => {
     const events: NormalizedEvent[] = Array.from({ length: 10 }, () =>
       makeEvent({
         eventType: 'ssh_failed_password',
-        sourceIp: '192.168.100.50',
+        sourceIp: '203.0.113.50',
         source: 'auth.log',
-        rawLog: 'Failed password for root from 192.168.100.50',
+        rawLog: 'Failed password for root from 203.0.113.50',
       })
     );
     const detected = EventDetector.detect(events);
     expect(detected.some(e => e.eventType === 'ssh_brute_force')).toBe(false);
   });
 
+  // IP público de documentação: RFC1918 é tratado como confiável pelo detector.
   it('detects lateral movement (login after failed attempts)', () => {
     EventDetector.detect([
-      makeEvent({ eventType: 'ssh_failed_password', sourceIp: '10.0.0.5', rawLog: 'Failed password' }),
+      makeEvent({ eventType: 'ssh_failed_password', sourceIp: '198.51.100.5', rawLog: 'Failed password' }),
     ]);
     const events = [
       makeEvent({
         eventType: 'ssh_login_success',
-        sourceIp: '10.0.0.5',
-        rawLog: 'Accepted publickey for ubuntu from 10.0.0.5',
+        sourceIp: '198.51.100.5',
+        rawLog: 'Accepted publickey for ubuntu from 198.51.100.5',
       }),
     ];
     const detected = EventDetector.detect(events);

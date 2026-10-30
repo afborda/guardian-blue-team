@@ -46,6 +46,11 @@ export async function loadTrustedEntities(): Promise<void> {
       if (row.entityType === 'ip') { TRUSTED_IPS.add(row.value); ips++; }
       else if (row.entityType === 'fingerprint') { TRUSTED_FINGERPRINTS.add(row.value); fps++; }
     }
+    // Keep enricher's trusted set in sync so ThreatIntel is also skipped for whitelisted IPs
+    const { addTrustedIpToEnricher } = await import('./enricher.js');
+    for (const row of rows) {
+      if (row.entityType === 'ip') addTrustedIpToEnricher(row.value);
+    }
     logger.info({ ips, fingerprints: fps, total: rows.length }, 'Trusted entities loaded from DB');
   } catch (err) {
     logger.error({ err }, 'Failed to load trusted entities from DB');
@@ -70,6 +75,7 @@ const DETECTION_RULES: DetectionRule[] = [
     condition: (events, current) => {
       if (current.eventType !== 'ssh_failed_password' && current.eventType !== 'ssh_invalid_user') return false;
       if (!current.sourceIp) return false;
+      if (isTrustedIp(current.sourceIp)) return false;
 
       const count = events.filter(e =>
         e.sourceIp === current.sourceIp &&
@@ -97,6 +103,7 @@ const DETECTION_RULES: DetectionRule[] = [
     condition: (events, current) => {
       if (current.eventType !== 'ssh_login_success') return false;
       if (!current.sourceIp) return false;
+      if (isTrustedIp(current.sourceIp)) return false;
 
       const hadFailures = events.some(e =>
         e.sourceIp === current.sourceIp &&
@@ -314,6 +321,7 @@ const DETECTION_RULES: DetectionRule[] = [
     condition: (events, current) => {
       if (current.eventType !== 'proxy_scanner_detected') return false;
       if (!current.sourceIp) return false;
+      if (isTrustedIp(current.sourceIp)) return false;
 
       const count = events.filter(e =>
         e.sourceIp === current.sourceIp &&
@@ -400,6 +408,25 @@ const DETECTION_RULES: DetectionRule[] = [
     },
     severity: 'critical',
     eventType: 'container_mining_network',
+  },
+  {
+    name: 'container_egress_scan',
+    description: 'Container abrindo conexões SYN para muitos destinos — scan, beaconing ou malware',
+    condition: (_events, current) => {
+      if (current.source !== 'container_egress') return false;
+      const synSent = Number(current.metadata?.synSent ?? 0);
+      const distinctDst = Number(current.metadata?.distinctDst ?? 0);
+      const rfc1918 = Number(current.metadata?.rfc1918Dst ?? 0);
+      const web = Number(current.metadata?.webDst ?? 0);
+      const webRatio = distinctDst > 0 ? web / distinctDst : 0;
+
+      return rfc1918 >= CONSTANTS.container.egressRfc1918Threshold
+        || synSent >= CONSTANTS.container.egressSynThreshold
+        || (distinctDst >= CONSTANTS.container.egressDistinctDstThreshold
+          && webRatio >= CONSTANTS.container.egressWebRatio);
+    },
+    severity: 'critical',
+    eventType: 'container_egress_scan',
   },
   {
     name: 'container_fs_tampering',
@@ -521,6 +548,29 @@ const DETECTION_RULES: DetectionRule[] = [
     condition: (_events, current) => current.eventType === 'system_reboot',
     severity: 'medium',
     eventType: 'system_reboot',
+  },
+  // ─── Backup Health Rules ────────────────────────────────────────────────────
+  {
+    name: 'backup_missing',
+    description: 'Daily backup file not found — possible backup failure',
+    condition: (_events, current) => current.eventType === 'backup_missing',
+    severity: 'high',
+    eventType: 'backup_missing',
+  },
+  {
+    name: 'backup_too_small',
+    description: 'Daily backup file is suspiciously small — possible corrupt or empty dump',
+    condition: (_events, current) => current.eventType === 'backup_too_small',
+    severity: 'high',
+    eventType: 'backup_too_small',
+  },
+  // ─── Container Inventory Rules ──────────────────────────────────────────────
+  {
+    name: 'unexpected_container',
+    description: 'A container is running that was not in the known baseline — possible unauthorized deployment',
+    condition: (_events, current) => current.eventType === 'unexpected_container',
+    severity: 'high',
+    eventType: 'unexpected_container',
   },
 ];
 

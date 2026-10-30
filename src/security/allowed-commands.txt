@@ -79,6 +79,12 @@ ps aux --sort=-%cpu 2>/dev/null | head -n %LINES% | tail -n +2 | awk '{print $2,
 # --- container-image-collector.ts:collectImages ---
 docker ps --format '{{.Image}}\t{{.Names}}' 2>/dev/null && echo '---IMAGES---' && docker images --format '{{.Repository}}\t{{.Tag}}\t{{.Digest}}\t{{.Size}}' 2>/dev/null | head -50
 
+# --- event-collector.worker.ts:detectUnexpectedContainers ---
+docker ps --format '{{.Names}}' 2>/dev/null
+
+# --- backup-collector.ts:collect ---
+find /backup/daily -name 'babarato-*.sql.gz.gpg' -printf '%T@ %s %f\n' 2>/dev/null | sort -rn | head -1
+
 # --- container-image-collector.ts:which trivy probe ---
 which trivy 2>/dev/null
 
@@ -110,13 +116,19 @@ which fail2ban-client
 sudo fail2ban-client set guardian-jail banip --bantime -1 %IP%
 
 # --- block-ip.ts:tryUfw — bloqueia via UFW (timestamp vira %CONTAINER_ID% após normalize) ---
+# Legado: append. Continua na allowlist para shells ainda não atualizados.
 sudo ufw deny from %IP% comment 'guardian-block-%CONTAINER_ID%'
+
+# Posição 1: a regra precisa ficar antes do ACCEPT de 49222/80/443.
+sudo ufw insert 1 deny from %IP% comment 'guardian-block-%CONTAINER_ID%'
 
 # --- block-ip.ts:tryUfw via propagation worker ---
 sudo ufw deny from %IP% comment 'guardian-prop-%CONTAINER_ID%'
+sudo ufw insert 1 deny from %IP% comment 'guardian-prop-%CONTAINER_ID%'
 
 # --- block-ip.ts:verifyBlock ufw ---
 sudo ufw status | grep -q '%IP%'
+sudo ufw status | grep -F -q -- '%IP%'
 
 # --- block-ip.ts:verifyBlock fail2ban ---
 sudo fail2ban-client status guardian-jail 2>/dev/null | grep -q '%IP%'
@@ -151,6 +163,11 @@ sudo iptables -A GUARDIAN-INPUT -s %IP% -j DROP
 
 # --- rate-limit.ts:removeRateLimit ---
 sudo iptables -D GUARDIAN-INPUT -s %IP% -j DROP
+
+# --- egress-collector.ts — fan-out de saída por container (SYN_SENT no netns) ---
+docker ps --format '{{.ID}}\t{{.Names}}' 2>/dev/null | head -40
+docker inspect --format '{{.State.Pid}}' %CONTAINER_ID% 2>/dev/null
+sudo nsenter -t %PID% -n ss -tnp state syn-sent 2>/dev/null | head -200
 
 # === BLOQUEADOS — precisam refactor antes de incluir ===
 

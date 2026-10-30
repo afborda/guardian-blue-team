@@ -6,7 +6,8 @@ import { ServerService } from '../services/server.service.js';
 import { SSHCollector } from '../collectors/ssh-collector.js';
 import { isValidIp } from '../utils/sanitize.js';
 import { NotifierManager } from '../plugins/notifier-manager.js';
-import { verifyBlock, type BlockMethod } from '../playbooks/actions/block-ip.js';
+import { buildPropagationFailedSpec } from '../telegram/copy/block.js';
+import { applyUfwDeny, verifyBlock, type BlockMethod } from '../playbooks/actions/block-ip.js';
 
 const DRAIN_INTERVAL_MS = 60_000; // every 1 min — rapid for first attempts; ladder spaces them out
 const BATCH_SIZE = 25;
@@ -133,13 +134,9 @@ export class BlockPropagationWorker {
       }
 
       if (!method) {
-        const ufw = await SSHCollector.run(
-          target,
-          `sudo ufw deny from ${ip} comment 'guardian-prop-${Date.now()}'`,
-          10_000,
-        );
-        if (ufw.success) method = 'ufw';
-        else errMessage = `${errMessage ? errMessage + ' | ' : ''}ufw: ${(ufw.error || '').slice(0, 200)}`;
+        const ufwOk = await applyUfwDeny(target, ip, 'guardian-prop');
+        if (ufwOk) method = 'ufw';
+        else errMessage = `${errMessage ? errMessage + ' | ' : ''}ufw: insert and append failed`;
       }
     } catch (err: any) {
       errMessage = `ssh: ${(err?.message || String(err)).slice(0, 200)}`;
@@ -148,7 +145,7 @@ export class BlockPropagationWorker {
     const nextAttempt = attempts + 1;
 
     if (!method) {
-      await this.recordFailure(id, ip, targetServerId, server.name, nextAttempt, maxAttempts, errMessage ?? 'unknown');
+      await this.recordFailure(id, ip, server.name, nextAttempt, maxAttempts, errMessage ?? 'unknown');
       return;
     }
 
@@ -171,7 +168,7 @@ export class BlockPropagationWorker {
       const isDup = err?.code === '23505' || err?.message?.includes('UNIQUE constraint');
       if (!isDup) {
         await this.recordFailure(
-          id, ip, targetServerId, server.name, nextAttempt, maxAttempts,
+          id, ip, server.name, nextAttempt, maxAttempts,
           `db: ${(err?.message || String(err)).slice(0, 200)}`,
         );
         return;
@@ -194,7 +191,6 @@ export class BlockPropagationWorker {
   private static async recordFailure(
     queueId: number,
     ip: string,
-    serverId: number,
     serverName: string,
     attempts: number,
     maxAttempts: number,
@@ -214,15 +210,7 @@ export class BlockPropagationWorker {
 
       logger.error({ ip, server: serverName, attempts, errMessage }, 'Block propagation: gave up');
 
-      await NotifierManager.notify({
-        title: 'Block propagation failed',
-        body:
-          `Could not propagate block of ${ip} to ${serverName} after ${attempts} attempts.\n` +
-          `Last error: ${errMessage}\n\n` +
-          `This server is currently *unprotected* against this IP. Investigate SSH access, fail2ban, and UFW.`,
-        severity: 'high',
-        metadata: { type: 'block_propagation_gave_up', ip, serverId: String(serverId), serverName },
-      }).catch((err) => logger.error({ err }, 'Failed to send gave_up notification'));
+      await NotifierManager.notifySpec(buildPropagationFailedSpec(ip, serverName, attempts, errMessage));
       return;
     }
 

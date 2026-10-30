@@ -4,6 +4,7 @@ import { gte, desc, eq } from 'drizzle-orm';
 import { AIProvider } from '../services/ai-provider.js';
 import { IncidentMemoryService } from '../services/incident-memory.service.js';
 import { NotifierManager } from '../plugins/notifier-manager.js';
+import { buildThreatHuntSpec } from '../telegram/copy/system.js';
 import { CONSTANTS } from '../config/constants.js';
 import { logger } from '../utils/logger.js';
 
@@ -131,16 +132,12 @@ Responda em JSON:
 
       const critical = result.findings.filter(f => f.severity === 'critical' || f.severity === 'high');
       if (critical.length > 0) {
-        const findingLines = critical
-          .map(f => `  [${f.severity.toUpperCase()}] ${f.description}`)
-          .join('\n');
-
-        await NotifierManager.notify({
-          title: 'Threat Hunt — Findings',
-          body: `AI proativa identificou ${critical.length} achado(s) relevante(s):\n${findingLines}\n\nResumo: ${result.summary}`,
-          severity: result.overallRisk === 'critical' ? 'critical' : 'high',
-          metadata: { type: 'threat_hunt', provider: response.provider },
-        });
+        await NotifierManager.notifySpec(buildThreatHuntSpec({
+          count: critical.length,
+          findings: critical,
+          summary: result.summary,
+          provider: response.provider,
+        }));
       }
 
       logger.info({ findings: result.findings.length, risk: result.overallRisk, provider: response.provider }, 'Threat hunt complete');

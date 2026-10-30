@@ -1,8 +1,12 @@
+import type { MessageSpec, SendResult } from '../telegram/messaging/types.js';
+
 export interface FormattedAlert {
   title: string;
   body: string;
   severity: 'critical' | 'high' | 'medium' | 'low';
   metadata: Record<string, string>;
+  /** Quando presente, o Telegram renderiza a mensagem estruturada. */
+  spec?: MessageSpec;
 }
 
 export interface InteractiveAction {
@@ -21,8 +25,8 @@ export interface NotifierPlugin {
   enabled: boolean;
   interactive: boolean;
   init?(): Promise<void>;
-  send(alert: FormattedAlert): Promise<void>;
-  sendInteractive?(alert: FormattedAlert, actions: InteractiveAction[]): Promise<void>;
+  send(alert: FormattedAlert): Promise<void | SendResult>;
+  sendInteractive?(alert: FormattedAlert, actions: InteractiveAction[]): Promise<void | SendResult>;
   handleCallback?(source: string, payload: unknown): Promise<CallbackResult>;
 }
 
@@ -74,6 +78,7 @@ export interface PlaybookContext {
   incidentId?: number;
   triggeredBy: string;
   variables: Record<string, unknown>;
+  playbookName?: string;
 }
 
 export interface ActionResult {

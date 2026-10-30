@@ -7,6 +7,8 @@ import { NotifierManager } from '../plugins/notifier-manager.js';
 import { AnomalyDetector } from '../intelligence/anomaly-detector.js';
 import { TrendPredictor } from '../intelligence/trend-predictor.js';
 import { logger } from '../utils/logger.js';
+import { stripHtml } from '../telegram/messaging/style.js';
+import type { MessageSpec } from '../telegram/messaging/types.js';
 
 export class DailyReportWorker {
   private static intervalId: NodeJS.Timeout | null = null;
@@ -44,7 +46,7 @@ export class DailyReportWorker {
     const since24hDb = dbDate(since24h);
 
     const lines: string[] = [
-      `📊 <b>RELATÓRIO DIÁRIO</b>`,
+      `📊 <b>Relatório diário</b>`,
       `📅 ${new Date().toLocaleDateString('pt-BR')}`,
       `🖥️ ${servers.length} servidores monitorados`,
     ];
@@ -62,6 +64,10 @@ export class DailyReportWorker {
       `   • ${totalEvents.cnt} eventos coletados`,
       `   • ${totalIncidents.cnt} novos incidentes (${openIncidents.cnt} abertos)`,
     );
+
+    if (openIncidents.cnt > 0) {
+      lines.push(``, `👉 <b>Precisa de você:</b> ${openIncidents.cnt} incidente(s) aberto(s). Digite /incidents para ver.`);
+    }
 
     const topAttackers = await db.select({
       ip: securityEvents.sourceIp,
@@ -136,14 +142,39 @@ export class DailyReportWorker {
       this.appendSnapshotLines(lines, snapshot);
     }
 
-    const message = lines.join('\n');
+    const details = lines
+      .slice(3)
+      .filter(line => !line.includes('Precisa de você'))
+      .map(stripHtml);
 
-    await NotifierManager.notify({
-      title: 'Relatório Diário de Segurança',
-      body: message,
-      severity: 'low',
-      metadata: { type: 'daily-report' },
-    });
+    const open = openIncidents.cnt;
+    const spec: MessageSpec = {
+      kind: 'report',
+      severity: open > 0 ? 'high' : 'low',
+      title: 'Relatório diário de segurança',
+      lead: `Nas últimas 24h: ${totalEvents.cnt} eventos, ${totalIncidents.cnt} novos incidentes e ${open} em aberto, em ${servers.length} servidores.`,
+      facts: [
+        { label: 'Eventos', value: String(totalEvents.cnt) },
+        { label: 'Novos incidentes', value: String(totalIncidents.cnt) },
+        { label: 'Em aberto', value: String(open) },
+        { label: 'Servidores', value: String(servers.length) },
+      ],
+      action: open > 0
+        ? {
+            required: true,
+            title: 'Precisa de você',
+            steps: [`Digite /incidents para revisar os ${open} incidente(s) aberto(s).`],
+            fallbackCommand: '/incidents',
+          }
+        : {
+            required: false,
+            title: 'Precisa de você',
+            steps: ['Nada crítico nas últimas 24h.'],
+          },
+      sections: details.length > 0 ? [{ title: 'Detalhes das últimas 24h', lines: details }] : undefined,
+    };
+
+    await NotifierManager.notifySpec(spec);
     logger.info('Daily security report sent');
   }
 

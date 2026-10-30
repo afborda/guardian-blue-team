@@ -16,6 +16,7 @@ import { HostSecurityService } from '../services/host-security.service.js';
 import { AuditCollector } from '../collectors/audit-collector.js';
 import { LoginHistoryCollector } from '../collectors/login-history-collector.js';
 import { AppLogCollector } from '../collectors/app-log-collector.js';
+import { BackupCollector } from '../collectors/backup-collector.js';
 import { EventNormalizer } from '../pipeline/normalizer.js';
 import { EventEnricher } from '../pipeline/enricher.js';
 import { EventDetector } from '../pipeline/detector.js';
@@ -23,6 +24,7 @@ import { enrichWithDgaScore } from '../intelligence/dga-enricher.js';
 import { enrichWithMarkovScore } from '../intelligence/markov-enricher.js';
 import { EventCorrelator, type CorrelationResult } from '../pipeline/correlator.js';
 import { EventIngestor } from '../pipeline/ingestor.js';
+import { IncidentAlertService } from '../services/incident-alert.service.js';
 import { PlaybookRegistry } from '../playbooks/registry.js';
 import { PlaybookEngine, type PlaybookContext } from '../playbooks/engine.js';
 import { AIBlockAdvisor } from '../services/ai-block-advisor.service.js';
@@ -31,9 +33,8 @@ import { requestPlaybookApproval } from '../telegram/callbacks.js';
 import { addWebPendingApproval } from '../dashboard/routes.js';
 import { requestLoginVerification } from '../telegram/login-verification.js';
 import { db, dbTrue, dbNow } from '../database/connection.js';
-import { socIncidents, blockedIps } from '../database/schema.js';
+import { socIncidents, blockedIps, discoveryBaselines } from '../database/schema.js';
 import { eq, and } from 'drizzle-orm';
-import { config } from '../config/environment.js';
 import { CONSTANTS } from '../config/constants.js';
 import { logger } from '../utils/logger.js';
 import { CVEMonitorWorker } from './cve-monitor.worker.js';
@@ -105,7 +106,7 @@ export class EventCollectorWorker {
       const allTargets = this.buildCollectionTargets(servers);
 
       for (const { id: serverId, name: serverName, target } of allTargets) {
-        const [authLogs, ufwLogs, dockerEvents, suspiciousProcs, networkAnomaly, sudoLogs, dnsLogs, syslogLogs, proxyLogs, packageLogs, systemdLogs, auditLogs, containerProcs, loginSessions, failedLogins, currentSessions, kernelEntries, appLogs, diskEntries, rebootEntries] = await Promise.all([
+        const [authLogs, ufwLogs, dockerEvents, suspiciousProcs, networkAnomaly, sudoLogs, dnsLogs, syslogLogs, proxyLogs, packageLogs, systemdLogs, auditLogs, containerProcs, loginSessions, failedLogins, currentSessions, kernelEntries, appLogs, diskEntries, rebootEntries, backupEntries] = await Promise.all([
           LogCollector.collectAuthLogs(target, 3),
           LogCollector.collectUfwLogs(target, 3),
           LogCollector.collectDockerEvents(target, 3),
@@ -126,11 +127,15 @@ export class EventCollectorWorker {
           AppLogCollector.collect(target),
           HealthCollector.collectCriticalDiskEntries(target),
           HealthCollector.collectRebootEntry(target),
+          BackupCollector.collect(target, serverId, serverName),
         ]);
+
+        // Feature 4: detect containers not in known baseline
+        const unexpectedContainerEntries = await this.detectUnexpectedContainers(serverId, serverName, target);
 
         // containerProcs go to container_snapshots via collectAndSnapshotProcesses —
         // exclude from security_events pipeline to avoid ~4000 noise entries/hour.
-        const rawLogs = [...authLogs, ...ufwLogs, ...dockerEvents, ...suspiciousProcs, ...networkAnomaly, ...sudoLogs, ...dnsLogs, ...syslogLogs, ...proxyLogs, ...packageLogs, ...systemdLogs, ...auditLogs, ...loginSessions, ...failedLogins, ...currentSessions, ...kernelEntries, ...appLogs, ...diskEntries, ...rebootEntries];
+        const rawLogs = [...authLogs, ...ufwLogs, ...dockerEvents, ...suspiciousProcs, ...networkAnomaly, ...sudoLogs, ...dnsLogs, ...syslogLogs, ...proxyLogs, ...packageLogs, ...systemdLogs, ...auditLogs, ...loginSessions, ...failedLogins, ...currentSessions, ...kernelEntries, ...appLogs, ...diskEntries, ...rebootEntries, ...backupEntries, ...unexpectedContainerEntries];
         if (rawLogs.length === 0) {
           await AuditLogger.operational(serverId, 'collection_cycle', 'skipped', { server: serverName, reason: 'no_logs' });
           continue;
@@ -179,6 +184,7 @@ export class EventCollectorWorker {
 
         const correlated = await EventCorrelator.correlate(normalized);
         await EventIngestor.persist(correlated);
+        await IncidentAlertService.onNewIncidents(correlated);
 
         totalEvents += correlated.length;
         await AuditLogger.operational(serverId, 'collection_cycle', 'success', {
@@ -200,14 +206,8 @@ export class EventCollectorWorker {
       }
 
       if (newIncidentResults.length > 0) {
-        // Only send the aggregate "N novos incidentes" header when N>1.
-        // For a single incident the Playbook Alert that follows already has
-        // all the detail (server, IP, severity, actions) — sending both is
-        // pure noise.
-        const newCount = newIncidentResults.filter(r => r.isNewIncident).length;
-        if (newCount > 1) {
-          await this.notifyNewIncidents(newCount);
-        }
+        // IncidentAlertService já mandou (ou agrupou) as mensagens de incidente
+        // novas; os playbooks agora editam a mesma mensagem com o desfecho.
         await this.triggerPlaybooks(newIncidentResults);
       }
 
@@ -255,7 +255,7 @@ export class EventCollectorWorker {
             };
 
             const result = await blockIP(ctx, { duration: 'permanent' });
-            if (result.success && !result.message.includes('already blocked')) {
+            if (result.success && !result.message.includes('já estava bloqueado') && !result.message.includes('already blocked')) {
               logger.info({ ip, server: server.name, incidentId: incident.id }, 'Auto-enforced block for open incident');
               await AuditLogger.block(ip, server.id, 'auto-enforce', incident.id, { method: result.message });
             } else if (!result.success) {
@@ -414,33 +414,6 @@ export class EventCollectorWorker {
     }
   }
 
-  private static async notifyNewIncidents(count: number): Promise<void> {
-    try {
-      const text = [
-        `&#128680; <b>${count} novo(s) incidente(s) detectado(s)</b>`,
-        ``,
-        `<b>O que fazer:</b>`,
-        `  /incidents — ver detalhes e tomar acao`,
-        `  /dashboard — painel visual com botoes de acao`,
-        `  /scores — verificar impacto no score de seguranca`,
-        ``,
-        `<i>Incidentes criticos sao tratados automaticamente. Verifique os que precisam de aprovacao.</i>`,
-      ].join('\n');
-
-      await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: config.telegram.chatId,
-          text,
-          parse_mode: 'HTML',
-        }),
-      });
-    } catch {
-      logger.warn('Failed to notify new incidents');
-    }
-  }
-
   private static async syncAllBlocks(): Promise<void> {
     try {
       const servers = await ServerService.getEnabled();
@@ -464,5 +437,48 @@ export class EventCollectorWorker {
     }
     this.running = false;
     logger.info('Event collector worker stopped');
+  }
+
+  // Feature 4: compare active containers against discovery baseline
+  private static async detectUnexpectedContainers(
+    serverId: number,
+    serverName: string,
+    target: import('../collectors/ssh-collector.js').SSHTarget,
+  ): Promise<Array<{ serverId: number; serverName: string; source: string; timestamp: Date; line: string }>> {
+    const results: Array<{ serverId: number; serverName: string; source: string; timestamp: Date; line: string }> = [];
+    try {
+      const baselineRow = await db
+        .select({ knownContainers: discoveryBaselines.knownContainers })
+        .from(discoveryBaselines)
+        .where(eq(discoveryBaselines.serverName, serverName))
+        .then(rows => rows[0]);
+
+      if (!baselineRow || !baselineRow.knownContainers || (baselineRow.knownContainers as string[]).length === 0) {
+        return results;
+      }
+
+      const known = new Set(baselineRow.knownContainers as string[]);
+
+      const { SSHCollector } = await import('../collectors/ssh-collector.js');
+      const result = await SSHCollector.run(target, "docker ps --format '{{.Names}}' 2>/dev/null");
+      if (!result.success || !result.stdout.trim()) return results;
+
+      const active = result.stdout.trim().split('\n').map(n => n.trim()).filter(Boolean);
+      const unexpected = active.filter(name => !known.has(name));
+
+      for (const containerName of unexpected) {
+        logger.warn({ serverName, containerName }, 'Unexpected container detected');
+        results.push({
+          serverId,
+          serverName,
+          source: 'unexpected_container',
+          timestamp: new Date(),
+          line: `UNEXPECTED_CONTAINER name=${containerName}`,
+        });
+      }
+    } catch (err) {
+      logger.error({ err, serverName }, 'detectUnexpectedContainers error');
+    }
+    return results;
   }
 }

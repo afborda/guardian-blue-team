@@ -6,6 +6,7 @@ import { ContainerBehaviorProfiler } from '../intelligence/container-behavior.js
 import { MarkovUserProfile } from '../intelligence/markov-user-profile.service.js';
 import { NotifierManager } from '../plugins/notifier-manager.js';
 import { logger } from '../utils/logger.js';
+import { formatAnomalyAlert } from '../intelligence/anomaly-copy.js';
 
 export class IntelligenceWorker {
   private static intervalId: NodeJS.Timeout | null = null;
@@ -98,13 +99,12 @@ export class IntelligenceWorker {
   }
 
   private static async notifyAnomaly(serverName: string, anomaly: any): Promise<void> {
-    const method = anomaly.method ?? 'sigma';
-    const unit = method === 'stl' ? 'z' : 'σ';
+    const text = formatAnomalyAlert(serverName, anomaly);
     await NotifierManager.notify({
-      title: `Anomalia em ${serverName}`,
-      body: `Métrica: ${anomaly.metric}\nValor atual: ${anomaly.currentValue} (esperado: ~${anomaly.expectedMean})\nDesvio: ${anomaly.deviations}${unit} (${method})`,
+      title: text.title,
+      body: text.body,
       severity: anomaly.severity === 'critical' ? 'high' : 'medium',
-      metadata: { server: serverName, metric: anomaly.metric, method },
+      metadata: { server: serverName, metric: anomaly.metric, method: anomaly.method ?? 'sigma' },
     });
   }
 

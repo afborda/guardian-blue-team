@@ -28,7 +28,7 @@ export class SOCAnalystService {
       (incident.sourceIps ?? []) as string[],
     );
     const augmentedPrompt = ragContext ? `${prompt}\n${ragContext}` : prompt;
-    const response = await AIProvider.chat(augmentedPrompt, 'You are a SOC analyst. Analyze security incidents concisely in Portuguese (BR). Use historical context when available to inform your recommendations.');
+    const response = await this.consult(augmentedPrompt, 'Você é analista de SOC. Explique o incidente em português, para quem não é da área. Diga se precisa agir ou se é ruído. Não invente comando de shell.', 'fast');
     if (response) {
       logger.info({ provider: response.provider, latency: response.durationMs }, 'SOC incident analysis completed');
     }
@@ -54,7 +54,7 @@ export class SOCAnalystService {
       .where(gte(socIncidents.createdAt, weekAgo));
 
     const prompt = this.buildWeeklySummaryPrompt(stats, incidents);
-    const response = await AIProvider.chat(prompt, 'You are a SOC analyst generating weekly security reports in Portuguese (BR).');
+    const response = await this.consult(prompt, 'Você escreve o resumo semanal de segurança em português, curto e direto. Não invente comando de shell.', 'fast');
     return response?.text ?? null;
   }
 
@@ -82,11 +82,22 @@ export class SOCAnalystService {
       ? `\nINCIDENT MEMORY (${memoryStats.total} cases stored, ${memoryStats.falsePositiveRate}% false positive rate):\nCategories: ${Object.entries(memoryStats.byCategory).map(([k, v]) => `${k}:${v}`).join(', ')}\n`
       : '';
     const augmentedPrompt = memoryContext ? `${prompt}\n${memoryContext}` : prompt;
-    const response = await AIProvider.chat(augmentedPrompt, 'You are a SOC analyst assistant. Answer security questions based on available data in Portuguese (BR).');
+    const response = await this.consult(augmentedPrompt, 'Você responde perguntas de segurança em português, com base nos dados enviados. Não invente comando de shell.', 'fast');
     if (response) {
-      return `${response.text}\n\n<i>🤖 ${response.provider}/${this.getModelShort(response.provider)} (${(response.durationMs / 1000).toFixed(1)}s)</i>`;
+      const model = response.model ?? this.getModelShort(response.provider);
+      return `${response.text}\n\n<i>🤖 ${response.provider}/${model.split('/').pop()?.split(':')[0] ?? model} (${(response.durationMs / 1000).toFixed(1)}s)</i>`;
     }
     return null;
+  }
+
+  private static async consult(
+    prompt: string,
+    systemPrompt: string,
+    tier: 'fast' | 'strong',
+  ): Promise<Awaited<ReturnType<typeof AIProvider.advise>>> {
+    const advised = await AIProvider.advise(prompt, systemPrompt, tier);
+    if (advised) return advised;
+    return AIProvider.chat(prompt, systemPrompt);
   }
 
   private static getModelShort(provider: string): string {

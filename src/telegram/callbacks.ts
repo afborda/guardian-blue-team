@@ -4,8 +4,12 @@ import { handleLoginVerification } from './login-verification.js';
 import { handleCVECallback } from './cve-actions.js';
 import { IncidentMemoryService } from '../services/incident-memory.service.js';
 import { FalsePositiveFilter } from '../intelligence/false-positive-filter.js';
-import { config } from '../config/environment.js';
 import { logger } from '../utils/logger.js';
+import { telegram } from './messaging/sender.js';
+import { buildApprovalResolvedSpec, buildApprovalSpec } from './copy/approval.js';
+import { playbookCopy } from './copy/playbook.js';
+import { IncidentAlertService } from '../services/incident-alert.service.js';
+import type { MessageSpec } from './messaging/types.js';
 import { pendingDiscoveries, pendingReadiness } from './commands.js';
 import { ServerReadinessService } from '../services/server-readiness.service.js';
 import { syncBlocksToServer } from '../playbooks/actions/block-ip.js';
@@ -14,9 +18,15 @@ interface PendingApproval {
   playbookName: string;
   ctx: PlaybookContext;
   createdAt: number;
+  expiresAt: number;
+  spec?: MessageSpec;
+  messageId?: number;
+  chatId?: string;
 }
 
 const pendingApprovals = new Map<string, PendingApproval>();
+const threatReportSentAt = new Map<string, number>();
+const THREAT_REPORT_COOLDOWN_MS = 30 * 60 * 1000;
 
 export async function handleTelegramCallback(callbackQuery: {
   id: string;
@@ -136,10 +146,12 @@ export async function handleTelegramCallback(callbackQuery: {
 
   if (callbackQuery.data.startsWith('incident_monitor_')) {
     const incidentId = parseInt(callbackQuery.data.replace('incident_monitor_', ''));
-    await answerCallback(callbackQuery.id, 'Monitorando...');
-    if (callbackQuery.message) {
+    const operator = callbackQuery.from?.first_name ?? 'operador';
+    await answerCallback(callbackQuery.id, 'Monitorando');
+    const edited = await IncidentAlertService.markResolved(incidentId, 'monitoring', operator);
+    if (!edited && callbackQuery.message) {
       await editMessage(callbackQuery.message,
-        `👁️ Incidente #${incidentId} sendo monitorado. Receberá updates se evoluir.`);
+        `Incidente #${incidentId} em monitoramento por ${operator}.`);
     }
     return;
   }
@@ -152,10 +164,45 @@ export async function handleTelegramCallback(callbackQuery: {
 
     const { handleTelegramCommand } = await import('./commands.js');
     const result = await handleTelegramCommand(`/block ${ip}`);
+    const already = result.includes('já estava bloqueado') || result.includes('already blocked');
+    const failed = !already && /falha|erro|failed|não foi possível/i.test(result);
+    const label = failed
+      ? `Tentei bloquear ${ip}, mas o firewall recusou. Veja os logs do Guardian.`
+      : already
+        ? `O IP ${ip} já estava bloqueado; nada novo foi feito.`
+        : `IP ${ip} bloqueado agora.`;
 
-    if (callbackQuery.message) {
-      await editMessage(callbackQuery.message,
-        `🔒 Incidente #${incidentId} — IP ${ip} bloqueado.\n${result}`);
+    const edited = await IncidentAlertService.attachOutcome(incidentId, {
+      label,
+      kind: failed ? 'failed' : 'blocked',
+      ip,
+    });
+    if (!edited && callbackQuery.message) {
+      await editMessage(callbackQuery.message, label);
+    }
+    return;
+  }
+
+  if (callbackQuery.data.startsWith('incident_unblock_')) {
+    const parts = callbackQuery.data.replace('incident_unblock_', '').split('_');
+    const incidentId = parseInt(parts[0]);
+    const ip = parts.slice(1).join('_');
+    await answerCallback(callbackQuery.id, `Desbloqueando ${ip}...`);
+
+    const { handleTelegramCommand } = await import('./commands.js');
+    const result = await handleTelegramCommand(`/unblock ${ip}`);
+    const failed = /falha|erro|failed|não foi possível/i.test(result);
+    const label = failed
+      ? `Tentei desbloquear ${ip}, mas o firewall recusou. Veja os logs do Guardian.`
+      : `IP ${ip} removido da lista de bloqueio.`;
+
+    const edited = await IncidentAlertService.attachOutcome(incidentId, {
+      label,
+      kind: failed ? 'failed' : 'unblocked',
+      ip,
+    });
+    if (!edited && callbackQuery.message) {
+      await editMessage(callbackQuery.message, label);
     }
     return;
   }
@@ -163,20 +210,18 @@ export async function handleTelegramCallback(callbackQuery: {
   if (callbackQuery.data.startsWith('incident_threat_')) {
     const parts = callbackQuery.data.replace('incident_threat_', '').split('_');
     const ip = parts.slice(1).join('_');
+    const lastThreat = threatReportSentAt.get(ip) ?? 0;
+    if (Date.now() - lastThreat < THREAT_REPORT_COOLDOWN_MS) {
+      await answerCallback(callbackQuery.id, 'Relatório desse IP já foi enviado há pouco.');
+      return;
+    }
+    threatReportSentAt.set(ip, Date.now());
     await answerCallback(callbackQuery.id, `Consultando ${ip}...`);
 
     const { handleTelegramCommand } = await import('./commands.js');
     const result = await handleTelegramCommand(`/threat ${ip}`);
 
-    await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: config.telegram.chatId,
-        text: result,
-        parse_mode: 'HTML',
-      }),
-    }).catch(() => {});
+    await telegram.sendText(result);
     return;
   }
 
@@ -185,101 +230,62 @@ export async function handleTelegramCallback(callbackQuery: {
 
 export function requestPlaybookApproval(playbookName: string, ctx: PlaybookContext): void {
   const approvalId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const expiresAt = new Date(Date.now() + 30 * 60_000);
+  const copy = playbookCopy(playbookName);
+  const containerName = ctx.variables?.['containerName'] as string | undefined;
 
-  pendingApprovals.set(approvalId, {
+  const spec = buildApprovalSpec({
+    approvalId,
+    playbookName,
+    serverName: ctx.serverName,
+    sourceIp: ctx.sourceIp,
+    containerName,
+    incidentId: ctx.incidentId,
+    actionTitle: copy.actionTitle,
+    impact: copy.impact,
+    steps: copy.steps,
+    expiresAt,
+  });
+
+  const pending: PendingApproval = {
     playbookName,
     ctx,
     createdAt: Date.now(),
-  });
-
-  const containerName = ctx.variables?.['containerName'] as string | undefined;
-  const actionDescription = describePlaybookAction(playbookName, ctx);
-
-  const text = [
-    `&#128274; <b>Aprovacao Necessaria</b>`,
-    ``,
-    `<b>Playbook:</b> ${playbookName}`,
-    `<b>Servidor:</b> ${ctx.serverName}`,
-    containerName ? `<b>Container:</b> ${containerName}` : null,
-    ctx.sourceIp ? `<b>IP:</b> <code>${ctx.sourceIp}</code>` : null,
-    ctx.incidentId ? `<b>Incidente:</b> #${ctx.incidentId}` : null,
-    ``,
-    `<b>O que vai acontecer se aprovado:</b>`,
-    actionDescription,
-    ``,
-    `&#9888; <i>Expira em 30 minutos se nao responder.</i>`,
-  ].filter(Boolean).join('\n');
-
-  const keyboard = {
-    inline_keyboard: [[
-      { text: '✅ Aprovar e Executar', callback_data: `pb_approve_${approvalId}` },
-      { text: '❌ Rejeitar', callback_data: `pb_reject_${approvalId}` },
-    ]],
+    expiresAt: expiresAt.getTime(),
+    spec,
   };
+  pendingApprovals.set(approvalId, pending);
 
-  fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: config.telegram.chatId,
-      text,
-      parse_mode: 'HTML',
-      reply_markup: keyboard,
-    }),
-  }).catch(err => logger.error({ err }, 'Failed to send playbook approval request'));
+  void telegram.sendSpec(spec).then(result => {
+    if (result.ok && result.messageId && result.chatId) {
+      pending.messageId = result.messageId;
+      pending.chatId = result.chatId;
+    } else {
+      logger.warn({ approvalId, playbook: playbookName, error: result.error }, 'Falha ao enviar pedido de aprovação');
+    }
+  }).catch(err => logger.warn({ err, approvalId }, 'Falha ao enviar pedido de aprovação'));
 
   setTimeout(() => {
-    if (pendingApprovals.has(approvalId)) {
-      pendingApprovals.delete(approvalId);
-      logger.info({ approvalId, playbook: playbookName }, 'Playbook approval expired');
+    const current = pendingApprovals.get(approvalId);
+    if (!current) return;
+    pendingApprovals.delete(approvalId);
+
+    if (current.chatId && current.messageId && current.spec) {
+      const expired: MessageSpec = {
+        ...current.spec,
+        title: 'Pedido expirado',
+        severity: 'low',
+        action: {
+          required: false,
+          title: 'Resultado',
+          steps: ['Ninguém respondeu em 30 minutos. Nada foi executado.'],
+        },
+        buttons: [],
+      };
+      void telegram.editSpec(current.chatId, current.messageId, expired);
     }
+    logger.info({ approvalId, playbook: playbookName }, 'Playbook approval expired');
   }, 30 * 60 * 1000);
-}
-
-function describePlaybookAction(playbookName: string, ctx: PlaybookContext): string {
-  const containerName = ctx.variables?.['containerName'] as string | undefined;
-
-  switch (playbookName) {
-    case 'container-auto-update':
-      return [
-        `  1. Baixar ultima versao da imagem Docker`,
-        `  2. Recriar o container${containerName ? ` '${containerName}'` : ''}`,
-        `  3. Notificar conclusao`,
-        `  &#9888; O container tera ~10s de downtime durante recriacao`,
-      ].join('\n');
-
-    case 'container-fs-tampering-response':
-      return [
-        `  1. Notificar sobre arquivo suspeito`,
-        `  &#8594; Nenhuma acao destrutiva automatica`,
-        `  &#8594; Investigue manualmente no dashboard`,
-      ].join('\n');
-
-    case 'container-escape-response':
-      return [
-        `  1. Pausar o container (congela execucao)`,
-        `  2. Desconectar todas as redes`,
-        `  3. Notificar sobre tentativa de escape`,
-        `  &#9888; O container ficara inacessivel ate acao manual`,
-      ].join('\n');
-
-    case 'suspicious-process':
-      return [
-        `  1. Notificar sobre processo suspeito`,
-        `  &#8594; Acao manual necessaria`,
-        `  &#8594; Use /incidents para detalhes`,
-      ].join('\n');
-
-    case 'file-integrity-response':
-      return [
-        `  1. Alerta critico sobre arquivo modificado`,
-        `  &#8594; Nenhuma acao automatica`,
-        `  &#8594; Investigue imediatamente: pode ser backdoor`,
-      ].join('\n');
-
-    default:
-      return `  &#8594; Executar playbook '${playbookName}' no servidor ${ctx.serverName}`;
-  }
 }
 
 async function handlePlaybookApproval(
@@ -288,33 +294,45 @@ async function handlePlaybookApproval(
   callbackQuery: { id: string; message?: { message_id: number; chat: { id: number } }; from?: { first_name?: string } }
 ): Promise<void> {
   const pending = pendingApprovals.get(approvalId);
-
-  await answerCallback(callbackQuery.id, approved ? 'Aprovado!' : 'Rejeitado');
+  await answerCallback(callbackQuery.id, approved ? 'Aprovado' : 'Rejeitado');
 
   if (!pending) {
-    await editMessage(callbackQuery.message, '⏰ Aprovação expirada ou já processada.');
+    await editMessage(callbackQuery.message, '⏰ Pedido expirado ou já processado. Nada foi executado.');
     return;
   }
 
   pendingApprovals.delete(approvalId);
-  const operator = callbackQuery.from?.first_name ?? 'unknown';
+  const operator = callbackQuery.from?.first_name ?? 'operador';
 
   if (!approved) {
-    await editMessage(callbackQuery.message, `❌ Playbook <b>${pending.playbookName}</b> rejeitado por ${operator}`);
+    if (pending.chatId && pending.messageId && pending.spec) {
+      await telegram.editSpec(pending.chatId, pending.messageId, buildApprovalResolvedSpec(pending.spec, false, operator));
+    } else {
+      await editMessage(callbackQuery.message, `Ação <b>${pending.playbookName}</b> rejeitada por ${operator}. Nada foi executado.`);
+    }
     return;
   }
 
   const playbook = PlaybookRegistry.getByName(pending.playbookName);
   if (!playbook) {
-    await editMessage(callbackQuery.message, '❌ Playbook não encontrado.');
+    await editMessage(callbackQuery.message, 'Playbook não encontrado. Nada foi executado.');
     return;
   }
 
-  await editMessage(callbackQuery.message, `✅ Playbook <b>${pending.playbookName}</b> aprovado por ${operator}. Executando...`);
+  let detail = 'Executado com sucesso.';
+  try {
+    const result = await PlaybookEngine.execute(playbook, { ...pending.ctx, triggeredBy: `approval:${operator}` });
+    if (!result.success) detail = 'A execução falhou; veja os logs do Guardian.';
+  } catch (err) {
+    logger.error({ err, playbook: pending.playbookName }, 'Approved playbook execution failed');
+    detail = 'A execução falhou; veja os logs do Guardian.';
+  }
 
-  PlaybookEngine.execute(playbook, { ...pending.ctx, triggeredBy: `approval:${operator}` }).catch(err =>
-    logger.error({ err, playbook: pending.playbookName }, 'Approved playbook execution failed')
-  );
+  if (pending.chatId && pending.messageId && pending.spec) {
+    await telegram.editSpec(pending.chatId, pending.messageId, buildApprovalResolvedSpec(pending.spec, true, operator, detail));
+  } else {
+    await editMessage(callbackQuery.message, `Ação aprovada por ${operator}. ${detail}`);
+  }
 }
 
 async function handleIncidentFeedback(
@@ -322,7 +340,7 @@ async function handleIncidentFeedback(
   outcome: 'false_positive' | 'resolved',
   callbackQuery: { id: string; message?: { message_id: number; chat: { id: number } }; from?: { first_name?: string } }
 ): Promise<void> {
-  const operator = callbackQuery.from?.first_name ?? 'unknown';
+  const operator = callbackQuery.from?.first_name ?? 'operador';
   const resolution = outcome === 'false_positive'
     ? `Marcado como falso positivo por ${operator}`
     : `Confirmado como ameaça real por ${operator}`;
@@ -331,13 +349,16 @@ async function handleIncidentFeedback(
     await IncidentMemoryService.store(incidentId, resolution, outcome);
     FalsePositiveFilter.invalidateCache();
 
-    const emoji = outcome === 'false_positive' ? '🏷️' : '✅';
-    const label = outcome === 'false_positive' ? 'FALSO POSITIVO' : 'AMEAÇA CONFIRMADA';
-
+    const label = outcome === 'false_positive' ? 'Falso positivo' : 'Ameaça confirmada';
     await answerCallback(callbackQuery.id, label);
-    if (callbackQuery.message) {
-      await editMessage(callbackQuery.message,
-        `${emoji} Incidente #${incidentId} — <b>${label}</b>\nPor: ${operator}\n\n💡 Guardian aprendeu com este feedback.`);
+
+    const edited = await IncidentAlertService.markResolved(
+      incidentId,
+      outcome === 'false_positive' ? 'false_positive' : 'confirmed',
+      operator,
+    );
+    if (!edited && callbackQuery.message) {
+      await editMessage(callbackQuery.message, `Incidente #${incidentId} — ${label} por ${operator}.`);
     }
 
     logger.info({ incidentId, outcome, operator }, 'Incident feedback received via Telegram');
@@ -371,31 +392,10 @@ export function buildIncidentFeedbackKeyboard(incidentId: number, sourceIp?: str
 }
 
 async function answerCallback(callbackId: string, text: string): Promise<void> {
-  try {
-    await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/answerCallbackQuery`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ callback_query_id: callbackId, text }),
-    });
-  } catch (err) {
-    logger.debug({ err }, 'Failed to answer callback query');
-  }
+  await telegram.answer(callbackId, text);
 }
 
 async function editMessage(message: { message_id: number; chat: { id: number } } | undefined, text: string): Promise<void> {
   if (!message) return;
-  try {
-    await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/editMessageText`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: message.chat.id,
-        message_id: message.message_id,
-        text,
-        parse_mode: 'HTML',
-      }),
-    });
-  } catch (err) {
-    logger.debug({ err, messageId: message.message_id }, 'Failed to edit message');
-  }
+  await telegram.editText(message.chat.id, message.message_id, text);
 }

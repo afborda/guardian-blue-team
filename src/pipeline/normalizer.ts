@@ -124,6 +124,8 @@ export class EventNormalizer {
         return this.normalizeContainerProcess(entry);
       case 'container_network':
         return this.normalizeContainerNetwork(entry);
+      case 'container_egress':
+        return this.normalizeContainerEgress(entry);
       case 'container_filesystem':
         return this.normalizeContainerFilesystem(entry);
       case 'container_config':
@@ -154,6 +156,10 @@ export class EventNormalizer {
         return this.normalizeDiskCritical(entry);
       case 'reboot':
         return this.normalizeReboot(entry);
+      case 'backup':
+        return this.normalizeBackup(entry);
+      case 'unexpected_container':
+        return this.normalizeUnexpectedContainer(entry);
       default:
         return null;
     }
@@ -887,6 +893,53 @@ export class EventNormalizer {
     };
   }
 
+  private static normalizeContainerEgress(entry: RawLogEntry): NormalizedEvent | null {
+    // Format: container|syn=N|dst=N|ports=N|web=N|rfc=N|sample=ip:port,ip:port
+    const [containerName, ...fields] = entry.line.split('|');
+    if (!containerName) return null;
+
+    const values = new Map<string, string>();
+    for (const field of fields) {
+      const separator = field.indexOf('=');
+      if (separator <= 0) continue;
+      values.set(field.slice(0, separator), field.slice(separator + 1));
+    }
+
+    const number = (key: string): number => {
+      const parsed = Number.parseInt(values.get(key) ?? '0', 10);
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+
+    const sample = (values.get('sample') ?? '').split(',').filter(Boolean);
+    const first = sample[0] ?? '';
+    const lastColon = first.lastIndexOf(':');
+    const sampleIp = lastColon > 0 ? first.slice(0, lastColon) : null;
+    const samplePort = lastColon > 0 ? Number.parseInt(first.slice(lastColon + 1), 10) : null;
+
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: 'container_egress',
+      category: 'container',
+      severity: 'info',
+      eventType: 'container_egress_snapshot',
+      sourceIp: sampleIp,
+      destinationPort: Number.isFinite(samplePort) ? samplePort : null,
+      userName: null,
+      processName: containerName,
+      rawLog: entry.line,
+      metadata: {
+        containerName,
+        synSent: number('syn'),
+        distinctDst: number('dst'),
+        distinctPorts: number('ports'),
+        webDst: number('web'),
+        rfc1918Dst: number('rfc'),
+        sample,
+      },
+    };
+  }
+
   private static normalizeContainerFilesystem(entry: RawLogEntry): NormalizedEvent | null {
     // Format: containerName|A /tmp/xmrig  or  C /usr/bin/node
     const [containerName, rest] = entry.line.split('|', 2);
@@ -1234,6 +1287,63 @@ export class EventNormalizer {
       processName: null,
       rawLog: entry.line,
       metadata: { uptimeSeconds: uptimeMatch ? parseInt(uptimeMatch[1]) : null },
+    };
+  }
+
+  private static normalizeBackup(entry: RawLogEntry): NormalizedEvent | null {
+    if (entry.line.startsWith('BACKUP_MISSING')) {
+      const ageMatch = entry.line.match(/age_hours=([\d.]+)/);
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'backup',
+        category: 'system',
+        severity: 'high',
+        eventType: 'backup_missing',
+        sourceIp: null,
+        destinationPort: null,
+        userName: null,
+        processName: null,
+        rawLog: entry.line,
+        metadata: { ageHours: ageMatch ? parseFloat(ageMatch[1]) : null },
+      };
+    }
+    if (entry.line.startsWith('BACKUP_TOO_SMALL')) {
+      const sizeMatch = entry.line.match(/size_bytes=(\d+)/);
+      const minMatch = entry.line.match(/min_bytes=(\d+)/);
+      return {
+        serverId: entry.serverId,
+        timestamp: entry.timestamp,
+        source: 'backup',
+        category: 'system',
+        severity: 'high',
+        eventType: 'backup_too_small',
+        sourceIp: null,
+        destinationPort: null,
+        userName: null,
+        processName: null,
+        rawLog: entry.line,
+        metadata: { sizeBytes: sizeMatch ? parseInt(sizeMatch[1]) : null, minBytes: minMatch ? parseInt(minMatch[1]) : null },
+      };
+    }
+    return null;
+  }
+
+  private static normalizeUnexpectedContainer(entry: RawLogEntry): NormalizedEvent | null {
+    const nameMatch = entry.line.match(/name=(\S+)/);
+    return {
+      serverId: entry.serverId,
+      timestamp: entry.timestamp,
+      source: 'unexpected_container',
+      category: 'container',
+      severity: 'high',
+      eventType: 'unexpected_container',
+      sourceIp: null,
+      destinationPort: null,
+      userName: null,
+      processName: nameMatch ? nameMatch[1] : null,
+      rawLog: entry.line,
+      metadata: { containerName: nameMatch ? nameMatch[1] : null },
     };
   }
 }

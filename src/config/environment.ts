@@ -21,6 +21,11 @@ const envSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(1, 'TELEGRAM_BOT_TOKEN is required'),
   TELEGRAM_CHAT_ID: z.string().min(1, 'TELEGRAM_CHAT_ID is required'),
   TELEGRAM_WEBHOOK_SECRET: z.string().optional(),
+  // '1' registra o payload nos logs em vez de enviar (desenvolvimento/teste).
+  TELEGRAM_DRY_RUN: z.string().default('0'),
+  // 'all' | 'legacy' | lista de famílias (incident,approval,cve,...).
+  TELEGRAM_COPY_V2: z.string().default('all'),
+  TELEGRAM_TEST_CHAT_ID: z.string().optional(),
 
   // Base URL for webhook registration
   GUARDIAN_BASE_URL: z.string().optional(),
@@ -43,6 +48,12 @@ const envSchema = z.object({
   OLLAMA_CHAT_MODEL: z.string().default('qwen3:0.6b'),
   OLLAMA_EMBED_MODEL: z.string().default('bge-m3'),
   OPENAI_EMBED_MODEL: z.string().default('text-embedding-3-small'),
+
+  // AI — NVIDIA NIM (advisor only: alert text and CVE explanation). Not in the failover chain.
+  NVIDIA_API_KEY: z.string().optional(),
+  NVIDIA_BASE_URL: z.string().default('https://integrate.api.nvidia.com/v1'),
+  NVIDIA_MODEL: z.string().default('z-ai/glm-5.3'),
+  NVIDIA_FAST_MODEL: z.string().default('z-ai/glm-5.3-flash'),
 
   // AI — Provider preference
   AI_PROVIDER: z.enum(['gemini', 'openai', 'claude', 'ollama', 'auto']).default('auto'),
@@ -142,6 +153,9 @@ export const config = {
     chatId: env.TELEGRAM_CHAT_ID,
     webhookSecret: env.TELEGRAM_WEBHOOK_SECRET,
     baseUrl: env.GUARDIAN_BASE_URL || null,
+    dryRun: env.TELEGRAM_DRY_RUN === '1' || env.TELEGRAM_DRY_RUN.toLowerCase() === 'true',
+    copyV2: env.TELEGRAM_COPY_V2.trim().toLowerCase(),
+    testChatId: env.TELEGRAM_TEST_CHAT_ID || null,
   },
 
   ai: {
@@ -158,6 +172,10 @@ export const config = {
     ollamaChatModel: env.OLLAMA_CHAT_MODEL,
     ollamaEmbedModel: env.OLLAMA_EMBED_MODEL,
     openaiEmbedModel: env.OPENAI_EMBED_MODEL,
+    nvidiaApiKey: env.NVIDIA_API_KEY || null,
+    nvidiaBaseUrl: env.NVIDIA_BASE_URL.replace(/\/$/, ''),
+    nvidiaModel: env.NVIDIA_MODEL,
+    nvidiaFastModel: env.NVIDIA_FAST_MODEL,
   },
 
   resend: {

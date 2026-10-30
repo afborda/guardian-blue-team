@@ -1,11 +1,12 @@
 import { ServerService } from '../services/server.service.js';
 import { discoverRemoteServer } from '../discovery/remote.js';
-import { config } from '../config/environment.js';
+import { telegram } from '../telegram/messaging/sender.js';
 import { logger } from '../utils/logger.js';
 import { db, dbDate } from '../database/connection.js';
 import { discoveryBaselines } from '../database/schema.js';
 import { eq, sql } from 'drizzle-orm';
 import type { DiscoveryResult } from '../discovery/types.js';
+import { describeDiscoveryChanges, fingerprintFromSnapshot, isLabelMigration } from '../discovery/baseline-diff.js';
 
 interface Baseline {
   services: string[];
@@ -68,14 +69,18 @@ export class DiscoveryWorker {
           }
 
           const previous = await loadBaseline(server.name);
+          const fingerprint = fingerprintFromSnapshot(result.snapshot, result.analysis.architecture);
           const current: Baseline = {
-            services: result.analysis.monitoringProfile.services,
-            ports: result.analysis.monitoringProfile.criticalPorts,
-            architecture: result.analysis.architecture,
+            services: fingerprint.services,
+            ports: fingerprint.ports,
+            architecture: fingerprint.architecture,
             knownContainers: previous?.knownContainers ?? [],
           };
 
-          const changes = previous ? diffBaseline(previous, current) : [];
+          const migrating = previous ? isLabelMigration(previous.services, current.services) : false;
+          const changes = previous && !migrating
+            ? describeDiscoveryChanges(previous, current)
+            : [];
           if (changes.length > 0) {
             await notifyChanges(server.name, changes);
           }
@@ -145,25 +150,6 @@ async function saveBaseline(serverName: string, baseline: Baseline): Promise<voi
   }
 }
 
-function diffBaseline(previous: Baseline, current: Baseline): string[] {
-  const changes: string[] = [];
-
-  const newServices = current.services.filter((s) => !previous.services.includes(s));
-  const removedServices = previous.services.filter((s) => !current.services.includes(s));
-  const newPorts = current.ports.filter((p) => !previous.ports.includes(p));
-  const closedPorts = previous.ports.filter((p) => !current.ports.includes(p));
-
-  if (newServices.length > 0) changes.push(`New services: ${newServices.join(', ')}`);
-  if (removedServices.length > 0) changes.push(`Stopped services: ${removedServices.join(', ')}`);
-  if (newPorts.length > 0) changes.push(`New ports: ${newPorts.join(', ')}`);
-  if (closedPorts.length > 0) changes.push(`Closed ports: ${closedPorts.join(', ')}`);
-  if (current.architecture !== previous.architecture) {
-    changes.push(`Architecture changed: ${previous.architecture} → ${current.architecture}`);
-  }
-
-  return changes;
-}
-
 async function proposeAutoEnrollment(
   serverName: string,
   analysis: DiscoveryResult,
@@ -181,22 +167,16 @@ async function proposeAutoEnrollment(
   if (alreadyKnown.length === 0) return Array.from(known);
 
   const text = [
-    `🆕 <b>Auto-Discovery: new services found</b>`,
-    `🖥️ Server: <b>${serverName}</b>`,
+    `🆕 <b>Novos serviços em ${serverName}</b>`,
     '',
-    `New services detected:`,
+    'O Guardian passou a monitorar:',
     ...brandNew.map((s) => `  • ${s}`),
     '',
-    `These are now automatically monitored.`,
-    `Log paths: ${analysis.monitoringProfile.logPaths.join(', ') || 'default'}`,
-    `Critical ports: ${analysis.monitoringProfile.criticalPorts.join(', ') || 'none'}`,
+    `Caminhos de log: ${analysis.monitoringProfile.logPaths.join(', ') || 'padrão'}`,
+    `Portas críticas: ${analysis.monitoringProfile.criticalPorts.join(', ') || 'nenhuma'}`,
   ].join('\n');
 
-  await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: config.telegram.chatId, text, parse_mode: 'HTML' }),
-  }).catch((err) => logger.warn({ err }, 'Auto-enrollment notification failed'));
+  await telegram.sendText(text).catch((err) => logger.warn({ err }, 'Auto-enrollment notification failed'));
 
   logger.info({ serverName, newServices: brandNew }, 'Auto-enrolled new services in monitoring');
   return Array.from(known);
@@ -204,17 +184,13 @@ async function proposeAutoEnrollment(
 
 async function notifyChanges(serverName: string, changes: string[]): Promise<void> {
   const text = [
-    `🔄 <b>Re-Discovery: changes detected</b>`,
-    `🖥️ Server: <b>${serverName}</b>`,
+    `🔄 <b>Mudou algo visível em ${serverName}</b>`,
     '',
     ...changes.map((c) => `• ${c}`),
     '',
-    '⚠️ Review recommended. No auto-changes applied.',
+    'Isso compara portas abertas na internet e containers em execução. Não é um ataque e nada foi alterado sozinho.',
+    'Se você não fez deploy nem fechou uma porta, vale olhar. Se fez, pode ignorar.',
   ].join('\n');
 
-  await fetch(`https://api.telegram.org/bot${config.telegram.botToken}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: config.telegram.chatId, text, parse_mode: 'HTML' }),
-  }).catch((err) => logger.warn({ err }, 'Re-discovery notification failed'));
+  await telegram.sendText(text).catch((err) => logger.warn({ err }, 'Re-discovery notification failed'));
 }

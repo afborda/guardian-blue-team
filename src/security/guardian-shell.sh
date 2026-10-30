@@ -25,6 +25,7 @@ SRC_IP="${SRC_IP:-unknown}"
 
 # Limites duros pra placeholders numéricos (defesa contra abuso recursos no servidor)
 MAX_LINES=10000
+MAX_PID=4194304
 MAX_MINUTES=1440      # 24h
 MAX_UNIX_TS_AGE=2678400   # 31 dias — janela aceitável de --since timestamp
 
@@ -66,6 +67,8 @@ HASHES["650a734558dcaee716dc069b485c46162f85f7989e624477a72c3f3b2e6ed33a"]='cat 
 HASHES["66f621aa9f94767c3d594278a6dd6c52762170e6c7b878f26a57cebb51f2d4dc"]='cat /proc/diskstats && echo "---PSEP---" && cat /proc/net/dev && echo "---PSEP---" && sleep 1 && echo "---PSEP---" && cat /proc/diskstats && echo "---PSEP---" && cat /proc/net/dev'
 HASHES["8a20c696aed220dce9da9f429323171393f4b77c05f414e41151b2e8dc60bb0c"]='ps aux --sort=-%cpu 2>/dev/null | head -n %LINES% | tail -n +2 | awk '\''{print $2, $1, $3, $4, $11}'\'''
 HASHES["a4fd34596b62eff78043ace84fc303baf1c7c920d5d23a662cecb15c849677d8"]='docker ps --format '\''{{.Image}}\t{{.Names}}'\'' 2>/dev/null && echo '\''---IMAGES---'\'' && docker images --format '\''{{.Repository}}\t{{.Tag}}\t{{.Digest}}\t{{.Size}}'\'' 2>/dev/null | head -50'
+HASHES["2c899f31cd91b552e830a8c6e579e461ce346e60919e9d972186a665cc81b2be"]='docker ps --format '\''{{.Names}}'\'' 2>/dev/null'
+HASHES["40a45e6e84dac6c0aed479b95d2be5b3b60fbde9ebb57ad054383cfd61e24607"]='find /backup/daily -name '\''babarato-*.sql.gz.gpg'\'' -printf '\''%T@ %s %f\n'\'' 2>/dev/null | sort -rn | head -1'
 HASHES["c59e720167118c04d0f60b5d1729a4751e53dfe6adb3e7efc511de94208d12ef"]='which trivy 2>/dev/null'
 HASHES["62641aeef36eb805dbaf9c3653977935c1f71a33e9a69e7da34f21eb9e343681"]='last -F -n %LINES% 2>/dev/null || last -n %LINES% 2>/dev/null || echo '\'''\'''
 HASHES["d87c726dbeb373b699d9477fd9c638b5f06532a113a862f5e4ed92f9c2b09ed9"]='sudo lastb -F -n %LINES% 2>/dev/null || sudo lastb -n %LINES% 2>/dev/null || echo '\'''\'''
@@ -79,8 +82,11 @@ HASHES["1aba280c7103d22feeb80a63bf8adcde87548b06402c6d8a5eea35610e313718"]='sudo
 HASHES["61a33f3e9e9dbc7f962ed15de602e1d4553e9c8dfe81ebf0bc7164a6329ed5a2"]='which fail2ban-client'
 HASHES["f4283e3adaba620d0dbf22a8382e5137e9326f110b1083a881cc5a48aea3afef"]='sudo fail2ban-client set guardian-jail banip --bantime -1 %IP%'
 HASHES["867a4ff5ac11609419bbf9a56855ca4b4e2abb7f25533b5ed7f8d3ca65c02161"]='sudo ufw deny from %IP% comment '\''guardian-block-%CONTAINER_ID%'\'''
+HASHES["f33e6c80d9d8c0c735a7a7ab4feaab25342470e6a660973cd594258f90c3bb53"]='sudo ufw insert 1 deny from %IP% comment '\''guardian-block-%CONTAINER_ID%'\'''
 HASHES["8dfc8de8f11db185ebc5cf2affbbccd74e50e395a3596913d37d6b483f456dae"]='sudo ufw deny from %IP% comment '\''guardian-prop-%CONTAINER_ID%'\'''
+HASHES["c689336b7cacf6ef3a7dc7a00036f6494c16d43bc8e9aa08d7c3fbf563448fd2"]='sudo ufw insert 1 deny from %IP% comment '\''guardian-prop-%CONTAINER_ID%'\'''
 HASHES["d5ce19cdf11cef11f0509d057fc9adc5094cac6390d748ef416b2c2754bb5f64"]='sudo ufw status | grep -q '\''%IP%'\'''
+HASHES["5dd5abae2be5c59d4490d662bbbc3abaf6a08465f7061578c48d251574fa8ffa"]='sudo ufw status | grep -F -q -- '\''%IP%'\'''
 HASHES["70c93d2e0a80fabf5f836be3b42378b9dbf6e3be53e01e5f9600d1989abc7fa2"]='sudo fail2ban-client status guardian-jail 2>/dev/null | grep -q '\''%IP%'\'''
 HASHES["04d90afa2e620320340b73cf7aac1706e0a31510dcff71ca27d41d1dad97e202"]='sudo ufw delete deny from %IP%'
 HASHES["f78c1329acba2677341716a88bce17e1483d007dfd6016fb090fb6afe727f686"]='sudo fail2ban-client set guardian-jail unbanip %IP%'
@@ -93,6 +99,9 @@ HASHES["0b9c0898fbc24ca15b72f9cf6f79a9a746b3a90d938a638c259760966c3c0cb6"]='sudo
 HASHES["e3fff8bcf665acbbb226799cbb80d8bf1a165cfbd626486a1b9ebbe2a141a64a"]='sudo iptables -I GUARDIAN-INPUT -s %IP% -m limit --limit %LINES%/sec --limit-burst %LINES% -j ACCEPT'
 HASHES["82ab5d49358493adf04db0cca5468b5c370f51d92d9af98b2b0b47e628ff1d0e"]='sudo iptables -A GUARDIAN-INPUT -s %IP% -j DROP'
 HASHES["0b9c0898fbc24ca15b72f9cf6f79a9a746b3a90d938a638c259760966c3c0cb6"]='sudo iptables -D GUARDIAN-INPUT -s %IP% -j DROP'
+HASHES["6e8360bbafd152e3c0adfeb944c30752aef437d8eeac82078ae88570e7de3b05"]='docker ps --format '\''{{.ID}}\t{{.Names}}'\'' 2>/dev/null | head -40'
+HASHES["7aa33db74ece6e489933188d1a328585f65def797dae5b31031959fa9b16fd33"]='docker inspect --format '\''{{.State.Pid}}'\'' %CONTAINER_ID% 2>/dev/null'
+HASHES["10be3741e8d3a3c3c549137e7661f15a120d846fac5816be7cdba38487492cbc"]='sudo nsenter -t %PID% -n ss -tnp state syn-sent 2>/dev/null | head -200'
 # END_ALLOWLIST
 
 # ── Recusa precoce ────────────────────────────────────────────────────────────
@@ -128,6 +137,8 @@ normalize() {
   s=$(printf '%s' "$s" | sed -E "s/(tail|--tail) -[0-9]+/\1 -%LINES%/g")
   s=$(printf '%s' "$s" | sed -E "s/(tail|--tail) [0-9]+/\1 %LINES%/g")
   s=$(printf '%s' "$s" | sed -E "s/last -F -n [0-9]+/last -F -n %LINES%/g")
+  # %PID% — nsenter -t 12345 (PID do host)
+  s=$(printf '%s' "$s" | sed -E "s/nsenter -t [0-9]+/nsenter -t %PID%/g")
   # %CONTAINER_ID% — hex de 12-64 chars (docker IDs full ou short)
   s=$(printf '%s' "$s" | sed -E "s/\b[0-9a-f]{12,64}\b/%CONTAINER_ID%/g")
   # %IP% — endereço IPv4 com ou sem CIDR (ex: 1.2.3.4 ou 1.2.3.4/32)
@@ -180,6 +191,13 @@ validate_placeholders() {
     [[ "$v" =~ ^[0-9]+$ ]] || return 1
     (( v <= MAX_LINES )) || return 1
   done < <(printf '%s' "$cmd" | grep -oE "(tail|--tail) (-n |-)?[0-9]+|last -F -n [0-9]+" | grep -oE "[0-9]+$" || true)
+
+  # %PID% — só dígitos, positivo e dentro do limite do kernel
+  while IFS= read -r v; do
+    [[ -z "$v" ]] && continue
+    [[ "$v" =~ ^[0-9]+$ ]] || return 1
+    (( v > 0 && v <= MAX_PID )) || return 1
+  done < <(printf '%s' "$cmd" | grep -oE "nsenter -t [0-9]+" | grep -oE "[0-9]+$" || true)
 
   # %CONTAINER_ID% — só hex
   while IFS= read -r v; do

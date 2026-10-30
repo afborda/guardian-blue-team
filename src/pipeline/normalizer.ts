@@ -126,6 +126,8 @@ export class EventNormalizer {
         return this.normalizeContainerNetwork(entry);
       case 'container_egress':
         return this.normalizeContainerEgress(entry);
+      case 'container_stdout':
+        return this.normalizeContainerStdout(entry);
       case 'container_filesystem':
         return this.normalizeContainerFilesystem(entry);
       case 'container_config':
@@ -890,6 +892,32 @@ export class EventNormalizer {
       processName: containerName,
       rawLog: entry.line,
       metadata: { containerName, remoteIp, remotePort },
+    };
+  }
+
+  private static normalizeContainerStdout(entry: RawLogEntry): NormalizedEvent | null {
+    // Format: containerName|2026-10-30T18:00:00Z line
+    const separator = entry.line.indexOf('|');
+    if (separator <= 0) return null;
+    const containerName = entry.line.slice(0, separator);
+    const raw = entry.line.slice(separator + 1);
+    const timestampMatch = raw.match(/^(\d{4}-\d{2}-\d{2}T\S+)\s(.*)$/);
+    const timestamp = timestampMatch ? new Date(timestampMatch[1]!) : entry.timestamp;
+    const logLine = timestampMatch?.[2] ?? raw;
+
+    return {
+      serverId: entry.serverId,
+      timestamp: Number.isNaN(timestamp.getTime()) ? entry.timestamp : timestamp,
+      source: 'container_stdout',
+      category: 'container',
+      severity: 'info',
+      eventType: 'container_stdout',
+      sourceIp: null,
+      destinationPort: null,
+      userName: null,
+      processName: containerName,
+      rawLog: raw,
+      metadata: { containerName, logLine },
     };
   }
 

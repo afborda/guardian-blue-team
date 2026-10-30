@@ -26,6 +26,8 @@ const envSchema = z.object({
   // 'all' | 'legacy' | lista de famílias (incident,approval,cve,...).
   TELEGRAM_COPY_V2: z.string().default('all'),
   TELEGRAM_TEST_CHAT_ID: z.string().optional(),
+  // Containers cujo stdout/stderr deve ser coletado (separados por vírgula).
+  GUARDIAN_LOG_CONTAINERS: z.string().optional(),
 
   // Base URL for webhook registration
   GUARDIAN_BASE_URL: z.string().optional(),
@@ -147,6 +149,13 @@ export const config = {
   },
 
   notifiers: env.NOTIFIERS.split(',').map(s => s.trim()).filter(Boolean),
+
+  collection: {
+    logContainers: (env.GUARDIAN_LOG_CONTAINERS ?? '')
+      .split(',')
+      .map(name => name.trim())
+      .filter(Boolean),
+  },
 
   telegram: {
     botToken: env.TELEGRAM_BOT_TOKEN,

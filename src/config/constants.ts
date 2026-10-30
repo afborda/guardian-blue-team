@@ -168,6 +168,10 @@ export const CONSTANTS = {
     imageScanIntervalMs: 6 * 60 * 60 * 1000, // 6h — heavy, separate worker
     miningPorts: [3333, 4444, 5555, 8888, 14433, 14444, 45700, 9999],
     suspiciousContainerPaths: ['/tmp/', '/dev/shm/', '/var/tmp/', '/run/'],
+    // Linhas de stdout/stderr de container que indicam execução de comando
+    // ou falha típica de exploit (o marcador RCE_RES foi visto no incidente).
+    stdoutPatterns: /RCE_RES|sh: .*not found|command not found|Cannot find module|child_process\.(exec|spawn)|EACCES.*exec/i,
+    logsIntervalMs: 2 * 60 * 1000,
     minCvssForAutoUpdate: 9.0,
     minCvssForAlert: 7.0,
   },

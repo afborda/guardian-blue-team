@@ -410,6 +410,16 @@ const DETECTION_RULES: DetectionRule[] = [
     eventType: 'container_mining_network',
   },
   {
+    name: 'container_rce_marker',
+    description: 'Sinal de execução de comando/exploit no stdout de um container',
+    condition: (_events, current) => {
+      if (current.source !== 'container_stdout') return false;
+      return CONSTANTS.container.stdoutPatterns.test(current.rawLog);
+    },
+    severity: 'critical',
+    eventType: 'container_rce_marker',
+  },
+  {
     name: 'container_egress_scan',
     description: 'Container abrindo conexões SYN para muitos destinos — scan, beaconing ou malware',
     condition: (_events, current) => {

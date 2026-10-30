@@ -2,9 +2,9 @@ import { SSHCollector, type SSHTarget } from './ssh-collector.js';
 import { logger } from '../utils/logger.js';
 
 const BACKUP_DIR = '/backup/daily';
-const BACKUP_PATTERN = 'babarato-*.sql.gz.gpg';
-// Minimum expected size: 1 GB compressed (recent dumps have been ~3.3 GB+)
-const MIN_SIZE_BYTES = 1_000_000_000;
+const BACKUP_PATTERN = 'babarato-*.gpg';
+// Dumps leves (zstd) ficam ~50 MB; full mensal pode ser maior.
+const MIN_SIZE_BYTES = 10_000_000;
 // Alert if no backup newer than this many hours (cron runs at 03h)
 const MAX_AGE_HOURS = 26;
 // Evita repetir o mesmo alerta a cada ciclo de 2 min; backup é diário.

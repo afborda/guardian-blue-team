@@ -222,6 +222,16 @@ const PLAYBOOKS: PlaybookDefinition[] = [
     requiresApproval: false,
   },
   {
+    name: 'container-rce-containment',
+    description: 'Responde a sinal de RCE no stdout do container — isola a rede e alerta sem reiniciar',
+    trigger: { eventType: 'container_rce_marker' },
+    steps: [
+      { action: 'disconnect-container' },
+      { action: 'notify', params: { severity: 'critical' } },
+    ],
+    requiresApproval: false,
+  },
+  {
     name: 'container-fs-tampering-response',
     description: 'Alerts on suspicious filesystem changes inside container',
     trigger: { eventType: 'container_fs_tampering' },

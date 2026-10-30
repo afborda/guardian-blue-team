@@ -70,6 +70,11 @@ export class EventCorrelator {
       return r ? { ...r, category: 'egress' } : null;
     }
 
+    if (event.eventType === 'container_rce_marker') {
+      const r = await this.correlateContainerRce(event);
+      return r ? { ...r, category: 'container_rce' } : null;
+    }
+
     return null;
   }
 
@@ -312,6 +317,43 @@ export class EventCorrelator {
     }).returning();
 
     logger.warn({ container, serverId: event.serverId, incidentId: newIncident.id }, 'Egress scan incident created');
+    return { id: newIncident.id, isNew: true };
+  }
+
+  private static async correlateContainerRce(event: NormalizedEvent): Promise<{ id: number; isNew: boolean } | null> {
+    const container = (event.metadata?.containerName as string | undefined) ?? 'container';
+    const cutoff = new Date(Date.now() - CORRELATION_WINDOW_MS);
+
+    const existing = await db.select().from(socIncidents)
+      .where(and(
+        eq(socIncidents.category, 'container_rce'),
+        eq(socIncidents.status, 'open'),
+        gte(socIncidents.lastSeenAt, dbDate(cutoff)),
+      ))
+      .then(rows => rows.find(row => {
+        const servers = (row.affectedServers ?? []) as number[];
+        return servers.includes(event.serverId) && row.title.includes(container);
+      }));
+
+    if (existing) {
+      await db.update(socIncidents)
+        .set({ lastSeenAt: dbNow(), eventCount: existing.eventCount + 1 })
+        .where(eq(socIncidents.id, existing.id));
+      return { id: existing.id, isNew: false };
+    }
+
+    const [newIncident] = await db.insert(socIncidents).values({
+      title: `Possível execução remota — ${container}`,
+      severity: 'critical',
+      category: 'container_rce',
+      sourceIps: [],
+      affectedServers: [event.serverId],
+      eventCount: 1,
+      firstSeenAt: dbNow(),
+      lastSeenAt: dbNow(),
+    }).returning();
+
+    logger.warn({ container, serverId: event.serverId, incidentId: newIncident.id }, 'Container RCE marker incident created');
     return { id: newIncident.id, isNew: true };
   }
 

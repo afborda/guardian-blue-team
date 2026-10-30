@@ -24,6 +24,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   integrity: 'Arquivo crítico alterado',
   dns: 'Consulta DNS suspeita',
   egress: 'Tráfego de saída suspeito',
+  container_rce: 'Possível execução remota',
   crypto_mining: 'Mineração de cripto',
   lateral_movement: 'Movimento lateral',
   backup: 'Problema no backup',
@@ -38,6 +39,7 @@ const CATEGORY_MEANING: Record<string, string> = {
   container: 'Um processo ou container fez algo fora do padrão. Vale olhar antes de reiniciar qualquer coisa.',
   integrity: 'Um arquivo crítico mudou. Pode ser atualização legítima ou backdoor.',
   egress: 'Um container começou a falar com muitos destinos diferentes. É o padrão de um scan ou de um malware.',
+  container_rce: 'O stdout do container tem sinal de execução de comando. Pode ser exploit em andamento; isolar preserva a evidência.',
   crypto_mining: 'Um processo está usando CPU para minerar cripto. Costuma indicar invasão.',
   lateral_movement: 'Alguém tentou se mover de uma máquina para outra dentro da rede.',
   backup: 'O backup diário não foi gerado como esperado.',
@@ -55,9 +57,9 @@ function plural(count: number, singular: string, pluralWord: string): string {
 
 function incidentButtons(input: IncidentCopyInput): MessageButton[] {
   const buttons: MessageButton[] = [];
-  const isEgress = input.category === 'egress';
+  const isContainerThreat = input.category === 'egress' || input.category === 'container_rce';
 
-  if (input.sourceIp && !isEgress) {
+  if (input.sourceIp && !isContainerThreat) {
     if (input.alreadyBlocked) {
       buttons.push({
         id: `incident_unblock_${input.incidentId}_${input.sourceIp}`,
@@ -97,6 +99,8 @@ export function buildIncidentSpec(input: IncidentCopyInput): MessageSpec {
     ? `O servidor ${input.serverName} registrou ${formatNumber(count)} ${plural(count, 'tentativa', 'tentativas')} de login em ${when}.`
     : input.category === 'egress'
       ? `${input.serverName} viu o container ${input.containerName ?? 'monitorado'} abrir conexões de saída para muitos destinos, ${when}.`
+      : input.category === 'container_rce'
+        ? `${input.serverName} viu sinal de execução de comando no container ${input.containerName ?? 'monitorado'}, ${when}.`
       : `${input.serverName} registrou ${formatNumber(count)} ${plural(count, 'evento', 'eventos')} de ${label.toLowerCase()}${containerPart}, ${when}.`;
 
   const facts = [
@@ -113,13 +117,17 @@ export function buildIncidentSpec(input: IncidentCopyInput): MessageSpec {
   ];
 
   const contained = input.alreadyBlocked || !!input.containment;
-  const isEgress = input.category === 'egress';
+  const isContainerThreat = input.category === 'egress' || input.category === 'container_rce';
 
-  const action = isEgress && !contained
+  const action = isContainerThreat && !contained
     ? {
         required: false,
         title: 'O que fazer agora',
-        steps: ['O Guardian vai isolar o container. Não bloqueie o destino: ele é vítima do scan, não a origem.'],
+        steps: [
+          input.category === 'egress'
+            ? 'O Guardian vai isolar o container. Não bloqueie o destino: ele é vítima do scan, não a origem.'
+            : 'O Guardian vai isolar o container. Não reinicie: preserve a evidência.',
+        ],
       }
     : contained
     ? {

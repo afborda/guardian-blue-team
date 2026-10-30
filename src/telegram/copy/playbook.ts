@@ -126,6 +126,12 @@ const COPY: Record<string, PlaybookCopy> = {
     nextStep: 'Verifique se o container voltou saudável.',
     steps: ['Desconectar a rede', 'Reiniciar o container'],
   },
+  'container-rce-containment': {
+    actionTitle: 'Isolar o container',
+    impact: 'O container é desconectado da rede e fica sem acesso até uma ação manual. Nada é reiniciado, para preservar a evidência.',
+    nextStep: 'Investigue o processo e o binário antes de religar a rede.',
+    steps: ['Desconectar o container da rede', 'Avisar a equipe'],
+  },
   'container-egress-containment': {
     actionTitle: 'Isolar o container',
     impact: 'O container é desconectado da rede e fica sem acesso até uma ação manual. Nada é reiniciado, para preservar a evidência.',

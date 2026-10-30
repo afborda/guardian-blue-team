@@ -56,6 +56,9 @@ export async function disconnectContainer(ctx: PlaybookContext, params?: Record<
   }
 
   const networks = networksResult.stdout.trim().split(/\s+/).filter(Boolean);
+  if (networks.length === 0) {
+    return { success: true, message: `Container '${container}' já está isolado (sem redes)` };
+  }
   let disconnected = 0;
 
   for (const network of networks) {

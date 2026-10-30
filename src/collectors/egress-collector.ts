@@ -182,7 +182,7 @@ export class EgressCollector {
       return { id: id ?? '', name: nameParts.join(' ') };
     }).filter(item => item.id.length >= 12 && item.name.length > 0);
 
-    logger.info({ server: target.name, containers: containers.length }, 'Egress collector: containers listados');
+    logger.debug({ server: target.name, containers: containers.length }, 'Egress collector: containers listados');
     if (containers.length === 0) return [];
 
     const entries: RawLogEntry[] = [];
@@ -190,16 +190,18 @@ export class EgressCollector {
     for (const container of containers) {
       const inspect = await SSHCollector.run(
         target,
-        `docker inspect --format '{{.State.Pid}}|{{.HostConfig.NetworkMode}}' ${container.id} 2>/dev/null`,
+        `docker inspect --format '{{.State.Pid}}|{{.HostConfig.NetworkMode}}|{{len .NetworkSettings.Networks}}' ${container.id} 2>/dev/null`,
         10_000,
       );
-      const [pidRaw, networkMode = ''] = inspect.stdout.trim().split('|');
+      const [pidRaw, networkMode = '', networkCountRaw = '0'] = inspect.stdout.trim().split('|');
       const pid = Number.parseInt(pidRaw ?? '', 10);
       if (!inspect.success || !Number.isFinite(pid) || pid <= 0) continue;
-      logger.info({ server: target.name, container: container.name, pid, networkMode }, 'Egress collector: inspect');
+      logger.debug({ server: target.name, container: container.name, pid, networkMode }, 'Egress collector: inspect');
       // Container em host network compartilha o netns do host; os sockets não
       // são atribuíveis só a ele e gerariam falso positivo.
       if (networkMode === 'host') continue;
+      // Já isolado pelo playbook: não gera novos eventos até reconectar.
+      if (Number.parseInt(networkCountRaw, 10) === 0) continue;
 
       const sockets = await SSHCollector.run(
         target,
@@ -210,7 +212,7 @@ export class EgressCollector {
 
       const parsedSockets = parseSockets(sockets.stdout);
       const summary = summarizeContainer(container.name, parsedSockets);
-      logger.info({
+      logger.debug({
         server: target.name,
         container: container.name,
         sockets: parsedSockets.length,

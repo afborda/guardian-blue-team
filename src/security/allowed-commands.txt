@@ -166,7 +166,7 @@ sudo iptables -D GUARDIAN-INPUT -s %IP% -j DROP
 
 # --- egress-collector.ts — fan-out de saída por container (SYN_SENT no netns) ---
 docker ps --format '{{.ID}} {{.Names}}' 2>/dev/null | head -200
-docker inspect --format '{{.State.Pid}}|{{.HostConfig.NetworkMode}}' %CONTAINER_ID% 2>/dev/null
+docker inspect --format '{{.State.Pid}}|{{.HostConfig.NetworkMode}}|{{len .NetworkSettings.Networks}}' %CONTAINER_ID% 2>/dev/null
 sudo nsenter -t %PID% -n ss -tnp 2>/dev/null | head -400
 
 # --- container-logs-collector.ts — stdout/stderr de containers opt-in ---

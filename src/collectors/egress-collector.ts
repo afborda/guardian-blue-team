@@ -182,7 +182,7 @@ export class EgressCollector {
       return { id: id ?? '', name: nameParts.join(' ') };
     }).filter(item => item.id.length >= 12 && item.name.length > 0);
 
-    logger.debug({ server: target.name, containers: containers.length }, 'Egress collector: containers listados');
+    logger.info({ server: target.name, containers: containers.length }, 'Egress collector: containers listados');
     if (containers.length === 0) return [];
 
     const entries: RawLogEntry[] = [];
@@ -196,6 +196,7 @@ export class EgressCollector {
       const [pidRaw, networkMode = ''] = inspect.stdout.trim().split('|');
       const pid = Number.parseInt(pidRaw ?? '', 10);
       if (!inspect.success || !Number.isFinite(pid) || pid <= 0) continue;
+      logger.info({ server: target.name, container: container.name, pid, networkMode }, 'Egress collector: inspect');
       // Container em host network compartilha o netns do host; os sockets não
       // são atribuíveis só a ele e gerariam falso positivo.
       if (networkMode === 'host') continue;
@@ -207,7 +208,14 @@ export class EgressCollector {
       );
       if (!sockets.success || !sockets.stdout.trim()) continue;
 
-      const summary = summarizeContainer(container.name, parseSockets(sockets.stdout));
+      const parsedSockets = parseSockets(sockets.stdout);
+      const summary = summarizeContainer(container.name, parsedSockets);
+      logger.info({
+        server: target.name,
+        container: container.name,
+        sockets: parsedSockets.length,
+        summary,
+      }, 'Egress collector: resumo do container');
       if (!summary || !isInterestingEgress(summary)) continue;
 
       entries.push({

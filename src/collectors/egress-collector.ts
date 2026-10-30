@@ -151,7 +151,7 @@ export class EgressCollector {
       "docker ps --format '{{.ID}} {{.Names}}' 2>/dev/null | head -40",
       10_000,
     );
-    logger.info({
+    logger.debug({
       server: target.name,
       success: list.success,
       stdoutLen: list.stdout.length,
